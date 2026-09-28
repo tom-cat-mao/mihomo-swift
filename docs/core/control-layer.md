@@ -26,6 +26,7 @@
 - `refreshProfile(from:)`
 - `importProfile(from:)`
 - `profileContent(id:)`
+- `profileProxyGroups(id:)` / `profileNodes(id:)` (memoized profile YAML parses)
 - `updateProfile(...)`
 - `deleteProfile(id:)`
 - `refreshProfile(id:)`
@@ -33,7 +34,7 @@
 - `coreConfiguration()`
 - `rules()`
 - `connections()`
-- `recentLogs(limit:)`
+- `recentLogs(limit:)` (tail-read; see `docs/operations/persistence-logging.md`)
 - `setSystemProxy(_:dryRun:)`
 - `dnsSettings()` / `updateDnsSettings(_:)` / `applyDnsSettings(_:)` / `setDnsEnabled(_:)`
 - `snifferSettings()` / `updateSnifferSettings(_:)` / `applySnifferSettings(_:)` / `setSnifferEnabled(_:)`
@@ -45,6 +46,39 @@
 - `installCLILink()` / `uninstallCLILink()`
 
 This API is intentionally close to the CLI command vocabulary and the future service API.
+
+## Synchronous Facade, Serial App Executor
+
+`KumoController` stays synchronous and `Sendable`. Its methods block the caller
+on file IO, helper IPC, `networksetup` or Yams parsing, and the CLI and the
+privileged helper (`KumoService`) call them directly on their own threads. That
+facade is deliberately unchanged.
+
+The GUI cannot afford that. It used to call the controller straight from
+`@MainActor` code — on the 1 Hz status refresh, on every profile poll, on each
+proxy reload and on each Inspect refresh — so every one of those stalled the
+main thread. `KumoApp` therefore goes through `CoreRuntimeRunner`, a `public
+actor` in `KumoCoreKit` that owns one controller and exposes the controller
+surface the app needs as `async` methods:
+
+- Awaiting a runner method runs the controller call on the actor's serial
+  executor, off the main actor and serialized with every other runner call.
+- It is not `Task.detached` per call: ordering between consecutive controller
+  operations is load-bearing (write state, then read it back), and the actor
+  preserves dispatch order.
+- `KumoAppStore` still performs every `@Observable` assignment on the main
+  actor, in the same order as before, so observers see the same values in the
+  same sequence. Call sites that cannot await — SwiftUI `Binding` setters,
+  `NSMenuItem` actions, App Intents — wrap the store method in a
+  fire-and-forget `Task`.
+
+The controller also memoizes the profile YAML parses the app repeats
+(`profileProxyGroups(id:)`, `profileNodes(id:)`) through `ProfileParseCache`,
+keyed on the profile file's `(fileURL, contentModificationDate, fileSize)`
+identity, so an unchanged profile is parsed once instead of several times a
+minute. `RuntimeConfigBuilder` is not a consumer of those cached values: it
+builds its own YAML document from the raw profile string, so it cannot observe
+or mutate a memoized entry.
 
 ## Internal Responsibilities
 

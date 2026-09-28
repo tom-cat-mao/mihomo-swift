@@ -162,6 +162,18 @@ own rotated file, so lines from concurrent cores no longer interleave, and
 `core.log` always describes the current session. Rotation is best-effort: if
 the rename fails, the launch continues and the log keeps growing.
 
+Readers never load the whole file. `recentLogs(limit:)` seeks to end-of-file,
+seeks back at most 256 KB and reads that window, then keeps the last `limit`
+complete lines. A window boundary that falls mid-line is dropped, so callers
+never receive a truncated first line. This matters because the file grows for
+the lifetime of a session and is read on every Inspect refresh, TUN status
+probe and connection-close handler.
+
+Log entry ids are content-derived (`"<message-hash>-<occurrence>"`) rather
+than positional, so appending to the log does not renumber existing entries.
+They are opaque identity tokens: the hash is seeded per process, so ids are
+stable within a session but must not be persisted or compared across runs.
+
 Sub-Store backend stdout and stderr are appended to:
 
 ```text
