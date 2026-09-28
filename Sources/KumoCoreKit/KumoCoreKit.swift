@@ -416,20 +416,48 @@ public struct KumoController: Sendable {
         return try await profileRepository.refreshDueRemoteProfiles(proxyPort: proxyPort)
     }
 
+    /// Byte window read from the end of `core.log` for each snapshot. Mihomo
+    /// appends to this file for the whole lifetime of a session (hundreds of
+    /// megabytes are normal), so only the tail is ever read.
+    static let recentLogByteWindow = 256 * 1024
+
+    /// Reads the tail of `core.log` and returns the last `limit` complete
+    /// lines. Entries carry a content-derived id — the message hash plus the
+    /// per-message occurrence counter inside this slice — so ids stay stable
+    /// across refreshes instead of being renumbered by position.
     public func recentLogs(limit: Int = 300) throws -> [LogEntry] {
+        guard limit > 0 else { return [] }
         guard FileManager.default.fileExists(atPath: paths.coreLogFile.path) else {
             return []
         }
 
-        let content = try String(contentsOf: paths.coreLogFile, encoding: .utf8)
-        let lines = content
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .suffix(limit)
+        let handle = try FileHandle(forReadingFrom: paths.coreLogFile)
+        defer { try? handle.close() }
 
-        return lines.enumerated().map { index, line in
-            let message = String(line)
+        let fileSize = try handle.seekToEnd()
+        let window = UInt64(Self.recentLogByteWindow)
+        let readSize = min(fileSize, window)
+        let startedMidFile = fileSize > window
+        try handle.seek(toOffset: fileSize - readSize)
+
+        let data = try handle.readToEnd() ?? Data()
+        // 0x0A (line feed) never appears inside a UTF-8 multi-byte sequence,
+        // so splitting the raw bytes is encoding-safe.
+        var lines = data.split(separator: UInt8(0x0A), omittingEmptySubsequences: true)
+
+        // When the window starts mid-file its first line is almost always a
+        // truncated fragment; drop it so callers only ever see whole lines.
+        if startedMidFile, !lines.isEmpty {
+            lines.removeFirst()
+        }
+
+        var occurrences: [String: Int] = [:]
+        return lines.suffix(limit).map { line in
+            let message = String(decoding: line, as: UTF8.self)
+            let occurrence = occurrences[message, default: 0]
+            occurrences[message] = occurrence + 1
             return LogEntry(
-                id: "\(index)-\(message.hashValue)",
+                id: "\(message.hashValue)-\(occurrence)",
                 level: logLevel(in: message),
                 message: message
             )
