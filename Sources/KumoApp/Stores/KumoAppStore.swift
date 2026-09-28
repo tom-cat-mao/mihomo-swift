@@ -332,16 +332,16 @@ final class KumoAppStore {
     /// are intentionally swallowed — there's no actionable error to surface
     /// for a missing or malformed `proxy-groups:` section, and the empty
     /// fallback already provides a clear UI state.
+    ///
+    /// The parse itself is memoized on the profile file's identity, so the three
+    /// passes one `loadProxyGroups()` makes, and the 60 s profile poll, reuse it
+    /// until the file changes on disk.
     private func refreshProfilePreview() async {
         guard let profileID = currentProfile?.id else {
             profilePreviewGroups = []
             return
         }
-        guard let yaml = try? await runner.profileContent(id: profileID) else {
-            profilePreviewGroups = []
-            return
-        }
-        guard let groups = try? ProfileNodeParser.parseProxyGroups(yaml: yaml) else {
+        guard let groups = try? await runner.profileProxyGroups(id: profileID) else {
             profilePreviewGroups = []
             return
         }
@@ -389,28 +389,33 @@ final class KumoAppStore {
 
     private func writeBackCountries(serverMap: [String: String], codes: [String: String]) {
         guard !codes.isEmpty else { return }
-        var updated = proxyGroups
-        var didChange = false
-        for groupIndex in updated.indices {
-            for proxyIndex in updated[groupIndex].proxies.indices {
-                let proxyName = updated[groupIndex].proxies[proxyIndex].name
-                guard let server = serverMap[proxyName] else { continue }
+
+        // Resolve the pending writes before touching anything: when no node
+        // changed, `proxyGroups` is left completely alone and no observer is
+        // notified.
+        var pending: [(groupIndex: Int, proxyIndex: Int, code: String)] = []
+        for groupIndex in proxyGroups.indices {
+            for proxyIndex in proxyGroups[groupIndex].proxies.indices {
+                let proxy = proxyGroups[groupIndex].proxies[proxyIndex]
+                guard let server = serverMap[proxy.name] else { continue }
                 guard let code = codes[server.lowercased()] ?? codes[server] else { continue }
-                if updated[groupIndex].proxies[proxyIndex].detectedCountry != code {
-                    updated[groupIndex].proxies[proxyIndex].detectedCountry = code
-                    didChange = true
-                }
+                guard proxy.detectedCountry != code else { continue }
+                pending.append((groupIndex, proxyIndex, code))
             }
         }
-        if didChange {
-            proxyGroups = updated
+        guard !pending.isEmpty else { return }
+
+        // Mutate each proxy element in place through its index. The previous
+        // `var updated = proxyGroups` + whole-array reassign forced a copy of
+        // every group and every proxy just to stamp a country code onto a few.
+        for change in pending {
+            proxyGroups[change.groupIndex].proxies[change.proxyIndex].detectedCountry = change.code
         }
     }
 
     private func currentProfileServerMap() async -> [String: String]? {
         guard let profileID = currentProfile?.id else { return nil }
-        guard let yaml = try? await runner.profileContent(id: profileID) else { return nil }
-        guard let nodes = try? ProfileNodeParser.parseNodes(yaml: yaml) else { return nil }
+        guard let nodes = try? await runner.profileNodes(id: profileID) else { return nil }
         return nodes.mapValues(\.server)
     }
 

@@ -29,10 +29,11 @@ final class ByteCountFormattingTests: XCTestCase {
     /// must agree with the reference output. This is the check that would catch
     /// a cache that is not safe to share.
     func testKumoByteCountIsStableAcrossConcurrentReads() {
+        let values = self.values
         let expected = values.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .binary) }
 
         DispatchQueue.concurrentPerform(iterations: 200) { iteration in
-            let value = self.values[iteration % self.values.count]
+            let value = values[iteration % values.count]
             XCTAssertEqual(value.kumoByteCount, expected[iteration % expected.count])
         }
     }

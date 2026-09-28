@@ -24,6 +24,9 @@ public struct ShutdownResult: Sendable {
 public struct KumoController: Sendable {
     public let paths: KumoPaths
     let profileRepository: ProfileRepository
+    /// Memoizes the profile YAML parses the app asks for repeatedly; see
+    /// `ProfileParseCache`.
+    let profileParseCache: ProfileParseCache
     let overrideRepository: OverrideRepository
     let supervisor: CoreSupervisor
     let stateStore: CoreStateStore
@@ -45,6 +48,7 @@ public struct KumoController: Sendable {
     ) {
         self.paths = paths
         self.profileRepository = ProfileRepository(paths: paths)
+        self.profileParseCache = ProfileParseCache(profiles: ProfileRepository(paths: paths))
         self.overrideRepository = OverrideRepository(paths: paths)
         self.supervisor = CoreSupervisor(paths: paths)
         self.stateStore = CoreStateStore(paths: paths)
@@ -342,6 +346,18 @@ public struct KumoController: Sendable {
 
     public func profileContent(id: String) throws -> String {
         try profileRepository.profileContent(id: id)
+    }
+
+    /// Proxy groups parsed from the profile's `proxy-groups:` section, memoized
+    /// on the profile file's identity. Used for the stopped-core sidebar preview.
+    public func profileProxyGroups(id: String) async throws -> [ProxyGroup] {
+        try await profileParseCache.proxyGroups(profileID: id)
+    }
+
+    /// Outbound nodes parsed from the profile's `proxies:` section, memoized on
+    /// the profile file's identity. Used for GeoIP country detection.
+    public func profileNodes(id: String) async throws -> [String: ProfileNodeInfo] {
+        try await profileParseCache.nodes(profileID: id)
     }
 
     public func overrides() throws -> [OverrideItem] {

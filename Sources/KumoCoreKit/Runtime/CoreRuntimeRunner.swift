@@ -103,6 +103,16 @@ public actor CoreRuntimeRunner {
         try controller.profileContent(id: id)
     }
 
+    /// Memoized parse of the profile's `proxy-groups:` section.
+    public func profileProxyGroups(id: String) async throws -> [ProxyGroup] {
+        try await controller.profileProxyGroups(id: id)
+    }
+
+    /// Memoized parse of the profile's `proxies:` section.
+    public func profileNodes(id: String) async throws -> [String: ProfileNodeInfo] {
+        try await controller.profileNodes(id: id)
+    }
+
     @discardableResult
     public func updateProfile(
         id: String,
