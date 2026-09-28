@@ -5,11 +5,11 @@ final class AppUpdateManagerTests: XCTestCase {
     func testDefaultFeedURLsMatchGitHubReleaseChannels() {
         XCTAssertEqual(
             AppUpdateManager.defaultFeedURL(channel: .stable).absoluteString,
-            "https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest.yml"
+            "https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest.yml"
         )
         XCTAssertEqual(
             AppUpdateManager.defaultFeedURL(channel: .beta).absoluteString,
-            "https://github.com/ProjectKumo/KumoApp/releases/download/pre-release/latest.yml"
+            "https://github.com/tom-cat-mao/mihomo-swift/releases/download/pre-release/latest.yml"
         )
     }
 
@@ -17,7 +17,7 @@ final class AppUpdateManagerTests: XCTestCase {
         let yaml = """
         version: 0.0.2
         channel: stable
-        downloadURL: https://github.com/ProjectKumo/KumoApp/releases/download/0.0.2/Kumo-macos-0.0.2-arm64.dmg
+        downloadURL: https://github.com/tom-cat-mao/mihomo-swift/releases/download/0.0.2/Kumo-macos-0.0.2-arm64.dmg
         assetName: Kumo-macos-0.0.2-arm64.dmg
         sha256: abc123
         releaseNotes: |

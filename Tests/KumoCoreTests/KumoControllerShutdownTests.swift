@@ -8,6 +8,11 @@ final class KumoControllerShutdownTests: XCTestCase {
         let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
         let controller = KumoController(paths: paths)
         let corePath = try makeLongRunningCore(in: paths.applicationSupportDirectory)
+        let stateStore = CoreStateStore(paths: paths)
+        // Spawn on an ephemeral controller port: start() refuses to launch when
+        // the configured port is already serving, and the default 9097 may be
+        // held by a real Mihomo core on the test machine.
+        try stateStore.save(CoreStatus(endpoint: ControllerEndpoint(port: try allocateFreeLocalPort())))
         let running = try controller.start(corePath: corePath)
         let pid = try XCTUnwrap(running.pid)
 

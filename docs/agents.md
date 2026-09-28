@@ -59,8 +59,8 @@ release. The in-app update checker will 404 without them.
 **Verify URLs:**
 
 ```bash
-curl -sI "https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest.yml"
-curl -sI "https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest-amd64.yml"
+curl -sI "https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest.yml"
+curl -sI "https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest-amd64.yml"
 ```
 
 ## Update Runtime Behavior

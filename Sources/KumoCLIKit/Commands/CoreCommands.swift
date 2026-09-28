@@ -33,8 +33,17 @@ extension KumoCommand {
             if core == nil {
                 try await installManagedCoreIfNeeded()
             }
-            let status = try CLIRuntime.current.controller.start(corePath: core)
-            CLIRuntime.current.write(status) { "started pid=\($0.pid.map(String.init) ?? "-")" }
+            let runtime = CLIRuntime.current
+            let status = try runtime.controller.start(corePath: core)
+            do {
+                try await runtime.controller.waitForControllerReady()
+            } catch {
+                let pid = status.pid.map(String.init) ?? "-"
+                throw KumoError.commandFailed(
+                    "Mihomo core started with pid \(pid) but its controller did not become ready: \(error.localizedDescription) Check the core log at \(runtime.controller.paths.coreLogFile.path)."
+                )
+            }
+            runtime.write(status) { "started pid=\($0.pid.map(String.init) ?? "-")" }
         }
     }
 

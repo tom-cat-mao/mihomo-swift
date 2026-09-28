@@ -17,10 +17,14 @@ The current implementation starts Mihomo with a generated work directory. The ge
 
 - Preparing application support directories.
 - Writing the runtime configuration.
+- Probing the controller port so a second core is never spawned onto a busy
+  control endpoint.
+- Rotating `logs/core.log` before each launch.
 - Starting Mihomo with `Process`.
 - Recording the process identifier in state and `work/core.pid`.
 - Stopping recorded processes with a graceful signal escalation path.
-- Detecting stale process identifiers.
+- Detecting stale process identifiers without mistaking foreign-owned live
+  processes for dead ones.
 - Recording runtime lifecycle events.
 
 Stop uses both the persisted status PID and the `work/core.pid` fallback, then
@@ -32,12 +36,57 @@ PID are cleared together. Status checks also consult `work/core.pid`, so Kumo
 can recover a running state when the JSON state lost its PID but the managed
 core is still alive.
 
-This is still available as the local-process fallback. When Kumo Helper is
-installed and reachable, `KumoController` routes start, stop, restart, system
-proxy, and TUN operations through the signed Unix socket service backend so the
-privileged helper owns Mihomo. Helper-routed start and restart requests wait
-for Mihomo's controller endpoint to answer before returning, so callers do not
-observe a running process whose control surface is still unavailable.
+### Liveness and ownership
+
+Liveness is decided by `kill(pid, 0)` plus errno:
+
+- `0` — the process exists and the caller may signal it.
+- `ESRCH` — the process is gone. This is the only outcome that proves death.
+- `EPERM` — the process exists but is owned by another user, which is the
+  normal case for a core started as root by the privileged helper while the
+  app or CLI runs unprivileged. `CoreSupervisor` treats this as **alive**.
+
+Because EPERM counts as alive, stale-pid cleanup (`core.stale_pid`) only fires
+on genuine death, so an unprivileged status check can no longer clear the PID
+record of a live root-owned core and let a later `start()` double-launch. When
+a stop is attempted against a process the caller cannot signal,
+`terminateProcess` fails fast on EPERM instead of waiting through the signal
+escalation timeouts, and `stop()` reports a failed state that names the
+unreachable PID. The PID record is kept rather than cleared, so the CLI does
+not print `Mihomo core stopped.` for a core that is still running; stopping
+such a core requires the privileged helper or an administrator.
+
+### Single-instance guard
+
+Before clearing the PID record and spawning, `CoreSupervisor.start()` probes
+the configured external-controller address (`endpoint.host:endpoint.port`,
+for example `127.0.0.1:9097`) with a blocking TCP connect capped at about one
+second. Any successful connection — or, equivalently, any HTTP response on
+`GET /version` — means another process already owns the controller port, and
+`start()` throws `KumoError.controllerPortInUse` without spawning anything.
+Every spawn path funnels through `CoreSupervisor.start()`, so the app, the CLI,
+and the privileged helper all share the guard. A process that is already
+running but no longer recorded is reported instead of being joined by a second
+core.
+
+### Core log rotation
+
+Each launch writes core stdout and stderr to a fresh `logs/core.log`: if the
+existing file is non-empty it is first renamed to
+`logs/core-<yyyyMMdd-HHmmss>.log` (local time). A previously started core that
+is still running keeps writing to its renamed file, so lines from concurrent
+cores no longer interleave in `core.log`.
+
+This local supervision path is still available as the fallback. When Kumo
+Helper is installed and reachable, `KumoController` routes start, stop,
+restart, system proxy, and TUN operations through the signed Unix socket
+service backend so the privileged helper owns Mihomo. Helper-routed start and
+restart requests wait for Mihomo's controller endpoint to answer before
+returning, so callers do not observe a running process whose control surface
+is still unavailable. `kumo start` performs the same `GET /version` readiness
+wait as the app and the daemon; if the controller never answers, the command
+fails with the reason and the `logs/core.log` path instead of reporting a
+plain success.
 
 `KumoAppDelegate.applicationShouldTerminate(_:)` delays app termination while
 `KumoAppStore.prepareForTermination()` runs
