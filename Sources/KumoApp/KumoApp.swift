@@ -54,7 +54,7 @@ struct KumoApp: App {
                 .disabled(store.isLoading || store.status.state == .running || store.status.state == .starting)
 
                 Button(String(localized: "Stop Kumo")) {
-                    store.stopCore()
+                    Task { await store.stopCore() }
                 }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(store.isLoading || store.status.state != .running)

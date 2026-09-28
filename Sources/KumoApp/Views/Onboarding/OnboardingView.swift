@@ -140,7 +140,7 @@ struct OnboardingView: View {
             installedSkillTargets = []
             step = .done
         case .done:
-            store.completeOnboarding()
+            Task { await store.completeOnboarding() }
             dismiss()
         }
     }
@@ -163,7 +163,7 @@ struct OnboardingView: View {
             }
             Task { await installSelectedSkills() }
         case .done:
-            store.completeOnboarding()
+            Task { await store.completeOnboarding() }
             dismiss()
         }
     }

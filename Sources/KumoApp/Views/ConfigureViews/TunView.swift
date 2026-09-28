@@ -135,8 +135,8 @@ struct TunView: View {
             .formStyle(.grouped)
         }
         .task {
-            store.refreshServiceModeStatus()
-            store.refreshTunStatus()
+            await store.refreshServiceModeStatus()
+            await store.refreshTunStatus()
             updateTunDraft(currentTunSettings)
         }
         .onChange(of: currentTunSettings) { _, newValue in

@@ -32,7 +32,7 @@ struct CoreView: View {
                     Toggle(String(localized: "IPv6"), isOn: ipv6Binding)
                     ControllerSecretField(
                         currentSecret: store.status.endpoint.secret,
-                        commit: { store.setControllerSecret($0) }
+                        commit: { secret in Task { await store.setControllerSecret(secret) } }
                     )
                     HStack {
                         Spacer()
@@ -93,15 +93,19 @@ struct CoreView: View {
                 return
             }
             let hasAccess = url.startAccessingSecurityScopedResource()
-            defer {
-                if hasAccess {
-                    url.stopAccessingSecurityScopedResource()
+            // The controller copies the chosen binary, so the security-scoped
+            // access must stay open until the async hop completes.
+            Task {
+                defer {
+                    if hasAccess {
+                        url.stopAccessingSecurityScopedResource()
+                    }
                 }
+                await store.setCorePath(url.path)
             }
-            store.setCorePath(url.path)
         }
         .task {
-            store.refreshCoreCandidates()
+            await store.refreshCoreCandidates()
             await store.loadCoreConfiguration()
             resetRuntimeDraft()
         }
@@ -117,9 +121,9 @@ struct CoreView: View {
             store.status.corePath
         } set: { path in
             if let path, !path.isEmpty {
-                store.setCorePath(path)
+                Task { await store.setCorePath(path) }
             } else {
-                store.clearCorePath()
+                Task { await store.clearCorePath() }
             }
         }
     }

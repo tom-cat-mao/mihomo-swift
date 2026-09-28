@@ -151,6 +151,6 @@ struct SystemProxyView: View {
     private func applySystemProxyDraft() {
         let settings = normalizedSystemProxyDraft
         systemProxyDraft = settings
-        store.updateSystemProxySettings(settings)
+        Task { await store.updateSystemProxySettings(settings) }
     }
 }

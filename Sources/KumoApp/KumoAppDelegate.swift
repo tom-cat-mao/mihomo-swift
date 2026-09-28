@@ -164,7 +164,7 @@ final class KumoAppDelegate: NSObject, NSApplicationDelegate, UNUserNotification
     private func reindexSpotlightProfiles() async {
         guard let store = KumoAppContext.shared.store else { return }
         // Refresh first so we index the current set, not the empty default.
-        store.refreshProfiles()
+        await store.refreshProfiles()
         await SpotlightIndexer.shared.reindex(profiles: store.profiles)
     }
 

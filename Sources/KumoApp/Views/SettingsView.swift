@@ -122,8 +122,8 @@ private struct GeneralSettingsTab: View {
         .formStyle(.grouped)
         .scenePadding()
         .task {
-            store.loadPreferences()
-            refreshCLIStatus()
+            await store.loadPreferences()
+            await refreshCLIStatus()
         }
     }
 
@@ -155,8 +155,8 @@ private struct GeneralSettingsTab: View {
         }
     }
 
-    private func refreshCLIStatus() {
-        cliStatus = store.controller.cliLinkStatus()
+    private func refreshCLIStatus() async {
+        cliStatus = await store.cliLinkStatus()
     }
 
     private func installCLI() async {
@@ -165,7 +165,7 @@ private struct GeneralSettingsTab: View {
         cliErrorMessage = nil
         defer { cliBusy = false }
         do {
-            cliStatus = try store.controller.installCLILink()
+            cliStatus = try await store.installCLILink()
         } catch {
             cliErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -177,7 +177,7 @@ private struct GeneralSettingsTab: View {
         cliErrorMessage = nil
         defer { cliBusy = false }
         do {
-            cliStatus = try store.controller.uninstallCLILink()
+            cliStatus = try await store.uninstallCLILink()
         } catch {
             cliErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -197,7 +197,7 @@ private struct GeneralSettingsTab: View {
         } set: { value in
             var prefs = store.preferences
             prefs.quitOnLastWindowClose = value
-            store.updatePreferences(prefs)
+            Task { await store.updatePreferences(prefs) }
         }
     }
 
@@ -207,8 +207,10 @@ private struct GeneralSettingsTab: View {
         } set: { value in
             var prefs = store.preferences
             prefs.appLanguage = value
-            store.updatePreferences(prefs)
-            localizationManager.selectLanguage(value)
+            Task {
+                await store.updatePreferences(prefs)
+                localizationManager.selectLanguage(value)
+            }
         }
     }
 
@@ -224,7 +226,7 @@ private struct GeneralSettingsTab: View {
     private func updateLaunchAtLogin(_ value: Bool) {
         var prefs = store.preferences
         prefs.launchAtLogin = value
-        store.updatePreferences(prefs)
+        Task { await store.updatePreferences(prefs) }
         do {
             if value {
                 try SMAppService.mainApp.register()
@@ -315,7 +317,7 @@ private struct UpdateSettingsTab: View {
         .formStyle(.grouped)
         .scenePadding()
         .task {
-            store.loadPreferences()
+            await store.loadPreferences()
         }
     }
 
@@ -325,7 +327,7 @@ private struct UpdateSettingsTab: View {
         } set: { value in
             var prefs = store.preferences
             prefs.updateChannel = value
-            store.updatePreferences(prefs)
+            Task { await store.updatePreferences(prefs) }
         }
     }
 
@@ -336,7 +338,7 @@ private struct UpdateSettingsTab: View {
             var prefs = store.preferences
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             prefs.updateManifestURL = trimmed.isEmpty ? nil : URL(string: trimmed)
-            store.updatePreferences(prefs)
+            Task { await store.updatePreferences(prefs) }
         }
     }
 }
