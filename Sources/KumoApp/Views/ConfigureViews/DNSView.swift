@@ -8,7 +8,10 @@ struct DNSView: View {
     @State private var dnsDraft = DnsSettings()
 
     var body: some View {
-        KumoPage(title: "DNS") {
+        // Normalized once per pass: the validation text and both button
+        // enablements each used to rebuild the whole normalized draft.
+        let draft = normalizedDnsDraft
+        return KumoPage(title: "DNS") {
             Form {
                 Section(String(localized: "Status")) {
                     Toggle(String(localized: "Enable DNS"), isOn: Binding {
@@ -139,7 +142,7 @@ struct DNSView: View {
                 }
 
                 Section {
-                    if let validationMessage = dnsDraftValidationMessage {
+                    if let validationMessage = dnsDraftValidationMessage(for: draft) {
                         Text(validationMessage)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -149,12 +152,12 @@ struct DNSView: View {
                         Button(String(localized: "Reset")) {
                             updateDnsDraft(currentDnsSettings)
                         }
-                        .disabled(!hasDnsDraftChanges || store.isLoading)
+                        .disabled(!hasDnsDraftChanges(in: draft) || store.isLoading)
 
                         Button(String(localized: "Apply")) {
-                            applyDnsDraft()
+                            applyDnsDraft(draft)
                         }
-                        .disabled(!canApplyDnsDraft)
+                        .disabled(!canApplyDnsDraft(for: draft))
                     }
                 } footer: {
                     Text(String(localized: "DNS changes are staged locally. Apply restarts the core when it is running."))
@@ -168,7 +171,7 @@ struct DNSView: View {
             updateDnsDraft(currentDnsSettings)
         }
         .onChange(of: currentDnsSettings) { _, newValue in
-            if !hasDnsDraftChanges {
+            if !hasDnsDraftChanges(in: normalizedDnsDraft) {
                 updateDnsDraft(newValue)
             } else {
                 dnsDraft.isEnabled = newValue.isEnabled
@@ -180,12 +183,14 @@ struct DNSView: View {
         store.status.runtimeSettings?.dns ?? DnsSettings()
     }
 
-    private var hasDnsDraftChanges: Bool {
-        normalizedDnsDraft != currentDnsSettings
+    /// Takes the normalized draft for the current body pass; normalizing here
+    /// again is what the body pass already paid for.
+    private func hasDnsDraftChanges(in draft: DnsSettings) -> Bool {
+        draft != currentDnsSettings
     }
 
-    private var canApplyDnsDraft: Bool {
-        hasDnsDraftChanges && dnsDraftValidationMessage == nil && !store.isLoading
+    private func canApplyDnsDraft(for draft: DnsSettings) -> Bool {
+        hasDnsDraftChanges(in: draft) && dnsDraftValidationMessage(for: draft) == nil && !store.isLoading
     }
 
     private var normalizedDnsDraft: DnsSettings {
@@ -241,8 +246,7 @@ struct DNSView: View {
         return settings
     }
 
-    private var dnsDraftValidationMessage: String? {
-        let settings = normalizedDnsDraft
+    private func dnsDraftValidationMessage(for settings: DnsSettings) -> String? {
         if settings.isEnabled {
             if settings.nameserver.isEmpty {
                 return "Nameserver needs at least one value when DNS is enabled."
@@ -263,8 +267,9 @@ struct DNSView: View {
         return nil
     }
 
-    private func applyDnsDraft() {
-        let settings = normalizedDnsDraft
+    /// Applies the normalized value the body pass already computed, so the
+    /// staged draft and the runtime keep receiving the same normalized settings.
+    private func applyDnsDraft(_ settings: DnsSettings) {
         updateDnsDraft(settings)
         Task { await store.applyDnsSettings(settings) }
     }

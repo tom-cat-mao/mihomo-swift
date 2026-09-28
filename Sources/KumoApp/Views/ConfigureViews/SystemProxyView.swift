@@ -7,7 +7,10 @@ struct SystemProxyView: View {
     @State private var systemProxyDraft = SystemProxySettings()
 
     var body: some View {
-        KumoPage(title: "System Proxy") {
+        // Normalized once per pass: the Reset and Apply enablements each used to
+        // rebuild the normalized draft.
+        let draft = normalizedSystemProxyDraft
+        return KumoPage(title: "System Proxy") {
             Form {
                 Section {
                     Toggle(String(localized: "Enable System Proxy"), isOn: Binding {
@@ -32,12 +35,12 @@ struct SystemProxyView: View {
                         Button(String(localized: "Reset")) {
                             resetSystemProxyDraft()
                         }
-                        .disabled(!hasSystemProxyDraftChanges)
+                        .disabled(!hasSystemProxyDraftChanges(in: draft))
 
                         Button(String(localized: "Apply")) {
-                            applySystemProxyDraft()
+                            applySystemProxyDraft(draft)
                         }
-                        .disabled(!hasSystemProxyDraftChanges)
+                        .disabled(!hasSystemProxyDraftChanges(in: draft))
                     }
                 } footer: {
                     Text(String(localized: "Network service, host, port, mode, bypass, and PAC script changes are staged until you apply them."))
@@ -92,8 +95,9 @@ struct SystemProxyView: View {
         )
     }
 
-    private var hasSystemProxyDraftChanges: Bool {
-        normalizedSystemProxyDraft != systemProxySettings
+    /// Takes the normalized draft for the current body pass.
+    private func hasSystemProxyDraftChanges(in draft: SystemProxySettings) -> Bool {
+        draft != systemProxySettings
     }
 
     private var normalizedSystemProxyDraft: SystemProxySettings {
@@ -148,8 +152,8 @@ struct SystemProxyView: View {
         systemProxyDraft.bypassList = merged
     }
 
-    private func applySystemProxyDraft() {
-        let settings = normalizedSystemProxyDraft
+    /// Applies the normalized value the body pass already computed.
+    private func applySystemProxyDraft(_ settings: SystemProxySettings) {
         systemProxyDraft = settings
         Task { await store.updateSystemProxySettings(settings) }
     }
