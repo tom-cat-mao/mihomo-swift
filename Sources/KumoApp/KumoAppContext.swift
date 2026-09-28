@@ -88,9 +88,11 @@ final class KumoAppContext {
               let store else {
             return false
         }
-        store.refreshProfiles()
-        if let target = store.profiles.first(where: { $0.id == identifier }) {
-            Task { await store.selectProfile(target) }
+        Task {
+            await store.refreshProfiles()
+            if let target = store.profiles.first(where: { $0.id == identifier }) {
+                await store.selectProfile(target)
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
         return true

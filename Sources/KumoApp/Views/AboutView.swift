@@ -34,7 +34,7 @@ struct AboutView: View {
         .padding(28)
         .frame(minWidth: 440, minHeight: 390, alignment: .topLeading)
         .task {
-            store.loadPreferences()
+            await store.loadPreferences()
         }
     }
 

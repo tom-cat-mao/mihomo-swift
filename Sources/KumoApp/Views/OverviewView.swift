@@ -78,12 +78,16 @@ private struct OverviewProxySidebar: View {
 
     @ViewBuilder
     private var content: some View {
-        if displayGroups.isEmpty {
+        // Computed once per body pass: `displayGroups` used to be read here, again
+        // through `filteredGroups`, and again inside `groupsScroll`.
+        let groups = displayGroups
+        let matchingGroups = filteredGroups(in: groups)
+        if groups.isEmpty {
             emptyState
-        } else if filteredGroups.isEmpty {
+        } else if matchingGroups.isEmpty {
             noResultsState
         } else {
-            groupsScroll
+            groupsScroll(matchingGroups)
         }
     }
 
@@ -124,10 +128,10 @@ private struct OverviewProxySidebar: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var groupsScroll: some View {
+    private func groupsScroll(_ groups: [ProxyGroup]) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 4) {
-                ForEach(filteredGroups) { group in
+                ForEach(groups) { group in
                     ProxyGroupSection(
                         group: group,
                         isSearchActive: isSearchActive,
@@ -159,8 +163,9 @@ private struct OverviewProxySidebar: View {
         isRunning ? store.proxyGroups : store.profilePreviewGroups
     }
 
-    private var filteredGroups: [ProxyGroup] {
-        let groups = displayGroups
+    /// Takes `groups` rather than reading `displayGroups` so a body pass resolves
+    /// the render source once and both the emptiness check and the list use it.
+    private func filteredGroups(in groups: [ProxyGroup]) -> [ProxyGroup] {
         guard isSearchActive else {
             return groups
         }
@@ -558,11 +563,18 @@ private struct ProfileCard: View {
         }
     }
 
-    private func updatedText(for profile: ProfileSummary) -> String {
-        guard let date = profile.updatedAt else { return "Never" }
+    /// Shared because `metadataDetails` is rebuilt on every render pass of the
+    /// expanded card, and allocating a `RelativeDateTimeFormatter` per pass is
+    /// pure waste. The style is fixed, so one instance is enough.
+    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return formatter
+    }()
+
+    private func updatedText(for profile: ProfileSummary) -> String {
+        guard let date = profile.updatedAt else { return "Never" }
+        return Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date())
     }
 
     private func sourceText(for profile: ProfileSummary) -> String {

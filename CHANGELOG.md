@@ -36,6 +36,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `logs/core.log` rotates to `logs/core-<yyyyMMdd-HHmmss>.log` before each
   launch, so concurrent cores no longer interleave writes into one file and
   `core.log` always describes the current session.
+- The GUI no longer performs controller work on the main thread. `KumoApp` goes
+  through `CoreRuntimeRunner`, a serial `public actor` in `KumoCoreKit` that
+  owns one `KumoController`, so the 1 Hz status refresh, profile polls, proxy
+  reloads and Inspect refreshes stop blocking the UI. The synchronous
+  `KumoController` facade is unchanged for the CLI and the privileged helper.
+- `recentLogs(limit:)` reads only the last 256 KB of `logs/core.log` instead of
+  loading the whole file, which grows for the lifetime of a session (112 MB on
+  the development machine) and was re-read on every refresh. Log entry ids are
+  now content-derived (`"<message-hash>-<occurrence>"`) instead of positional,
+  so appending no longer renumbers existing entries; consumers of
+  `kumo logs runtime --json` must treat `id` as an opaque per-process token,
+  and its values changed.
+- Helper IPC is bounded again: the connect is non-blocking with a 1 s poll
+  bound, `SO_SNDTIMEO` caps the request write at 10 s, and the polling
+  `GET /service/status` and `GET /status` paths also get a 10 s
+  `SO_RCVTIMEO`. Mutating requests keep their previous receive behavior. A
+  missing, restarting or wedged helper now surfaces as
+  `KumoError.serviceUnavailable` instead of parking the caller.
+- Profile YAML parses are memoized on the profile file's
+  `(fileURL, contentModificationDate, fileSize)` identity, so the three parses
+  a single `loadProxyGroups()` performs, plus the 60 s profile poll and the
+  stopped-core sidebar preview, reuse one result until the file changes.
+- UI hot paths stop repeating identical work: the status item and dock badge
+  observers skip writes when nothing changed, the byte-count and
+  relative-date formatters are cached instead of allocated per call, the
+  Connections, Logs and proxies list bodies compute their filtered collections
+  once per pass instead of two or three times, the DNS, TUN, Sniffer and
+  System Proxy views normalize their draft once per pass instead of once per
+  enablement read, and the country-code write-back mutates proxy elements in
+  place instead of copying the whole group list.
 
 ## [0.0.15] - 2026-05-23
 

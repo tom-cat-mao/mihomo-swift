@@ -10,6 +10,11 @@ final class KumoStatusItemController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private var iconTimer: Timer?
+    /// State symbol currently installed on the status item. The 1 Hz observer
+    /// used to rebuild the `NSImage` and its `SymbolConfiguration` on every
+    /// tick even though the core reaches one of four states and then sits
+    /// there; comparing first skips that work entirely.
+    private var appliedSymbolName: String?
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -62,11 +67,18 @@ final class KumoStatusItemController: NSObject, NSMenuDelegate {
             symbolName = "cloud"
         }
 
+        guard symbolName != appliedSymbolName else { return }
+
         let configuration = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Kumo")?
-            .withSymbolConfiguration(configuration)
-        image?.isTemplate = true
+        guard let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Kumo")?
+            .withSymbolConfiguration(configuration) else {
+            // Leave the previous icon in place and retry on the next tick; only
+            // a successful render may be cached.
+            return
+        }
+        image.isTemplate = true
         statusItem.button?.image = image
+        appliedSymbolName = symbolName
     }
 
     private func rebuildMenu(_ menu: NSMenu) {
@@ -220,7 +232,7 @@ final class KumoStatusItemController: NSObject, NSMenuDelegate {
     @objc private func toggleCore() {
         guard let store else { return }
         if store.status.state == .running {
-            store.stopCore()
+            Task { await store.stopCore() }
         } else {
             Task { await store.startCore() }
         }

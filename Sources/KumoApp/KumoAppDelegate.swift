@@ -28,6 +28,10 @@ private final class TerminationGate {
 final class KumoAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let preferencesStore = UserPreferencesStore()
     private var dockBadgeTimer: Timer?
+    /// Last connection count mirrored into the dock tile. Assigning
+    /// `badgeLabel` on every tick forces AppKit to redraw the tile for no new
+    /// information, so the observer only writes when the count changes.
+    private var appliedDockBadgeCount: Int?
     private var statusItemController: KumoStatusItemController?
     private var isPerformingTerminationCleanup = false
     private var didCompleteTerminationCleanup = false
@@ -147,10 +151,13 @@ final class KumoAppDelegate: NSObject, NSApplicationDelegate, UNUserNotification
     private func startDockBadgeObserver() {
         // Timer fires on the main run loop, so `updateDockBadge` already
         // runs on the main thread; the closure does not need to spawn a
-        // Task and does not need to capture self for cross-actor handoff.
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+        // Task and does not need a cross-actor handoff to read the count.
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
+                guard let self else { return }
                 let count = KumoAppContext.shared.store?.connections.count ?? 0
+                guard count != self.appliedDockBadgeCount else { return }
+                self.appliedDockBadgeCount = count
                 NSApp.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
             }
         }
@@ -164,7 +171,7 @@ final class KumoAppDelegate: NSObject, NSApplicationDelegate, UNUserNotification
     private func reindexSpotlightProfiles() async {
         guard let store = KumoAppContext.shared.store else { return }
         // Refresh first so we index the current set, not the empty default.
-        store.refreshProfiles()
+        await store.refreshProfiles()
         await SpotlightIndexer.shared.reindex(profiles: store.profiles)
     }
 

@@ -9,7 +9,10 @@ struct TunView: View {
     let onNavigate: (SidebarDestination) -> Void
 
     var body: some View {
-        KumoPage(title: "TUN") {
+        // Normalized once per pass: the validation text and both button
+        // enablements each used to rebuild the normalized draft.
+        let draft = normalizedTunDraft
+        return KumoPage(title: "TUN") {
             Form {
                 Section(String(localized: "Status")) {
                     LabeledContent("Helper", value: helperState)
@@ -101,7 +104,7 @@ struct TunView: View {
                 }
 
                 Section {
-                    if let validationMessage = tunDraftValidationMessage {
+                    if let validationMessage = tunDraftValidationMessage(for: draft) {
                         Text(validationMessage)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -111,12 +114,12 @@ struct TunView: View {
                         Button(String(localized: "Reset")) {
                             updateTunDraft(currentTunSettings)
                         }
-                        .disabled(!hasTunDraftChanges || store.isLoading)
+                        .disabled(!hasTunDraftChanges(in: draft) || store.isLoading)
 
                         Button(String(localized: "Apply")) {
-                            applyTunDraft()
+                            applyTunDraft(draft)
                         }
-                        .disabled(!canApplyTunDraft)
+                        .disabled(!canApplyTunDraft(for: draft))
                     }
                 } footer: {
                     Text(String(localized: "TUN requires Kumo Helper or a privileged Kumo process so Mihomo can create the utun interface. This path does not use macOS VPN configuration prompts."))
@@ -135,12 +138,12 @@ struct TunView: View {
             .formStyle(.grouped)
         }
         .task {
-            store.refreshServiceModeStatus()
-            store.refreshTunStatus()
+            await store.refreshServiceModeStatus()
+            await store.refreshTunStatus()
             updateTunDraft(currentTunSettings)
         }
         .onChange(of: currentTunSettings) { _, newValue in
-            if !hasTunDraftChanges {
+            if !hasTunDraftChanges(in: normalizedTunDraft) {
                 updateTunDraft(newValue)
             } else {
                 tunDraft.isEnabled = newValue.isEnabled
@@ -174,16 +177,18 @@ struct TunView: View {
         normalizedTunSettings(tunDraft)
     }
 
-    private var hasTunDraftChanges: Bool {
-        comparableTunSettings(normalizedTunDraft) != comparableTunSettings(currentTunSettings)
+    /// Takes the normalized draft for the current body pass. `comparableTunSettings`
+    /// stays in place: it forces `isEnabled` off so a TUN on/off toggle does not
+    /// register as a routing-settings change.
+    private func hasTunDraftChanges(in draft: TunSettings) -> Bool {
+        comparableTunSettings(draft) != comparableTunSettings(currentTunSettings)
     }
 
-    private var canApplyTunDraft: Bool {
-        hasTunDraftChanges && tunDraftValidationMessage == nil && !store.isLoading
+    private func canApplyTunDraft(for draft: TunSettings) -> Bool {
+        hasTunDraftChanges(in: draft) && tunDraftValidationMessage(for: draft) == nil && !store.isLoading
     }
 
-    private var tunDraftValidationMessage: String? {
-        let settings = normalizedTunDraft
+    private func tunDraftValidationMessage(for settings: TunSettings) -> String? {
         if settings.dnsHijack.isEmpty {
             return "DNS Hijack needs at least one value."
         }
@@ -201,8 +206,8 @@ struct TunView: View {
         }
     }
 
-    private func applyTunDraft() {
-        let settings = normalizedTunDraft
+    /// Applies the normalized value the body pass already computed.
+    private func applyTunDraft(_ settings: TunSettings) {
         updateTunDraft(settings)
         Task { await store.applyTunSettings(settings) }
     }

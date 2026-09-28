@@ -131,6 +131,172 @@ final class KumoServiceClientTests: XCTestCase {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
+
+    // MARK: - IPC timeouts
+
+    /// `ping()` must stay non-throwing and resolve to `false` without waiting on
+    /// the helper when the socket is missing, which is the state during a fresh
+    /// install and after an uninstall.
+    func testPingFailsWithoutHangingWhenServiceSocketIsAbsent() {
+        let client = serviceClient(socketPath: shortSocketPath("missing"))
+
+        let started = Date()
+        XCTAssertFalse(client.ping())
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
+    /// A leftover socket file whose listener is gone is refused immediately by
+    /// the kernel, so the bound never has to engage here either.
+    func testPingFailsWithoutHangingWhenSocketFileHasNoListener() throws {
+        let socketPath = shortSocketPath("orphan")
+        let descriptor = try boundSocket(at: socketPath)
+        defer {
+            close(descriptor)
+            try? FileManager.default.removeItem(atPath: socketPath)
+        }
+
+        let started = Date()
+        XCTAssertFalse(serviceClient(socketPath: socketPath).ping())
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
+    /// The wedged-helper case: the daemon is listening but no longer accepting,
+    /// so the kernel's backlog queue fills up. On Darwin an AF_UNIX `connect`
+    /// against a saturated listener is refused outright rather than parked, and
+    /// it must surface as a prompt `false` instead of a hang.
+    ///
+    /// Note for future readers: because Darwin refuses instead of returning
+    /// `EINPROGRESS`, the client's `poll(1 s)` connect bound is not reachable on
+    /// this platform — AF_UNIX `connect` either completes or fails immediately.
+    /// The bound mirrors `CoreSupervisor.connectSucceeds` and stays as
+    /// defence-in-depth; the receive timeout is what actually bounds a helper
+    /// that accepts a connection and then stalls.
+    func testPingFailsPromptlyWhenListenerBacklogIsSaturated() throws {
+        let socketPath = shortSocketPath("saturated")
+        let listener = try SaturatedUnixListener(socketPath: socketPath)
+        defer { listener.stop() }
+
+        guard listener.saturateBacklog() else {
+            throw XCTSkip("Could not saturate the Unix socket backlog on this machine.")
+        }
+
+        let started = Date()
+        XCTAssertFalse(serviceClient(socketPath: socketPath).ping())
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
+    /// `sun_path` is only 104 bytes, so tests that must reach the kernel need a
+    /// deliberately short path rather than one under the deep per-user TMPDIR.
+    private func shortSocketPath(_ label: String) -> String {
+        "/tmp/kumo-test-\(label)-\(UInt32.random(in: 0...UInt32.max)).sock"
+    }
+
+    private func serviceClient(socketPath: String) -> KumoServiceClient {
+        KumoServiceClient(
+            endpoint: KumoServiceEndpoint(socketPath: socketPath),
+            credentials: KumoServiceCredentials(keyID: "test-key", sharedSecret: "secret")
+        )
+    }
+}
+
+/// A listening Unix socket whose backlog is never drained, used to reproduce the
+/// connect failure a wedged helper produces.
+private final class SaturatedUnixListener {
+    private let socketPath: String
+    private let listenerDescriptor: Int32
+    private var queuedDescriptors: [Int32] = []
+
+    init(socketPath: String) throws {
+        self.socketPath = socketPath
+        try? FileManager.default.removeItem(atPath: socketPath)
+        guard let address = unixSocketAddress(for: socketPath) else {
+            throw KumoError.serviceUnavailable("Socket path is too long.")
+        }
+
+        listenerDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard listenerDescriptor >= 0 else {
+            throw KumoError.serviceUnavailable("Unable to create listener socket.")
+        }
+
+        let bindResult = withUnsafePointer(to: address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.bind(listenerDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bindResult == 0, listen(listenerDescriptor, 1) == 0 else {
+            throw KumoError.serviceUnavailable("Unable to listen on \(socketPath).")
+        }
+    }
+
+    /// Queues pending connections without ever calling `accept`. Returns `true`
+    /// once a non-blocking connect observed `EINPROGRESS` (parked) or was
+    /// refused, either of which means the backlog is full and further connects
+    /// can no longer be completed.
+    func saturateBacklog() -> Bool {
+        for _ in 0..<16 {
+            guard let address = unixSocketAddress(for: socketPath) else { return false }
+            let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard descriptor >= 0 else { return false }
+            let currentFlags = fcntl(descriptor, F_GETFL, 0)
+            _ = fcntl(descriptor, F_SETFL, currentFlags | O_NONBLOCK)
+
+            let result = withUnsafePointer(to: address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                    Darwin.connect(descriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            let connectError = errno
+            queuedDescriptors.append(descriptor)
+            if result != 0 {
+                return connectError == EINPROGRESS || connectError == ECONNREFUSED
+            }
+        }
+        return false
+    }
+
+    func stop() {
+        for descriptor in queuedDescriptors {
+            close(descriptor)
+        }
+        queuedDescriptors.removeAll()
+        close(listenerDescriptor)
+        try? FileManager.default.removeItem(atPath: socketPath)
+    }
+}
+
+private func unixSocketAddress(for path: String) -> sockaddr_un? {
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
+    guard path.utf8.count < maxPathLength else { return nil }
+    _ = withUnsafeMutablePointer(to: &address.sun_path) { pointer in
+        pointer.withMemoryRebound(to: CChar.self, capacity: maxPathLength) { buffer in
+            path.withCString { source in
+                strncpy(buffer, source, maxPathLength - 1)
+            }
+        }
+    }
+    return address
+}
+
+private func boundSocket(at path: String) throws -> Int32 {
+    guard let address = unixSocketAddress(for: path) else {
+        throw KumoError.serviceUnavailable("Socket path is too long.")
+    }
+    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else {
+        throw KumoError.serviceUnavailable("Unable to create socket.")
+    }
+    let bindResult = withUnsafePointer(to: address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            Darwin.bind(descriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard bindResult == 0 else {
+        close(descriptor)
+        throw KumoError.serviceUnavailable("Unable to bind \(path).")
+    }
+    return descriptor
 }
 
 private final class FakeKumoService: @unchecked Sendable {

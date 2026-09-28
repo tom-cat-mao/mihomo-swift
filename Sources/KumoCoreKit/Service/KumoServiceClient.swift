@@ -272,12 +272,31 @@ public struct KumoServiceClient: Sendable {
     public func send(_ request: KumoServiceSignedRequest) throws -> KumoServiceTransportResponse {
         let transportRequest = KumoServiceTransportRequest(request: request)
         let payload = try JSONEncoder().encode(transportRequest)
-        let responseData = try send(payload: payload, toSocketAt: endpoint.socketPath)
+        let responseData = try send(
+            payload: payload,
+            toSocketAt: endpoint.socketPath,
+            receiveTimeout: Self.receiveTimeoutSeconds(for: request)
+        )
         let response = try JSONDecoder().decode(KumoServiceTransportResponse.self, from: responseData)
         guard (200..<300).contains(response.status) else {
             throw KumoError.serviceUnavailable(response.error ?? "Kumo service returned status \(response.status).")
         }
         return response
+    }
+
+    /// The polling GET status paths are read on a 1 Hz cadence by
+    /// `KumoServiceManager.status()`, so a wedged helper must not park the
+    /// caller forever. Mutating requests (install, core start/stop, TUN apply)
+    /// legitimately take longer than the receive bound and keep their previous
+    /// unbounded receive behavior.
+    private static func receiveTimeoutSeconds(for request: KumoServiceSignedRequest) -> Int32? {
+        guard request.method.uppercased() == "GET" else { return nil }
+        switch request.path {
+        case "/service/status", "/status":
+            return KumoServiceTimeout.receiveSeconds
+        default:
+            return nil
+        }
     }
 
     public func sendDecodable<T: Decodable & Sendable>(
@@ -292,7 +311,7 @@ public struct KumoServiceClient: Sendable {
         (try? send(serviceStatusRequest())) != nil
     }
 
-    private func send(payload: Data, toSocketAt path: String) throws -> Data {
+    private func send(payload: Data, toSocketAt path: String, receiveTimeout: Int32?) throws -> Data {
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
             throw KumoError.serviceUnavailable("Unable to create Kumo service socket.")
@@ -314,18 +333,85 @@ public struct KumoServiceClient: Sendable {
             }
         }
 
-        let connectResult = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                Darwin.connect(descriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard connectResult == 0 else {
-            throw KumoError.serviceUnavailable("Kumo service is not reachable at \(path).")
-        }
+        try connect(descriptor, to: address, path: path)
+        try configureTimeouts(descriptor, receiveTimeout: receiveTimeout)
 
         try writeAll(payload, to: descriptor)
         shutdown(descriptor, SHUT_WR)
         return try readAll(from: descriptor)
+    }
+
+    /// Non-blocking connect bounded by `KumoServiceTimeout.connect`, mirroring
+    /// `CoreSupervisor.connectSucceeds(_:timeout:)`. On Darwin an AF_UNIX
+    /// `connect` normally fails immediately (`ENOENT` for a missing socket,
+    /// `ECONNREFUSED` when the listener is gone or its backlog is full), so the
+    /// poll bound is defensive rather than routinely taken — it covers the
+    /// `EINPROGRESS` case a full backlog produces on other kernels. The
+    /// descriptor is left in blocking mode so the socket timeouts below apply to
+    /// the subsequent write and read.
+    private func connect(_ descriptor: Int32, to address: sockaddr_un, path: String) throws {
+        let currentFlags = fcntl(descriptor, F_GETFL, 0)
+        guard currentFlags >= 0, fcntl(descriptor, F_SETFL, currentFlags | O_NONBLOCK) >= 0 else {
+            throw KumoError.serviceUnavailable("Unable to configure Kumo service socket.")
+        }
+
+        let connectResult = withUnsafePointer(to: address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.connect(descriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+
+        if connectResult != 0 {
+            guard errno == EINPROGRESS else {
+                throw KumoError.serviceUnavailable("Kumo service is not reachable at \(path).")
+            }
+
+            var descriptorState = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+            let milliseconds = Int32((KumoServiceTimeout.connect * 1000).rounded())
+            guard Darwin.poll(&descriptorState, 1, milliseconds) > 0 else {
+                throw KumoError.serviceUnavailable("Timed out connecting to Kumo service at \(path).")
+            }
+
+            var socketError: Int32 = 0
+            var length = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0,
+                  socketError == 0 else {
+                throw KumoError.serviceUnavailable("Kumo service is not reachable at \(path).")
+            }
+        }
+
+        guard fcntl(descriptor, F_SETFL, currentFlags) >= 0 else {
+            throw KumoError.serviceUnavailable("Unable to configure Kumo service socket.")
+        }
+    }
+
+    /// Bounds the request write on every path, and the response read only on the
+    /// polling status paths (`receiveTimeout != nil`). A socket timeout surfaces
+    /// from `write`/`read` as `EAGAIN`, which `writeAll`/`readAll` map to
+    /// `KumoError.serviceUnavailable`.
+    private func configureTimeouts(_ descriptor: Int32, receiveTimeout: Int32?) throws {
+        var sendTimeout = timeval(tv_sec: Int(KumoServiceTimeout.sendSeconds), tv_usec: 0)
+        guard setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_SNDTIMEO,
+            &sendTimeout,
+            socklen_t(MemoryLayout<timeval>.size)
+        ) == 0 else {
+            throw KumoError.serviceUnavailable("Unable to configure Kumo service socket timeouts.")
+        }
+
+        guard let receiveTimeout else { return }
+        var receiveTimeoutValue = timeval(tv_sec: Int(receiveTimeout), tv_usec: 0)
+        guard setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            &receiveTimeoutValue,
+            socklen_t(MemoryLayout<timeval>.size)
+        ) == 0 else {
+            throw KumoError.serviceUnavailable("Unable to configure Kumo service socket timeouts.")
+        }
     }
 
     private func writeAll(_ data: Data, to descriptor: Int32) throws {
@@ -339,6 +425,9 @@ public struct KumoServiceClient: Sendable {
                     data.count - bytesWritten
                 )
                 guard result > 0 else {
+                    if errno == EAGAIN || errno == EWOULDBLOCK {
+                        throw KumoError.serviceUnavailable("Timed out writing request to Kumo service.")
+                    }
                     throw KumoError.serviceUnavailable("Failed to write request to Kumo service.")
                 }
                 bytesWritten += result
@@ -355,11 +444,26 @@ public struct KumoServiceClient: Sendable {
                 return data
             }
             guard count > 0 else {
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    throw KumoError.serviceUnavailable("Timed out reading response from Kumo service.")
+                }
                 throw KumoError.serviceUnavailable("Failed to read response from Kumo service.")
             }
             data.append(contentsOf: buffer.prefix(count))
         }
     }
+}
+
+/// Helper IPC timeouts. The helper is a launchd daemon that can be missing,
+/// restarting, or wedged mid-install; without these bounds every call that
+/// touches it blocks forever.
+private enum KumoServiceTimeout {
+    /// Seconds to allow the non-blocking connect handshake.
+    static let connect: TimeInterval = 1
+    /// Seconds to allow the request write, on every path.
+    static let sendSeconds: Int32 = 10
+    /// Seconds to allow the response read, on the polling status paths only.
+    static let receiveSeconds: Int32 = 10
 }
 
 private extension SHA256Digest {

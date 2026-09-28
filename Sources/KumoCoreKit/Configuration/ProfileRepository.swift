@@ -71,7 +71,6 @@ public struct ProfileRepository: Sendable {
                 updatedAt: Date()
             )
         }
-
         let yaml = try String(contentsOf: profileURL, encoding: .utf8)
         let metadata = try loadMetadata()[id]
         let source: ProfileSource
@@ -86,6 +85,31 @@ public struct ProfileRepository: Sendable {
             rawYAML: yaml,
             updatedAt: metadata?.updatedAt ?? modificationDate(for: profileURL)
         )
+    }
+
+    /// Cheap on-disk identity of the file `loadProfile(id:)` would read, so
+    /// callers can memoize a parse without re-reading the body.
+    ///
+    /// Mirrors that method's fallback chain: the profile's own file, then the
+    /// default profile's file, then the inline default. Only metadata is
+    /// touched, never the YAML body.
+    public func profileFileIdentity(id: String) -> ProfileFileIdentity {
+        var url = profileURL(for: id)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            guard id != "default" else { return .inlineDefault }
+            url = profileURL(for: "default")
+            guard FileManager.default.fileExists(atPath: url.path) else { return .inlineDefault }
+        }
+
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modificationDate = attributes[.modificationDate] as? Date,
+              let fileSize = (attributes[.size] as? NSNumber)?.intValue else {
+            // Without a stat the body cannot be proven unchanged, so report an
+            // identity that cannot match a cached entry and force a re-read.
+            return ProfileFileIdentity(fileURL: url, modificationDate: nil, fileSize: nil)
+        }
+
+        return ProfileFileIdentity(fileURL: url, modificationDate: modificationDate, fileSize: fileSize)
     }
 
     public func legacyLoadDefaultProfile() throws -> Profile {

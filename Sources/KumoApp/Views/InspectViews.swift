@@ -12,8 +12,11 @@ struct ConnectionsView: View {
     @State private var isConfirmingCloseAll = false
 
     var body: some View {
-        KumoPage(title: "Connections") {
-            if filteredConnections.isEmpty {
+        // Filtered and sorted once per body pass: the emptiness check used to
+        // filter, and then `sortedConnections` filtered and sorted again.
+        let connections = sortedConnections
+        return KumoPage(title: "Connections") {
+            if connections.isEmpty {
                 KumoEmptyState(
                     title: emptyStateTitle,
                     systemImage: "network",
@@ -24,7 +27,7 @@ struct ConnectionsView: View {
                     }
                 }
             } else {
-                Table(sortedConnections, selection: $selectedConnectionIDs, sortOrder: $sortOrder) {
+                Table(connections, selection: $selectedConnectionIDs, sortOrder: $sortOrder) {
                     TableColumn("Host", value: \.host)
                     TableColumn("Process") { connection in
                         ConnectionProcessCell(connection: connection)
@@ -286,11 +289,14 @@ struct LogsView: View {
     @State private var followsLiveLogs = false
 
     var body: some View {
-        KumoPage(title: "Logs") {
+        // Filtered once per body pass: the empty check, the `List` and the
+        // "Copy All Visible" action each re-filtered the whole log buffer.
+        let logs = filteredLogs
+        return KumoPage(title: "Logs") {
             VStack(alignment: .leading, spacing: 10) {
                 controlsRow
 
-                if filteredLogs.isEmpty {
+                if logs.isEmpty {
                     KumoEmptyState(
                         title: searchText.isEmpty ? "No Logs" : "No Matches",
                         systemImage: "doc.text.magnifyingglass",
@@ -301,14 +307,14 @@ struct LogsView: View {
                         }
                     }
                 } else {
-                    List(filteredLogs) { log in
+                    List(logs) { log in
                         LogRow(log: log)
                             .contextMenu {
                                 Button(String(localized: "Copy Message")) {
                                     writeToPasteboard(log.message)
                                 }
                                 Button(String(localized: "Copy All Visible")) {
-                                    writeToPasteboard(filteredLogs.map(\.message).joined(separator: "\n"))
+                                    writeToPasteboard(logs.map(\.message).joined(separator: "\n"))
                                 }
                             }
                     }

@@ -274,7 +274,7 @@ private struct SubStoreEmptyState: View {
         switch mode {
         case .noResources:
             Button(String(localized: "Prepare Resources")) {
-                appStore.prepareSubStoreResources()
+                Task { await appStore.prepareSubStoreResources() }
             }
             .buttonStyle(.borderedProminent)
             .disabled(appStore.isLoading)
@@ -1243,7 +1243,7 @@ private struct SubStoreServerSettingsPopover: View {
         status.syncCron = draft.syncCron.trimmingCharacters(in: .whitespacesAndNewlines)
         status.downloadCron = draft.downloadCron.trimmingCharacters(in: .whitespacesAndNewlines)
         status.uploadCron = draft.uploadCron.trimmingCharacters(in: .whitespacesAndNewlines)
-        appStore.updateSubStoreStatus(status)
+        Task { await appStore.updateSubStoreStatus(status) }
         if status.isEnabled {
             Task { await appStore.restartSubStoreService() }
         }

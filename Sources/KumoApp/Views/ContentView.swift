@@ -82,7 +82,7 @@ struct ContentView: View {
 
                     Button(String(localized: "Scan Again")) {
                         store.clearError()
-                        store.refreshCoreCandidates()
+                        Task { await store.refreshCoreCandidates() }
                     }
                 }
 
@@ -242,7 +242,7 @@ struct ContentView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
                 if store.status.state == .running {
-                    store.stopCore()
+                    Task { await store.stopCore() }
                 } else {
                     Task { await store.startCore() }
                 }

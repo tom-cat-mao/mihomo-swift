@@ -60,7 +60,14 @@ final class KumoAppStore {
     var updateStatusMessage: String?
     var lastUpdateCheckResult: AppUpdateCheckResult?
 
+    /// Synchronous escape hatch for bootstrap callers that cannot await:
+    /// `KumoApp.init` reads the persisted preferences before the first frame,
+    /// and `SubStoreStore` receives a controller to build its client. Every
+    /// other controller call in this store goes through `runner` so the file
+    /// IO, helper IPC and Yams parsing stay off the main thread.
     let controller = KumoController()
+    /// Serial executor for all controller work this store performs.
+    private let runner: CoreRuntimeRunner
     private let appNotificationCoordinator = AppNotificationCoordinator.shared
     private let proxyGeoLookup: ProxyGeoLookup
     private static let updatePollingIntervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
@@ -86,30 +93,32 @@ final class KumoAppStore {
     }
 
     init() {
-        self.proxyGeoLookup = ProxyGeoLookup(cacheURL: controller.paths.proxyGeoCacheFile)
+        let runner = CoreRuntimeRunner(controller: controller)
+        self.runner = runner
+        self.proxyGeoLookup = ProxyGeoLookup(cacheURL: runner.paths.proxyGeoCacheFile)
     }
 
     func refreshAll() async {
-        refreshStatus()
+        await refreshStatus()
         syncTrafficStreamWithStatus()
-        refreshProfiles()
+        await refreshProfiles()
         await refreshDueProfiles()
-        refreshCoreCandidates()
-        refreshProfiles()
-        loadPreferences()
+        await refreshCoreCandidates()
+        await refreshProfiles()
+        await loadPreferences()
         await loadProxyGroups()
         await loadCoreConfiguration()
         await loadInspectData()
         await loadResources()
-        refreshOverrides()
+        await refreshOverrides()
         await refreshSubStoreRuntimeStatus()
-        refreshServiceModeStatus()
-        refreshTunStatus()
+        await refreshServiceModeStatus()
+        await refreshTunStatus()
     }
 
-    func refreshStatus() {
+    func refreshStatus() async {
         do {
-            status = try controller.status()
+            status = try await runner.status()
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
@@ -120,9 +129,9 @@ final class KumoAppStore {
         errorMessage = nil
     }
 
-    func refreshCoreCandidates() {
+    func refreshCoreCandidates() async {
         do {
-            coreCandidates = try controller.coreCandidates()
+            coreCandidates = try await runner.coreCandidates()
             if !coreCandidates.isEmpty {
                 errorMessage = nil
             }
@@ -131,22 +140,22 @@ final class KumoAppStore {
         }
     }
 
-    func setCorePath(_ path: String) {
+    func setCorePath(_ path: String) async {
         do {
-            try controller.setCorePath(path)
-            refreshStatus()
-            refreshCoreCandidates()
+            try await runner.setCorePath(path)
+            await refreshStatus()
+            await refreshCoreCandidates()
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
         }
     }
 
-    func clearCorePath() {
+    func clearCorePath() async {
         do {
-            try controller.clearCorePath()
-            refreshStatus()
-            refreshCoreCandidates()
+            try await runner.clearCorePath()
+            await refreshStatus()
+            await refreshCoreCandidates()
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
@@ -161,31 +170,31 @@ final class KumoAppStore {
 
         await performLoadingTask { [self] in
             let wasRunning = self.status.state == .running
-            let result = try await self.controller.installManagedCore()
-            self.refreshCoreCandidates()
+            let result = try await self.runner.installManagedCore()
+            await self.refreshCoreCandidates()
 
             if wasRunning {
-                self.status = try self.controller.restart()
-                try await self.controller.waitForControllerReady()
+                self.status = try await self.runner.restart()
+                try await self.runner.waitForControllerReady()
                 await self.loadProxyGroups()
                 await self.loadCoreConfiguration()
             } else {
-                self.refreshStatus()
+                await self.refreshStatus()
             }
 
             self.status.message = "Installed Mihomo core \(result.version)."
         }
     }
 
-    func refreshProfiles() {
+    func refreshProfiles() async {
         do {
-            profiles = try controller.profiles()
-            currentProfile = try controller.currentProfile()
+            profiles = try await runner.profiles()
+            currentProfile = try await runner.currentProfile()
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
         }
-        refreshProfilePreview()
+        await refreshProfilePreview()
     }
 
     func startCore() async {
@@ -194,14 +203,14 @@ final class KumoAppStore {
 
         do {
             let installResult = try await installManagedCoreIfNeeded()
-            status = try controller.start()
-            try await controller.waitForControllerReady()
+            status = try await runner.start()
+            try await runner.waitForControllerReady()
             startTrafficStream()
-            refreshProfiles()
+            await refreshProfiles()
             await loadProxyGroups()
             await loadCoreConfiguration()
             await loadResources()
-            refreshOverrides()
+            await refreshOverrides()
             if let installResult {
                 status.message = "Installed Mihomo core \(installResult.version) and started."
             }
@@ -217,11 +226,11 @@ final class KumoAppStore {
         }
     }
 
-    func stopCore() {
+    func stopCore() async {
         do {
             stopTrafficStream()
             stopLogStream()
-            status = try controller.stop()
+            status = try await runner.stop()
             proxyGroups = []
             rules = []
             connections = []
@@ -230,8 +239,8 @@ final class KumoAppStore {
             coreConfiguration = CoreConfigurationSnapshot(mode: status.mode, mixedPort: status.proxyPorts.mixedPort)
             trafficSnapshot = TrafficSnapshot()
             trafficHistory = []
-            refreshServiceModeStatus()
-            refreshTunStatus()
+            await refreshServiceModeStatus()
+            await refreshTunStatus()
             errorMessage = nil
             appNotificationCoordinator.clearCoreStateNotifications()
         } catch {
@@ -249,7 +258,7 @@ final class KumoAppStore {
         proxyGeoTask?.cancel()
         proxyGeoTask = nil
 
-        let result = await controller.shutdownActiveRuntime()
+        let result = await runner.shutdownActiveRuntime()
         status = result.status
         status.systemProxyEnabled = false
         proxyGroups = []
@@ -260,8 +269,8 @@ final class KumoAppStore {
         coreConfiguration = CoreConfigurationSnapshot(mode: status.mode, mixedPort: status.proxyPorts.mixedPort)
         trafficSnapshot = TrafficSnapshot()
         trafficHistory = []
-        refreshServiceModeStatus()
-        refreshTunStatus()
+        await refreshServiceModeStatus()
+        await refreshTunStatus()
         errorMessage = result.diagnostics.first
     }
 
@@ -279,12 +288,12 @@ final class KumoAppStore {
         defer { isSwitchingMode = false }
 
         do {
-            try await controller.setMode(mode)
+            try await runner.setMode(mode)
             didApplyMode = true
             errorMessage = nil
 
             if status.state == .running {
-                try await controller.closeConnections(matchingProxy: nil)
+                try await runner.closeConnections(matchingProxy: nil)
                 connections = []
                 await loadProxyGroups()
             }
@@ -306,15 +315,15 @@ final class KumoAppStore {
         }
 
         do {
-            proxyGroups = try await controller.proxyGroups()
+            proxyGroups = try await runner.proxyGroups()
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
         }
 
-        applyCachedCountries()
-        scheduleCountryDetection()
-        refreshProfilePreview()
+        await applyCachedCountries()
+        await scheduleCountryDetection()
+        await refreshProfilePreview()
     }
 
     /// Re-parses the current profile YAML into a list of read-only proxy
@@ -323,16 +332,16 @@ final class KumoAppStore {
     /// are intentionally swallowed — there's no actionable error to surface
     /// for a missing or malformed `proxy-groups:` section, and the empty
     /// fallback already provides a clear UI state.
-    private func refreshProfilePreview() {
+    ///
+    /// The parse itself is memoized on the profile file's identity, so the three
+    /// passes one `loadProxyGroups()` makes, and the 60 s profile poll, reuse it
+    /// until the file changes on disk.
+    private func refreshProfilePreview() async {
         guard let profileID = currentProfile?.id else {
             profilePreviewGroups = []
             return
         }
-        guard let yaml = try? controller.profileContent(id: profileID) else {
-            profilePreviewGroups = []
-            return
-        }
-        guard let groups = try? ProfileNodeParser.parseProxyGroups(yaml: yaml) else {
+        guard let groups = try? await runner.profileProxyGroups(id: profileID) else {
             profilePreviewGroups = []
             return
         }
@@ -343,8 +352,8 @@ final class KumoAppStore {
     /// `proxyGroups` and writes them onto `detectedCountry` synchronously,
     /// so the UI shows known flags immediately without waiting on the
     /// async lookup task.
-    private func applyCachedCountries() {
-        guard let serverMap = currentProfileServerMap(), !serverMap.isEmpty else {
+    private func applyCachedCountries() async {
+        guard let serverMap = await currentProfileServerMap(), !serverMap.isEmpty else {
             return
         }
         Task { @MainActor [proxyGeoLookup] in
@@ -364,9 +373,9 @@ final class KumoAppStore {
     /// that share a server and writing the result back to `proxyGroups`.
     /// Re-entrancy is guarded by `proxyGeoTask` — calling this again while
     /// a previous lookup is still in flight cancels the previous task.
-    private func scheduleCountryDetection() {
+    private func scheduleCountryDetection() async {
         proxyGeoTask?.cancel()
-        guard let serverMap = currentProfileServerMap(), !serverMap.isEmpty else {
+        guard let serverMap = await currentProfileServerMap(), !serverMap.isEmpty else {
             return
         }
         let hosts = Array(Set(serverMap.values))
@@ -380,28 +389,33 @@ final class KumoAppStore {
 
     private func writeBackCountries(serverMap: [String: String], codes: [String: String]) {
         guard !codes.isEmpty else { return }
-        var updated = proxyGroups
-        var didChange = false
-        for groupIndex in updated.indices {
-            for proxyIndex in updated[groupIndex].proxies.indices {
-                let proxyName = updated[groupIndex].proxies[proxyIndex].name
-                guard let server = serverMap[proxyName] else { continue }
+
+        // Resolve the pending writes before touching anything: when no node
+        // changed, `proxyGroups` is left completely alone and no observer is
+        // notified.
+        var pending: [(groupIndex: Int, proxyIndex: Int, code: String)] = []
+        for groupIndex in proxyGroups.indices {
+            for proxyIndex in proxyGroups[groupIndex].proxies.indices {
+                let proxy = proxyGroups[groupIndex].proxies[proxyIndex]
+                guard let server = serverMap[proxy.name] else { continue }
                 guard let code = codes[server.lowercased()] ?? codes[server] else { continue }
-                if updated[groupIndex].proxies[proxyIndex].detectedCountry != code {
-                    updated[groupIndex].proxies[proxyIndex].detectedCountry = code
-                    didChange = true
-                }
+                guard proxy.detectedCountry != code else { continue }
+                pending.append((groupIndex, proxyIndex, code))
             }
         }
-        if didChange {
-            proxyGroups = updated
+        guard !pending.isEmpty else { return }
+
+        // Mutate each proxy element in place through its index. The previous
+        // `var updated = proxyGroups` + whole-array reassign forced a copy of
+        // every group and every proxy just to stamp a country code onto a few.
+        for change in pending {
+            proxyGroups[change.groupIndex].proxies[change.proxyIndex].detectedCountry = change.code
         }
     }
 
-    private func currentProfileServerMap() -> [String: String]? {
+    private func currentProfileServerMap() async -> [String: String]? {
         guard let profileID = currentProfile?.id else { return nil }
-        guard let yaml = try? controller.profileContent(id: profileID) else { return nil }
-        guard let nodes = try? ProfileNodeParser.parseNodes(yaml: yaml) else { return nil }
+        guard let nodes = try? await runner.profileNodes(id: profileID) else { return nil }
         return nodes.mapValues(\.server)
     }
 
@@ -425,7 +439,7 @@ final class KumoAppStore {
         }
 
         do {
-            coreConfiguration = try await controller.coreConfiguration()
+            coreConfiguration = try await runner.coreConfiguration()
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
@@ -434,7 +448,7 @@ final class KumoAppStore {
 
     func loadInspectData() async {
         do {
-            logs = try controller.recentLogs()
+            logs = try await runner.recentLogs()
         } catch {
             logs = []
         }
@@ -446,8 +460,8 @@ final class KumoAppStore {
         }
 
         do {
-            async let nextRules = controller.rules()
-            async let nextConnections = controller.connections()
+            async let nextRules = runner.rules()
+            async let nextConnections = runner.connections()
             rules = try await nextRules
             connections = try await nextConnections
             errorMessage = nil
@@ -464,8 +478,8 @@ final class KumoAppStore {
         }
 
         do {
-            async let nextProxyProviders = controller.proxyProviders()
-            async let nextRuleProviders = controller.ruleProviders()
+            async let nextProxyProviders = runner.proxyProviders()
+            async let nextRuleProviders = runner.ruleProviders()
             proxyProviders = try await nextProxyProviders
             ruleProviders = try await nextRuleProviders
             errorMessage = nil
@@ -476,10 +490,10 @@ final class KumoAppStore {
 
     func updateRuntimeSettings(_ settings: CoreRuntimeSettings) async {
         await performLoadingTask { [self] in
-            try await controller.updateRuntimeSettings(settings)
+            try await runner.updateRuntimeSettings(settings)
             status.runtimeSettings = settings
             status.proxyPorts.mixedPort = settings.mixedPort
-            if let service = try? controller.status().serviceModeStatus {
+            if let service = try? await runner.status().serviceModeStatus {
                 serviceModeStatus = service
             }
             coreConfiguration.mixedPort = settings.mixedPort
@@ -491,9 +505,9 @@ final class KumoAppStore {
         }
     }
 
-    func setControllerSecret(_ secret: String) {
+    func setControllerSecret(_ secret: String) async {
         do {
-            try controller.setControllerSecret(secret)
+            try await runner.setControllerSecret(secret)
             status.endpoint.secret = secret
             if status.state == .running {
                 startTrafficStream()
@@ -506,7 +520,7 @@ final class KumoAppStore {
 
     func setRuleEnabled(_ rule: RuleEntry, isEnabled: Bool) async {
         await performLoadingTask { [self] in
-            try await controller.setRuleEnabled(index: rule.index, isEnabled: isEnabled)
+            try await runner.setRuleEnabled(index: rule.index, isEnabled: isEnabled)
             if let index = rules.firstIndex(where: { $0.id == rule.id }) {
                 rules[index].isEnabled = isEnabled
             }
@@ -515,14 +529,14 @@ final class KumoAppStore {
 
     func updateProxyProvider(_ provider: ProxyProviderEntry) async {
         await performLoadingTask { [self] in
-            try await controller.updateProxyProvider(name: provider.name)
+            try await runner.updateProxyProvider(name: provider.name)
             await loadResources()
         }
     }
 
     func updateRuleProvider(_ provider: RuleProviderEntry) async {
         await performLoadingTask { [self] in
-            try await controller.updateRuleProvider(name: provider.name)
+            try await runner.updateRuleProvider(name: provider.name)
             await loadResources()
         }
     }
@@ -530,10 +544,10 @@ final class KumoAppStore {
     func updateAllProviders() async {
         await performLoadingTask { [self] in
             for provider in proxyProviders {
-                try await controller.updateProxyProvider(name: provider.name)
+                try await runner.updateProxyProvider(name: provider.name)
             }
             for provider in ruleProviders {
-                try await controller.updateRuleProvider(name: provider.name)
+                try await runner.updateRuleProvider(name: provider.name)
             }
             await loadResources()
         }
@@ -541,13 +555,13 @@ final class KumoAppStore {
 
     func upgradeGeoData() async {
         await performLoadingTask { [self] in
-            try await controller.upgradeGeoData()
+            try await runner.upgradeGeoData()
         }
     }
 
     func selectProxy(group: ProxyGroup, proxy: ProxyNode) async {
         await performLoadingTask { [self] in
-            try await self.controller.selectProxy(group: group.name, name: proxy.name)
+            try await self.runner.selectProxy(group: group.name, name: proxy.name)
             await self.loadProxyGroups()
         }
     }
@@ -557,7 +571,7 @@ final class KumoAppStore {
         defer { isTestingDelay = false }
 
         do {
-            let nodes = try await controller.testGroupDelay(group: group)
+            let nodes = try await runner.testGroupDelay(group: group)
             if let index = proxyGroups.firstIndex(where: { $0.id == group.id }) {
                 proxyGroups[index].proxies = nodes
             }
@@ -577,41 +591,41 @@ final class KumoAppStore {
         defer { isImportingProfile = false }
 
         await performLoadingTask { [self] in
-            _ = try await controller.refreshProfile(from: url, useProxy: useProxy)
-            refreshProfiles()
+            _ = try await runner.refreshProfile(from: url, useProxy: useProxy)
+            await refreshProfiles()
             try await activateCurrentProfileAfterImport()
         }
     }
 
     func importLocalProfile(from url: URL) async {
         await performLoadingTask { [self] in
-            _ = try controller.importProfile(from: url)
-            refreshProfiles()
+            _ = try await runner.importProfile(from: url)
+            await refreshProfiles()
             try await activateCurrentProfileAfterImport()
         }
     }
 
-    func profileContent(id: String) -> String? {
+    func profileContent(id: String) async -> String? {
         do {
-            return try controller.profileContent(id: id)
+            return try await runner.profileContent(id: id)
         } catch {
             errorMessage = displayMessage(for: error)
             return nil
         }
     }
 
-    func refreshOverrides() {
+    func refreshOverrides() async {
         do {
-            overrides = try controller.overrides()
+            overrides = try await runner.overrides()
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
         }
     }
 
-    func refreshSubStoreStatus() {
+    func refreshSubStoreStatus() async {
         do {
-            subStoreStatus = try controller.subStoreStatus()
+            subStoreStatus = try await runner.subStoreStatus()
             subStoreRuntimeStatus.configuration = subStoreStatus
             errorMessage = nil
         } catch {
@@ -621,7 +635,7 @@ final class KumoAppStore {
 
     func refreshSubStoreRuntimeStatus() async {
         do {
-            subStoreRuntimeStatus = try await controller.subStoreRuntimeStatus()
+            subStoreRuntimeStatus = try await runner.subStoreRuntimeStatus()
             subStoreStatus = subStoreRuntimeStatus.configuration
             errorMessage = nil
         } catch {
@@ -629,9 +643,9 @@ final class KumoAppStore {
         }
     }
 
-    func prepareSubStoreResources() {
+    func prepareSubStoreResources() async {
         do {
-            subStoreStatus = try controller.prepareSubStoreResources()
+            subStoreStatus = try await runner.prepareSubStoreResources()
             subStoreRuntimeStatus.configuration = subStoreStatus
             errorMessage = nil
         } catch {
@@ -641,26 +655,26 @@ final class KumoAppStore {
 
     func setSubStoreEnabled(_ isEnabled: Bool) async {
         await performLoadingTask { [self] in
-            subStoreStatus = try await controller.setSubStoreEnabled(isEnabled)
-            subStoreRuntimeStatus = try await controller.subStoreRuntimeStatus()
+            subStoreStatus = try await runner.setSubStoreEnabled(isEnabled)
+            subStoreRuntimeStatus = try await runner.subStoreRuntimeStatus()
         }
     }
 
     func restartSubStoreService() async {
         await performLoadingTask { [self] in
-            try await controller.restartSubStoreService()
-            subStoreRuntimeStatus = try await controller.subStoreRuntimeStatus()
+            try await runner.restartSubStoreService()
+            subStoreRuntimeStatus = try await runner.subStoreRuntimeStatus()
         }
     }
 
     func stopSubStoreService() async {
-        await controller.stopSubStoreService()
+        await runner.stopSubStoreService()
         await refreshSubStoreRuntimeStatus()
     }
 
-    func updateSubStoreStatus(_ status: SubStoreStatus) {
+    func updateSubStoreStatus(_ status: SubStoreStatus) async {
         do {
-            try controller.updateSubStoreStatus(status)
+            try await runner.updateSubStoreStatus(status)
             subStoreStatus = status
             subStoreRuntimeStatus.configuration = status
             errorMessage = nil
@@ -676,14 +690,14 @@ final class KumoAppStore {
         }
 
         await performLoadingTask { [self] in
-            subStoreStatus = try await controller.downloadSubStoreBundle(kind: kind, from: url)
+            subStoreStatus = try await runner.downloadSubStoreBundle(kind: kind, from: url)
         }
     }
 
     func loadSubStoreEntries() async {
         do {
-            async let subscriptions = controller.subStoreEntries(kind: .subscription)
-            async let collections = controller.subStoreEntries(kind: .collection)
+            async let subscriptions = runner.subStoreEntries(kind: .subscription)
+            async let collections = runner.subStoreEntries(kind: .collection)
             let loadedSubscriptions = try await subscriptions
             let loadedCollections = try await collections
             subStoreEntries = loadedSubscriptions + loadedCollections
@@ -695,24 +709,24 @@ final class KumoAppStore {
 
     func importSubStoreProfile(path: String, name: String?, useProxy: Bool) async {
         await performLoadingTask { [self] in
-            _ = try await controller.importSubStoreProfile(path: path, name: name, useProxy: useProxy)
-            refreshProfiles()
+            _ = try await runner.importSubStoreProfile(path: path, name: name, useProxy: useProxy)
+            await refreshProfiles()
         }
     }
 
-    func overrideContent(id: String) -> String? {
+    func overrideContent(id: String) async -> String? {
         do {
-            return try controller.overrideContent(id: id)
+            return try await runner.overrideContent(id: id)
         } catch {
             errorMessage = displayMessage(for: error)
             return nil
         }
     }
 
-    func addLocalOverride(name: String, format: OverrideFormat, content: String, isGlobal: Bool) {
+    func addLocalOverride(name: String, format: OverrideFormat, content: String, isGlobal: Bool) async {
         do {
-            _ = try controller.addLocalOverride(name: name, format: format, content: content, isGlobal: isGlobal)
-            refreshOverrides()
+            _ = try await runner.addLocalOverride(name: name, format: format, content: content, isGlobal: isGlobal)
+            await refreshOverrides()
         } catch {
             errorMessage = displayMessage(for: error)
         }
@@ -725,24 +739,24 @@ final class KumoAppStore {
         }
 
         await performLoadingTask { [self] in
-            _ = try await controller.addRemoteOverride(url: url, format: format, isGlobal: isGlobal)
-            refreshOverrides()
+            _ = try await runner.addRemoteOverride(url: url, format: format, isGlobal: isGlobal)
+            await refreshOverrides()
         }
     }
 
-    func updateOverride(_ item: OverrideItem, content: String?) {
+    func updateOverride(_ item: OverrideItem, content: String?) async {
         do {
-            try controller.updateOverride(item, content: content)
-            refreshOverrides()
+            try await runner.updateOverride(item, content: content)
+            await refreshOverrides()
         } catch {
             errorMessage = displayMessage(for: error)
         }
     }
 
-    func deleteOverride(_ item: OverrideItem) {
+    func deleteOverride(_ item: OverrideItem) async {
         do {
-            try controller.deleteOverride(id: item.id)
-            refreshOverrides()
+            try await runner.deleteOverride(id: item.id)
+            await refreshOverrides()
         } catch {
             errorMessage = displayMessage(for: error)
         }
@@ -764,7 +778,7 @@ final class KumoAppStore {
             }
 
             let wasCurrent = self.currentProfile?.id == id
-            _ = try self.controller.updateProfile(
+            _ = try await self.runner.updateProfile(
                 id: id,
                 name: name,
                 remoteURL: remoteURL,
@@ -772,7 +786,7 @@ final class KumoAppStore {
                 useProxy: useProxy,
                 rawYAML: rawYAML
             )
-            self.refreshProfiles()
+            await self.refreshProfiles()
             try await self.reactivateCurrentProfileIfNeeded(wasCurrent, message: "Profile updated.")
         }
     }
@@ -788,8 +802,8 @@ final class KumoAppStore {
         }
 
         do {
-            _ = try await self.controller.refreshProfile(id: profile.id)
-            self.refreshProfiles()
+            _ = try await self.runner.refreshProfile(id: profile.id)
+            await self.refreshProfiles()
             try await self.reactivateCurrentProfileIfNeeded(profile.isCurrent, message: "Profile refreshed.")
             self.profileUpdateStatusMessage = String(format: String(localized: "%@ updated."), profile.name)
             self.profileUpdateStatusIsFailure = false
@@ -808,19 +822,19 @@ final class KumoAppStore {
 
     func deleteProfile(_ profile: ProfileSummary) async {
         await performLoadingTask { [self] in
-            let deletedCurrentProfile = try self.controller.deleteProfile(id: profile.id)
-            self.refreshProfiles()
+            let deletedCurrentProfile = try await self.runner.deleteProfile(id: profile.id)
+            await self.refreshProfiles()
             try await self.reactivateCurrentProfileIfNeeded(deletedCurrentProfile, message: "Profile deleted.")
         }
     }
 
     func selectProfile(_ profile: ProfileSummary) async {
         await performLoadingTask { [self] in
-            try self.controller.setCurrentProfile(id: profile.id)
-            self.refreshProfiles()
+            try await self.runner.setCurrentProfile(id: profile.id)
+            await self.refreshProfiles()
             if self.status.state == .running {
-                self.status = try self.controller.restart()
-                try await self.controller.waitForControllerReady()
+                self.status = try await self.runner.restart()
+                try await self.runner.waitForControllerReady()
                 self.startTrafficStream()
                 await self.loadProxyGroups()
                 await self.loadCoreConfiguration()
@@ -836,7 +850,7 @@ final class KumoAppStore {
 
         Task { @MainActor in
             do {
-                _ = try await controller.setSystemProxy(isEnabled)
+                _ = try await runner.setSystemProxy(isEnabled)
                 status.systemProxyEnabled = isEnabled
                 errorMessage = nil
             } catch {
@@ -845,9 +859,9 @@ final class KumoAppStore {
         }
     }
 
-    func updateSystemProxySettings(_ settings: SystemProxySettings) {
+    func updateSystemProxySettings(_ settings: SystemProxySettings) async {
         do {
-            try controller.updateSystemProxySettings(settings)
+            try await runner.updateSystemProxySettings(settings)
             status.systemProxySettings = settings
             errorMessage = nil
         } catch {
@@ -855,13 +869,13 @@ final class KumoAppStore {
         }
     }
 
-    func refreshServiceModeStatus() {
-        serviceModeStatus = controller.serviceModeStatus()
+    func refreshServiceModeStatus() async {
+        serviceModeStatus = await runner.serviceModeStatus()
     }
 
-    func refreshTunStatus() {
+    func refreshTunStatus() async {
         do {
-            tunStatus = try controller.tunStatus()
+            tunStatus = try await runner.tunStatus()
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
@@ -870,27 +884,27 @@ final class KumoAppStore {
 
     func installServiceMode() async {
         await performLoadingTask { [self] in
-            serviceModeStatus = try controller.installServiceMode()
-            refreshStatus()
-            refreshTunStatus()
+            serviceModeStatus = try await runner.installServiceMode()
+            await refreshStatus()
+            await refreshTunStatus()
         }
     }
 
     func uninstallServiceMode() async {
         await performLoadingTask { [self] in
-            serviceModeStatus = try controller.uninstallServiceMode()
-            refreshStatus()
-            refreshTunStatus()
+            serviceModeStatus = try await runner.uninstallServiceMode()
+            await refreshStatus()
+            await refreshTunStatus()
         }
     }
 
-    func updateTunSettings(_ settings: TunSettings) {
+    func updateTunSettings(_ settings: TunSettings) async {
         do {
-            try controller.updateTunSettings(settings)
+            try await runner.updateTunSettings(settings)
             var runtimeSettings = status.runtimeSettings ?? CoreRuntimeSettings(mixedPort: status.proxyPorts.mixedPort)
             runtimeSettings.tun = settings
             status.runtimeSettings = runtimeSettings
-            tunStatus = try controller.tunStatus()
+            tunStatus = try await runner.tunStatus()
             coreConfiguration.tunEnabled = settings.isEnabled
             errorMessage = nil
         } catch {
@@ -900,11 +914,11 @@ final class KumoAppStore {
 
     func applyTunSettings(_ settings: TunSettings) async {
         await performLoadingTask { [self] in
-            tunStatus = try await controller.applyTunSettings(settings)
-            refreshStatus()
-            refreshServiceModeStatus()
+            tunStatus = try await runner.applyTunSettings(settings)
+            await refreshStatus()
+            await refreshServiceModeStatus()
             if status.state == .running {
-                try await controller.waitForControllerReady()
+                try await runner.waitForControllerReady()
                 await loadCoreConfiguration()
                 startTrafficStream()
             } else {
@@ -918,11 +932,11 @@ final class KumoAppStore {
 
     func setTunEnabled(_ isEnabled: Bool) async {
         await performLoadingTask { [self] in
-            tunStatus = try await controller.setTunEnabled(isEnabled)
-            refreshStatus()
-            refreshServiceModeStatus()
+            tunStatus = try await runner.setTunEnabled(isEnabled)
+            await refreshStatus()
+            await refreshServiceModeStatus()
             if status.state == .running {
-                try await controller.waitForControllerReady()
+                try await runner.waitForControllerReady()
                 await loadCoreConfiguration()
                 startTrafficStream()
             } else {
@@ -935,10 +949,10 @@ final class KumoAppStore {
 
     func applyDnsSettings(_ settings: DnsSettings) async {
         await performLoadingTask { [self] in
-            let applied = try await controller.applyDnsSettings(settings)
-            refreshStatus()
+            let applied = try await runner.applyDnsSettings(settings)
+            await refreshStatus()
             if status.state == .running {
-                try await controller.waitForControllerReady()
+                try await runner.waitForControllerReady()
                 await loadCoreConfiguration()
                 startTrafficStream()
             } else {
@@ -953,10 +967,10 @@ final class KumoAppStore {
 
     func setDnsEnabled(_ isEnabled: Bool) async {
         await performLoadingTask { [self] in
-            let settings = try await controller.setDnsEnabled(isEnabled)
-            refreshStatus()
+            let settings = try await runner.setDnsEnabled(isEnabled)
+            await refreshStatus()
             if status.state == .running {
-                try await controller.waitForControllerReady()
+                try await runner.waitForControllerReady()
                 await loadCoreConfiguration()
                 startTrafficStream()
             } else {
@@ -970,10 +984,10 @@ final class KumoAppStore {
 
     func applySnifferSettings(_ settings: SnifferSettings) async {
         await performLoadingTask { [self] in
-            let applied = try await controller.applySnifferSettings(settings)
-            refreshStatus()
+            let applied = try await runner.applySnifferSettings(settings)
+            await refreshStatus()
             if status.state == .running {
-                try await controller.waitForControllerReady()
+                try await runner.waitForControllerReady()
                 await loadCoreConfiguration()
                 startTrafficStream()
             } else {
@@ -988,10 +1002,10 @@ final class KumoAppStore {
 
     func setSnifferEnabled(_ isEnabled: Bool) async {
         await performLoadingTask { [self] in
-            let settings = try await controller.setSnifferEnabled(isEnabled)
-            refreshStatus()
+            let settings = try await runner.setSnifferEnabled(isEnabled)
+            await refreshStatus()
             if status.state == .running {
-                try await controller.waitForControllerReady()
+                try await runner.waitForControllerReady()
                 await loadCoreConfiguration()
                 startTrafficStream()
             } else {
@@ -1006,10 +1020,11 @@ final class KumoAppStore {
         logStreamTask?.cancel()
         isStreamingLogs = true
         let selectedLevel = level ?? coreConfiguration.logLevel
+        let runner = runner
         logStreamTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let stream = try self.controller.logStream(level: selectedLevel)
+                let stream = try await runner.logStream(level: selectedLevel)
                 for try await log in stream {
                     await MainActor.run {
                         self.appendLog(log)
@@ -1032,12 +1047,13 @@ final class KumoAppStore {
     private func startTrafficStream() {
         guard status.state == .running else { return }
         trafficStreamTask?.cancel()
+        let runner = runner
         trafficStreamTask = Task { [weak self] in
             guard let self else { return }
             do {
                 // The underlying websocket stream supervises its own reconnects and yields a zero
                 // snapshot when the connection drops, so we no longer need to reset on errors here.
-                let stream = try self.controller.trafficStream()
+                let stream = try await runner.trafficStream()
                 for try await snapshot in stream {
                     await MainActor.run {
                         self.trafficSnapshot = snapshot
@@ -1081,17 +1097,17 @@ final class KumoAppStore {
         logs = []
     }
 
-    func loadPreferences() {
-        preferences = controller.userPreferences()
+    func loadPreferences() async {
+        preferences = await runner.userPreferences()
         localizationManager?.currentLanguage = preferences.appLanguage
         if !preferences.hasCompletedOnboarding {
             showOnboarding = true
         }
     }
 
-    func updatePreferences(_ next: UserPreferences) {
+    func updatePreferences(_ next: UserPreferences) async {
         do {
-            try controller.updateUserPreferences(next)
+            try await runner.updateUserPreferences(next)
             preferences = next
             errorMessage = nil
         } catch {
@@ -1099,12 +1115,28 @@ final class KumoAppStore {
         }
     }
 
+    // MARK: - CLI link
+
+    func cliLinkStatus() async -> CLILinkStatus {
+        await runner.cliLinkStatus()
+    }
+
+    @discardableResult
+    func installCLILink() async throws -> CLILinkStatus {
+        try await runner.installCLILink()
+    }
+
+    @discardableResult
+    func uninstallCLILink() async throws -> CLILinkStatus {
+        try await runner.uninstallCLILink()
+    }
+
     /// Persists onboarding completion and dismisses the sheet. Called when the
     /// user reaches the final Done step or explicitly skips it.
-    func completeOnboarding() {
+    func completeOnboarding() async {
         var next = preferences
         next.hasCompletedOnboarding = true
-        updatePreferences(next)
+        await updatePreferences(next)
         showOnboarding = false
     }
 
@@ -1145,9 +1177,7 @@ final class KumoAppStore {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    self?.refreshProfiles()
-                }
+                await self?.refreshProfiles()
                 await self?.refreshDueProfiles(source: .automatic)
             }
         }
@@ -1182,7 +1212,7 @@ final class KumoAppStore {
         }
 
         do {
-            let result = try await controller.checkAppUpdate(
+            let result = try await runner.checkAppUpdate(
                 manifestURL: preferences.updateManifestURL,
                 currentVersion: bundleShortVersion,
                 channel: preferences.updateChannel
@@ -1228,7 +1258,7 @@ final class KumoAppStore {
         }
 
         do {
-            let downloaded = try await controller.downloadAppUpdate(manifest: manifest) { [weak self] progress in
+            let downloaded = try await runner.downloadAppUpdate(manifest: manifest) { [weak self] progress in
                 Task { @MainActor in
                     guard let self else { return }
                     self.updateDownloadProgress = progress
@@ -1254,10 +1284,10 @@ final class KumoAppStore {
                 setSystemProxyEnabled(false)
             }
             if status.state == .running {
-                stopCore()
+                await stopCore()
             }
 
-            try controller.installAppUpdate(
+            try await runner.installAppUpdate(
                 dmgURL: downloaded.fileURL,
                 currentAppURL: Bundle.main.bundleURL,
                 processID: ProcessInfo.processInfo.processIdentifier
@@ -1303,7 +1333,7 @@ final class KumoAppStore {
 
     func closeConnection(id: String) async {
         await performLoadingTask { [self] in
-            try await controller.closeConnection(id: id)
+            try await runner.closeConnection(id: id)
             await loadInspectData()
         }
     }
@@ -1312,7 +1342,7 @@ final class KumoAppStore {
         guard !ids.isEmpty else { return }
         await performLoadingTask { [self] in
             for id in ids {
-                try await controller.closeConnection(id: id)
+                try await runner.closeConnection(id: id)
             }
             await loadInspectData()
         }
@@ -1320,17 +1350,17 @@ final class KumoAppStore {
 
     func closeAllConnections() async {
         await performLoadingTask { [self] in
-            try await controller.closeConnections(matchingProxy: nil)
+            try await runner.closeConnections(matchingProxy: nil)
             await loadInspectData()
         }
     }
 
     var subStoreLogURL: URL {
-        controller.paths.subStoreLogFile
+        runner.paths.subStoreLogFile
     }
 
     var coreLogURL: URL {
-        controller.paths.coreLogFile
+        runner.paths.coreLogFile
     }
 
     private var bundleShortVersion: String {
@@ -1362,7 +1392,7 @@ final class KumoAppStore {
         for profile in dueProfiles {
             guard beginProfileRefresh(profile.id) else { continue }
             do {
-                _ = try await controller.refreshProfile(id: profile.id)
+                _ = try await runner.refreshProfile(id: profile.id)
                 refreshedIDs.insert(profile.id)
                 refreshedNames.append(profile.name)
             } catch {
@@ -1372,7 +1402,7 @@ final class KumoAppStore {
         }
 
         if !refreshedIDs.isEmpty {
-            refreshProfiles()
+            await refreshProfiles()
             do {
                 try await reactivateCurrentProfileIfNeeded(
                     currentID.map { refreshedIDs.contains($0) } ?? false,
@@ -1416,8 +1446,8 @@ final class KumoAppStore {
             return
         }
 
-        status = try controller.restart()
-        try await controller.waitForControllerReady()
+        status = try await runner.restart()
+        try await runner.waitForControllerReady()
         startTrafficStream()
         await loadProxyGroups()
         await loadCoreConfiguration()
@@ -1430,13 +1460,13 @@ final class KumoAppStore {
 
         if status.state == .running {
             installResult = nil
-            status = try controller.restart()
+            status = try await runner.restart()
         } else {
             installResult = try await installManagedCoreIfNeeded()
-            status = try controller.start()
+            status = try await runner.start()
         }
 
-        try await controller.waitForControllerReady()
+        try await runner.waitForControllerReady()
         startTrafficStream()
         await loadProxyGroups()
         await loadCoreConfiguration()
@@ -1451,11 +1481,11 @@ final class KumoAppStore {
 
     @discardableResult
     private func installManagedCoreIfNeeded() async throws -> CoreInstallResult? {
-        let currentStatus = try controller.status()
-        let candidates = try controller.coreCandidates()
+        let currentStatus = try await runner.status()
+        let candidates = try await runner.coreCandidates()
         coreCandidates = candidates
 
-        let managedCorePath = controller.paths.managedCoreExecutable.path
+        let managedCorePath = runner.paths.managedCoreExecutable.path
         let managedCoreInstalled = FileManager.default.isExecutableFile(atPath: managedCorePath)
         let shouldInstall = if currentStatus.corePath == nil {
             !managedCoreInstalled
@@ -1470,8 +1500,8 @@ final class KumoAppStore {
         isInstallingCore = true
         defer { isInstallingCore = false }
 
-        let result = try await controller.installManagedCore()
-        coreCandidates = try controller.coreCandidates()
+        let result = try await runner.installManagedCore()
+        coreCandidates = try await runner.coreCandidates()
         return result
     }
 

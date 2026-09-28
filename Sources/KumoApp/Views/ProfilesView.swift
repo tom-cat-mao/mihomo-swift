@@ -98,7 +98,7 @@ struct ProfilesView: View {
             }
         }
         .task {
-            store.refreshProfiles()
+            await store.refreshProfiles()
         }
         .onAppear {
             urlFieldFocused = true
@@ -222,19 +222,21 @@ struct ProfilesView: View {
     }
 
     private func openEditor(for profile: ProfileSummary) {
-        guard let rawYAML = store.profileContent(id: profile.id) else {
-            return
-        }
+        Task {
+            guard let rawYAML = await store.profileContent(id: profile.id) else {
+                return
+            }
 
-        editingProfile = ProfileEditDraft(
-            id: profile.id,
-            name: profile.name,
-            kind: profile.kind,
-            remoteURLString: profile.remoteURL?.absoluteString ?? "",
-            autoUpdate: profile.autoUpdate,
-            useProxy: profile.useProxy,
-            rawYAML: rawYAML
-        )
+            editingProfile = ProfileEditDraft(
+                id: profile.id,
+                name: profile.name,
+                kind: profile.kind,
+                remoteURLString: profile.remoteURL?.absoluteString ?? "",
+                autoUpdate: profile.autoUpdate,
+                useProxy: profile.useProxy,
+                rawYAML: rawYAML
+            )
+        }
     }
 }
 

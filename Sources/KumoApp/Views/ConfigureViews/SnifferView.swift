@@ -8,7 +8,10 @@ struct SnifferView: View {
     @State private var snifferDraft = SnifferSettings()
 
     var body: some View {
-        KumoPage(title: "Sniffer") {
+        // Normalized once per pass: the validation text and both button
+        // enablements each used to rebuild the normalized draft.
+        let draft = normalizedSnifferDraft
+        return KumoPage(title: "Sniffer") {
             Form {
                 Section(String(localized: "Status")) {
                     Toggle(String(localized: "Enable Sniffer"), isOn: Binding {
@@ -87,7 +90,7 @@ struct SnifferView: View {
                 }
 
                 Section {
-                    if let validationMessage = snifferDraftValidationMessage {
+                    if let validationMessage = snifferDraftValidationMessage(for: draft) {
                         Text(validationMessage)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -97,12 +100,12 @@ struct SnifferView: View {
                         Button(String(localized: "Reset")) {
                             updateSnifferDraft(currentSnifferSettings)
                         }
-                        .disabled(!hasSnifferDraftChanges || store.isLoading)
+                        .disabled(!hasSnifferDraftChanges(in: draft) || store.isLoading)
 
                         Button(String(localized: "Apply")) {
-                            applySnifferDraft()
+                            applySnifferDraft(draft)
                         }
-                        .disabled(!canApplySnifferDraft)
+                        .disabled(!canApplySnifferDraft(for: draft))
                     }
                 } footer: {
                     Text(String(localized: "Sniffer changes are staged locally. Apply restarts the core when it is running."))
@@ -116,7 +119,7 @@ struct SnifferView: View {
             updateSnifferDraft(currentSnifferSettings)
         }
         .onChange(of: currentSnifferSettings) { _, newValue in
-            if !hasSnifferDraftChanges {
+            if !hasSnifferDraftChanges(in: normalizedSnifferDraft) {
                 updateSnifferDraft(newValue)
             } else {
                 snifferDraft.isEnabled = newValue.isEnabled
@@ -128,12 +131,13 @@ struct SnifferView: View {
         store.status.runtimeSettings?.sniffer ?? SnifferSettings()
     }
 
-    private var hasSnifferDraftChanges: Bool {
-        normalizedSnifferDraft != currentSnifferSettings
+    /// Takes the normalized draft for the current body pass.
+    private func hasSnifferDraftChanges(in draft: SnifferSettings) -> Bool {
+        draft != currentSnifferSettings
     }
 
-    private var canApplySnifferDraft: Bool {
-        hasSnifferDraftChanges && snifferDraftValidationMessage == nil && !store.isLoading
+    private func canApplySnifferDraft(for draft: SnifferSettings) -> Bool {
+        hasSnifferDraftChanges(in: draft) && snifferDraftValidationMessage(for: draft) == nil && !store.isLoading
     }
 
     private var normalizedSnifferDraft: SnifferSettings {
@@ -148,8 +152,7 @@ struct SnifferView: View {
         return settings
     }
 
-    private var snifferDraftValidationMessage: String? {
-        let settings = normalizedSnifferDraft
+    private func snifferDraftValidationMessage(for settings: SnifferSettings) -> String? {
         if !SnifferValidator.isValidPortList(settings.httpPorts) {
             return "HTTP ports must be 1–65535."
         }
@@ -174,8 +177,8 @@ struct SnifferView: View {
         return nil
     }
 
-    private func applySnifferDraft() {
-        let settings = normalizedSnifferDraft
+    /// Applies the normalized value the body pass already computed.
+    private func applySnifferDraft(_ settings: SnifferSettings) {
         updateSnifferDraft(settings)
         Task { await store.applySnifferSettings(settings) }
     }
