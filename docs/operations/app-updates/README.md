@@ -11,9 +11,13 @@ The update system has two separate concerns:
 
 Kumo reads one manifest URL for the selected update channel:
 
-- Stable: `https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest.yml`
-- Beta: `https://github.com/ProjectKumo/KumoApp/releases/download/pre-release/latest.yml`
+- Stable: `https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest.yml`
+- Beta: `https://github.com/tom-cat-mao/mihomo-swift/releases/download/pre-release/latest.yml`
 - Custom: Settings may override the manifest URL for development or private feeds.
+
+The default feeds point at this fork (`tom-cat-mao/mihomo-swift`). The original
+`ProjectKumo/KumoApp` repository is unmaintained and no longer publishes
+builds, so its feed must not be used.
 
 The selected channel is stored in `UserPreferences.updateChannel`. A blank
 custom URL means Kumo uses the default feed for that channel.
@@ -25,11 +29,11 @@ custom URL means Kumo uses the default feed for that channel.
 ```yaml
 version: 0.0.1
 channel: stable
-downloadURL: https://github.com/ProjectKumo/KumoApp/releases/download/0.0.1/Kumo-macos-0.0.1-arm64.dmg
+downloadURL: https://github.com/tom-cat-mao/mihomo-swift/releases/download/0.0.1/Kumo-macos-0.0.1-arm64.dmg
 assetName: Kumo-macos-0.0.1-arm64.dmg
 sha256: <64-character-sha256>
 releaseNotes: |
-  See https://github.com/ProjectKumo/KumoApp/releases/tag/0.0.1
+  See https://github.com/tom-cat-mao/mihomo-swift/releases/tag/0.0.1
 ```
 
 The same fields are accepted as JSON for local testing. `AppUpdateManager`

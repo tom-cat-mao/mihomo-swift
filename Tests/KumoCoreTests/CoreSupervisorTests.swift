@@ -9,7 +9,9 @@ final class CoreSupervisorTests: XCTestCase {
         let corePath = try makeLongRunningCore(in: paths.applicationSupportDirectory)
         let supervisor = CoreSupervisor(paths: paths)
 
-        let status = try supervisor.start(configuration: launchConfiguration(corePath: corePath))
+        let status = try supervisor.start(
+            configuration: launchConfiguration(corePath: corePath, endpoint: ControllerEndpoint(port: try allocateFreeLocalPort()))
+        )
         let pid = try XCTUnwrap(status.pid)
 
         XCTAssertEqual(try String(contentsOf: paths.corePIDFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), "\(pid)")
@@ -28,7 +30,9 @@ final class CoreSupervisorTests: XCTestCase {
         let supervisor = CoreSupervisor(paths: paths)
         let stateStore = CoreStateStore(paths: paths)
 
-        let status = try supervisor.start(configuration: launchConfiguration(corePath: corePath))
+        let status = try supervisor.start(
+            configuration: launchConfiguration(corePath: corePath, endpoint: ControllerEndpoint(port: try allocateFreeLocalPort()))
+        )
         let pid = try XCTUnwrap(status.pid)
         try stateStore.save(CoreStatus(corePath: corePath))
 
@@ -46,7 +50,9 @@ final class CoreSupervisorTests: XCTestCase {
         let supervisor = CoreSupervisor(paths: paths)
         let stateStore = CoreStateStore(paths: paths)
 
-        let status = try supervisor.start(configuration: launchConfiguration(corePath: corePath))
+        let status = try supervisor.start(
+            configuration: launchConfiguration(corePath: corePath, endpoint: ControllerEndpoint(port: try allocateFreeLocalPort()))
+        )
         let pid = try XCTUnwrap(status.pid)
         try stateStore.save(CoreStatus(corePath: corePath))
 
@@ -62,33 +68,128 @@ final class CoreSupervisorTests: XCTestCase {
         let argumentsFile = paths.applicationSupportDirectory.appendingPathComponent("core-arguments.txt")
         let corePath = try makeLongRunningCore(in: paths.applicationSupportDirectory, recordedArgumentsURL: argumentsFile)
         let supervisor = CoreSupervisor(paths: paths)
+        let port = try allocateFreeLocalPort()
 
         let status = try supervisor.start(
             configuration: launchConfiguration(
                 corePath: corePath,
-                endpoint: ControllerEndpoint(port: 19097, secret: "test-secret")
+                endpoint: ControllerEndpoint(port: port, secret: "test-secret")
             )
         )
         defer { _ = try? supervisor.stop() }
 
-        XCTAssertEqual(status.endpoint.port, 19097)
+        XCTAssertEqual(status.endpoint.port, port)
         XCTAssertEqual(
             try recordedArguments(at: argumentsFile),
             [
                 "-d",
                 paths.workDirectory.path,
                 "-ext-ctl",
-                "127.0.0.1:19097",
+                "127.0.0.1:\(port)",
                 "-secret",
                 "test-secret"
             ]
         )
     }
 
-    private func launchConfiguration(
-        corePath: String,
-        endpoint: ControllerEndpoint = ControllerEndpoint()
-    ) -> CoreLaunchConfiguration {
+    /// `kill(pid, 0)` reports EPERM — not ESRCH — for live processes owned by
+    /// another user, which is exactly the case for a root-owned core spawned
+    /// by the privileged helper. pid 1 (launchd) is always live and always
+    /// owned by root, from either a privileged or unprivileged test process.
+    func testStatusTreatsForeignOwnedLiveProcessAsAlive() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let stateStore = CoreStateStore(paths: paths)
+        try stateStore.save(CoreStatus(state: .running, pid: 1))
+        let supervisor = CoreSupervisor(paths: paths)
+
+        let recovered = try supervisor.status()
+
+        XCTAssertEqual(recovered.state, .running)
+        XCTAssertEqual(recovered.pid, 1)
+
+        try stateStore.save(CoreStatus())
+    }
+
+    func testStartRotatesNonEmptyCoreLog() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let corePath = try makeLongRunningCore(in: paths.applicationSupportDirectory)
+        let supervisor = CoreSupervisor(paths: paths)
+        try FileManager.default.createDirectory(at: paths.logsDirectory, withIntermediateDirectories: true)
+        try "previous session\n".write(to: paths.coreLogFile, atomically: true, encoding: .utf8)
+
+        let status = try supervisor.start(
+            configuration: launchConfiguration(corePath: corePath, endpoint: ControllerEndpoint(port: try allocateFreeLocalPort()))
+        )
+        defer { _ = try? supervisor.stop() }
+        XCTAssertNotNil(status.pid)
+
+        let logFiles = try FileManager.default.contentsOfDirectory(atPath: paths.logsDirectory.path)
+        let rotatedFiles = logFiles.filter { $0.hasPrefix("core-") && $0.hasSuffix(".log") }
+        XCTAssertEqual(rotatedFiles.count, 1)
+
+        let rotatedName = try XCTUnwrap(rotatedFiles.first)
+        XCTAssertNotNil(
+            rotatedName.range(of: #"^core-\d{8}-\d{6}\.log$"#, options: .regularExpression),
+            "unexpected rotated log name: \(rotatedName)"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: paths.logsDirectory.appendingPathComponent(rotatedName), encoding: .utf8),
+            "previous session\n"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.coreLogFile.path))
+        XCTAssertFalse(
+            try String(contentsOf: paths.coreLogFile, encoding: .utf8).contains("previous session"),
+            "the new core.log must not inherit the previous session's contents"
+        )
+    }
+
+    func testStartCreatesFreshCoreLogWithoutRotating() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let corePath = try makeLongRunningCore(in: paths.applicationSupportDirectory)
+        let supervisor = CoreSupervisor(paths: paths)
+
+        let status = try supervisor.start(
+            configuration: launchConfiguration(corePath: corePath, endpoint: ControllerEndpoint(port: try allocateFreeLocalPort()))
+        )
+        defer { _ = try? supervisor.stop() }
+        XCTAssertNotNil(status.pid)
+
+        let logFiles = try FileManager.default.contentsOfDirectory(atPath: paths.logsDirectory.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.coreLogFile.path))
+        XCTAssertFalse(logFiles.contains { $0.hasPrefix("core-") && $0.hasSuffix(".log") })
+    }
+
+    func testStartThrowsWhenControllerPortIsInUse() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let argumentsFile = paths.applicationSupportDirectory.appendingPathComponent("core-arguments.txt")
+        let corePath = try makeLongRunningCore(in: paths.applicationSupportDirectory, recordedArgumentsURL: argumentsFile)
+        let supervisor = CoreSupervisor(paths: paths)
+        let listener = try allocateLocalListener()
+        defer { close(listener.socket) }
+
+        XCTAssertThrowsError(
+            try supervisor.start(
+                configuration: launchConfiguration(
+                    corePath: corePath,
+                    endpoint: ControllerEndpoint(port: listener.port)
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? KumoError, KumoError.controllerPortInUse("127.0.0.1", listener.port))
+        }
+
+        usleep(200_000)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: argumentsFile.path),
+            "no core should have been spawned while the controller port is occupied"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.corePIDFile.path))
+        let stored = try CoreStateStore(paths: paths).load()
+        XCTAssertNotEqual(stored.state, .running)
+        XCTAssertNil(stored.pid)
+    }
+
+    private func launchConfiguration(corePath: String, endpoint: ControllerEndpoint) -> CoreLaunchConfiguration {
         CoreLaunchConfiguration(
             corePath: corePath,
             profile: Profile(

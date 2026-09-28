@@ -77,8 +77,8 @@ is documented in [docs/interfaces/macos-swiftui-interface.md](docs/interfaces/ma
 ### Build From Source
 
 ```bash
-git clone https://github.com/ProjectKumo/KumoApp.git
-cd KumoApp
+git clone https://github.com/tom-cat-mao/mihomo-swift.git
+cd mihomo-swift
 
 # Build app, CLI, library, and tests
 make swift-build

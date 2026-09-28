@@ -8,6 +8,11 @@ Runtime discovery, five-minute asynchronous polling, local update
 notifications, checksum verification, and installer-helper behavior are
 documented in [App Updates](app-updates/README.md).
 
+Releases for this fork are published to `tom-cat-mao/mihomo-swift`. The app's
+default update feed (`AppUpdateManager.defaultRepository`) and
+`Scripts/make_release_artifacts.sh` both point at that repository;
+`REPOSITORY` can be overridden to publish the same artifacts to a mirror.
+
 ## Release SOP
 
 The canonical release workflow for a new version (e.g. `0.0.10`). Follow these
@@ -155,8 +160,8 @@ gh release view 0.0.10 --json assets
 
 ```bash
 # These must return 302 (redirect to the actual asset), not 404
-curl -sI "https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest.yml"
-curl -sI "https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest-amd64.yml"
+curl -sI "https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest.yml"
+curl -sI "https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest-amd64.yml"
 ```
 
 ### 9. Smoke Test In-App Update Check
@@ -180,8 +185,8 @@ with a fuller summary. The release notes are what users read; the manifest
 
 ## Release Channels
 
-- Stable updates read `https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest.yml` (arm64) or `latest-amd64.yml` (Intel).
-- Beta updates read `https://github.com/ProjectKumo/KumoApp/releases/download/pre-release/latest.yml` (arm64) or `latest-amd64.yml` (Intel).
+- Stable updates read `https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest.yml` (arm64) or `latest-amd64.yml` (Intel).
+- Beta updates read `https://github.com/tom-cat-mao/mihomo-swift/releases/download/pre-release/latest.yml` (arm64) or `latest-amd64.yml` (Intel).
 - Settings may override the manifest URL for development or private feeds. Leave it blank for the default GitHub Releases feed.
 
 ## Manifest Format
@@ -200,11 +205,11 @@ changed in the same release.
 ```yaml
 version: 0.0.1
 channel: stable
-downloadURL: https://github.com/ProjectKumo/KumoApp/releases/download/0.0.1/Kumo-macos-0.0.1-arm64.dmg
+downloadURL: https://github.com/tom-cat-mao/mihomo-swift/releases/download/0.0.1/Kumo-macos-0.0.1-arm64.dmg
 assetName: Kumo-macos-0.0.1-arm64.dmg
 sha256: <64-character-sha256>
 releaseNotes: |
-  See https://github.com/ProjectKumo/KumoApp/releases/tag/0.0.1
+  See https://github.com/tom-cat-mao/mihomo-swift/releases/tag/0.0.1
 ```
 
 The app also accepts the same fields as JSON for local testing and backwards

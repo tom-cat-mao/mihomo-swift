@@ -28,6 +28,16 @@ SwiftUI-specific implementation guidance lives under `.agents/skills/`, especial
 - `.agents/skills/swiftui-view-refactor/SKILL.md`
 - `.agents/skills/swiftui-performance-audit/SKILL.md`
 
+## Multi-Agent Coordination
+
+This fork is developed through a PI-coordinator workflow: the PI session is
+the fixed coordinator — it plans, dispatches scoped tasks to external agent
+CLIs via the external-agent plugin, then reviews and commits their output.
+The executor for each task is chosen at dispatch time and is not prescribed
+here; the working principles live in `docs/agents.md` ("Multi-Agent
+Workflow"). All agents working in this repo must follow this file, including
+documentation sync.
+
 ## Documentation Maintenance
 
 When a change meaningfully alters product behavior, architecture, runtime configuration, persistence, permissions, testing expectations, or UI information architecture, update the relevant document in `docs/` in the same change set. Do not let implementation and documentation drift.

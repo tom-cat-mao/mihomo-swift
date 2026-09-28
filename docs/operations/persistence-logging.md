@@ -25,6 +25,7 @@ Kumo/
     config.yaml
   logs/
     core.log
+    core-<yyyyMMdd-HHmmss>.log
     substore.log
   cores/
     mihomo
@@ -153,6 +154,14 @@ Core stdout and stderr are appended to:
 logs/core.log
 ```
 
+`CoreSupervisor.start()` rotates that file before every launch: when
+`logs/core.log` exists and is non-empty, it is renamed to
+`logs/core-<yyyyMMdd-HHmmss>.log` (local time) and a fresh `core.log` is
+opened for the new process. A core that is still running keeps writing to its
+own rotated file, so lines from concurrent cores no longer interleave, and
+`core.log` always describes the current session. Rotation is best-effort: if
+the rename fails, the launch continues and the log keeps growing.
+
 Sub-Store backend stdout and stderr are appended to:
 
 ```text
@@ -211,7 +220,7 @@ YAML overrides are applied before Kumo-controlled runtime settings. JavaScript o
 
 ## Future Work
 
-- Rotate logs.
+- Add retention/cleanup for rotated `core-*.log` files.
 - Add separate app and service logs.
 - Add structured JSONL event logs for agents.
 - Add privacy review for logs before sharing diagnostics.

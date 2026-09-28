@@ -189,6 +189,10 @@ reachable, the same commands switch to service-backed calls while keeping
 command names and JSON schemas compatible:
 
 - `kumo start|stop|restart` delegates Mihomo lifecycle to the helper.
+- `kumo start` waits for the controller endpoint to answer `GET /version` after
+  the core is spawned, matching the app and the daemon. When the controller
+  never becomes ready the command fails with the underlying reason and the
+  `logs/core.log` path instead of reporting a plain success.
 - `kumo sysproxy on|off` delegates protected system proxy changes to the helper
   unless `--dry-run` is used.
 - `kumo tun enable|disable` delegates TUN state changes to the helper and fails

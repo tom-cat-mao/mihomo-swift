@@ -3,6 +3,30 @@
 Quick reference for AI agents working on this codebase. Each entry maps a
 task category to the canonical document or command that owns it.
 
+## Multi-Agent Workflow (PI Coordinator)
+
+Development on this fork is coordinated by a PI coding-agent session. The PI
+session is the fixed coordinator: it plans, dispatches scoped tasks to
+external agent CLIs through the `external-agent` plugin, reviews their
+output, and commits. Which executor agent runs a given task is decided at
+dispatch time — any agent the plugin supports may be used, and this document
+deliberately does not prescribe one.
+
+**Loop:** research → plan → execute → verify → review and commit.
+
+**Principles (agent-agnostic):**
+
+- Every dispatched task is self-contained: goal, exact files, acceptance
+  criteria, return format. The executor sees none of the coordinator's
+  conversation.
+- Research/verification tasks run read-only. Write tasks carry a `verify`
+  command (default `make test`) and never commit.
+- One writer per working tree at a time; parallel write tasks need
+  `isolate: true` (separate git worktree) and the coordinator merges.
+- Optional task templates live in `.pi/external-agent/templates/`
+  (`kumo-execute`, `kumo-verify`) — conveniences, not requirements.
+- Any agent working in this repo must follow AGENTS.md, including docs sync.
+
 ## Release
 
 **SOP:** [docs/operations/release-management.md](operations/release-management.md)
@@ -35,8 +59,8 @@ release. The in-app update checker will 404 without them.
 **Verify URLs:**
 
 ```bash
-curl -sI "https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest.yml"
-curl -sI "https://github.com/ProjectKumo/KumoApp/releases/latest/download/latest-amd64.yml"
+curl -sI "https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest.yml"
+curl -sI "https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/latest-amd64.yml"
 ```
 
 ## Update Runtime Behavior

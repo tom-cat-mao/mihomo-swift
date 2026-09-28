@@ -3,7 +3,7 @@ set -euo pipefail
 
 VERSION="${VERSION:?Set VERSION, for example VERSION=0.0.1}"
 CHANNEL="${CHANNEL:-stable}"
-REPOSITORY="${REPOSITORY:-ProjectKumo/KumoApp}"
+REPOSITORY="${REPOSITORY:-tom-cat-mao/mihomo-swift}"
 APP_PATH="${APP_PATH:-build/Build/Products/Release/Kumo.app}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/release}"
 ARCH_NAME="${ARCH_NAME:-arm64}"

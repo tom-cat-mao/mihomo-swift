@@ -62,7 +62,7 @@ public struct AppUpdateDownloadResult: Equatable, Sendable {
 }
 
 public struct AppUpdateManager: Sendable {
-    public static let defaultRepository = "ProjectKumo/KumoApp"
+    public static let defaultRepository = "tom-cat-mao/mihomo-swift"
 
     public init() {}
 

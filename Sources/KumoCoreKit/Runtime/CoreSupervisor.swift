@@ -46,6 +46,11 @@ public struct CoreSupervisor: Sendable {
         if let pid = recordedPIDs(status: currentStatus).first(where: isProcessAlive) {
             throw KumoError.coreAlreadyRunning(pid)
         }
+
+        if controllerPortIsOccupied(configuration.endpoint) {
+            throw KumoError.controllerPortInUse(configuration.endpoint.host, configuration.endpoint.port)
+        }
+
         try removeCorePIDFile()
 
         let corePath = try resolveCorePath(configuration.corePath)
@@ -60,6 +65,7 @@ public struct CoreSupervisor: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: corePath)
         process.arguments = launchArguments(for: runtime)
+        rotateCoreLogIfNeeded()
         process.standardOutput = try logFileHandle()
         process.standardError = try logFileHandle()
         do {
@@ -253,7 +259,14 @@ public struct CoreSupervisor: Sendable {
     }
 
     private func isProcessAlive(_ pid: Int32) -> Bool {
-        Darwin.kill(pid, 0) == 0
+        if Darwin.kill(pid, 0) == 0 {
+            return true
+        }
+        // EPERM means the process exists but is owned by another user — for
+        // example a core spawned as root by the privileged helper while the
+        // app or CLI runs unprivileged. Treat it as alive; only ESRCH proves
+        // the process is gone.
+        return errno == EPERM
     }
 
     private func terminateProcess(_ pid: Int32) -> Bool {
@@ -264,7 +277,12 @@ public struct CoreSupervisor: Sendable {
         ]
 
         for step in steps {
-            Darwin.kill(pid, step.signal)
+            if Darwin.kill(pid, step.signal) != 0, errno == EPERM {
+                // The caller can never signal this process (it belongs to
+                // another user, e.g. root via the privileged helper), so the
+                // signal-escalation timeouts would only delay the failure.
+                return false
+            }
             if waitForExit(pid, timeout: step.timeout) {
                 return true
             }
@@ -329,6 +347,91 @@ public struct CoreSupervisor: Sendable {
             return
         }
         try FileManager.default.removeItem(at: paths.corePIDFile)
+    }
+
+    /// Probes the configured external-controller address before spawning.
+    /// A successful TCP connection means another process — typically an
+    /// orphaned or foreign Mihomo core — already owns the port, so spawning
+    /// another core would produce a second process that cannot bind it.
+    private func controllerPortIsOccupied(_ endpoint: ControllerEndpoint) -> Bool {
+        guard endpoint.port > 0, endpoint.port <= 65_535, !endpoint.host.isEmpty else {
+            return false
+        }
+
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_protocol = IPPROTO_TCP
+        var resolved: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(endpoint.host, String(endpoint.port), &hints, &resolved) == 0,
+              let resolution = resolved else {
+            return false
+        }
+        defer { freeaddrinfo(resolution) }
+
+        var candidate: UnsafeMutablePointer<addrinfo>? = resolution
+        while let current = candidate {
+            if connectSucceeds(current.pointee, timeout: 1.0) {
+                return true
+            }
+            candidate = current.pointee.ai_next
+        }
+        return false
+    }
+
+    private func connectSucceeds(_ address: addrinfo, timeout: TimeInterval) -> Bool {
+        let socketFD = socket(address.ai_family, address.ai_socktype, address.ai_protocol)
+        guard socketFD >= 0 else {
+            return false
+        }
+        defer { close(socketFD) }
+
+        let currentFlags = fcntl(socketFD, F_GETFL, 0)
+        guard currentFlags >= 0, fcntl(socketFD, F_SETFL, currentFlags | O_NONBLOCK) >= 0 else {
+            return false
+        }
+
+        if connect(socketFD, address.ai_addr, address.ai_addrlen) == 0 {
+            return true
+        }
+        guard errno == EINPROGRESS else {
+            return false
+        }
+
+        var descriptor = pollfd(fd: socketFD, events: Int16(POLLOUT), revents: 0)
+        let milliseconds = Int32((timeout * 1000).rounded())
+        guard Darwin.poll(&descriptor, 1, milliseconds) > 0 else {
+            return false
+        }
+
+        var socketError: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(socketFD, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0 else {
+            return false
+        }
+        return socketError == 0
+    }
+
+    /// Renames a non-empty `logs/core.log` to `logs/core-<yyyyMMdd-HHmmss>.log`
+    /// in local time before a new launch. Each session then gets a fresh
+    /// `core.log`, and a previously started core that is still running keeps
+    /// writing to its own rotated file instead of interleaving lines into the
+    /// shared log.
+    private func rotateCoreLogIfNeeded() {
+        let fileManager = FileManager.default
+        guard let attributes = try? fileManager.attributesOfItem(atPath: paths.coreLogFile.path),
+              let size = attributes[.size] as? Int,
+              size > 0 else {
+            return
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let destination = paths.logsDirectory
+            .appendingPathComponent("core-\(formatter.string(from: Date())).log")
+        try? fileManager.moveItem(at: paths.coreLogFile, to: destination)
     }
 
     private func logFileHandle() throws -> FileHandle {

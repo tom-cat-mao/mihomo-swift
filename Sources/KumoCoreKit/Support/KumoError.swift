@@ -4,6 +4,7 @@ public enum KumoError: LocalizedError, Equatable {
     case coreNotFound(String)
     case coreAlreadyRunning(Int32)
     case coreNotRunning
+    case controllerPortInUse(String, Int)
     case invalidArguments(String)
     case unsupportedProfileSource
     case controllerResponse(Int, String)
@@ -20,6 +21,8 @@ public enum KumoError: LocalizedError, Equatable {
             "Mihomo core is already running with pid \(pid)."
         case .coreNotRunning:
             "Mihomo core is not running."
+        case .controllerPortInUse(let host, let port):
+            "The controller port \(host):\(port) is already in use by another process. Stop the other Mihomo core or change the controller endpoint before starting Kumo."
         case .invalidArguments(let message):
             message
         case .unsupportedProfileSource:
