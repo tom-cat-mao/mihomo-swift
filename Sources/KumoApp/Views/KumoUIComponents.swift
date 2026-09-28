@@ -171,12 +171,6 @@ struct CompactSettingRow<Trailing: View>: View {
     }
 }
 
-extension Int {
-    var kumoByteCount: String {
-        ByteCountFormatter.string(fromByteCount: Int64(self), countStyle: .binary)
-    }
-}
-
 // MARK: - Accessibility helpers
 
 /// Apply a heavier font weight when Bold Text is enabled in System Settings.
