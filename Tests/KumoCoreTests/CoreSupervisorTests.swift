@@ -189,6 +189,53 @@ final class CoreSupervisorTests: XCTestCase {
         XCTAssertNil(stored.pid)
     }
 
+    /// Runtime-event bookkeeping must never turn a successful operation into a
+    /// failure: with `logs/` unwritable (the root-owned `logs/` a fresh
+    /// service-mode helper install leaves behind — Issue #3), recording a
+    /// readiness transition still persists the state and reports success.
+    func testReadinessUpdateToleratesReadOnlyLogsDirectory() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let supervisor = CoreSupervisor(paths: paths)
+        try FileManager.default.createDirectory(at: paths.logsDirectory, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: paths.logsDirectory.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: paths.logsDirectory.path)
+        }
+
+        let status = try supervisor.updateReadiness(.controllerReady, message: "Mihomo controller is ready.")
+
+        XCTAssertEqual(status.readiness, .controllerReady)
+        XCTAssertEqual(try CoreStateStore(paths: paths).load().readiness, .controllerReady)
+    }
+
+    /// The start/stop flow appends `core.starting`, `core.started`,
+    /// `core.stopped` events. None of them may fail the operation when the
+    /// event log cannot be written.
+    func testStartAndStopCompleteWhenRuntimeEventLogCannotBeWritten() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let corePath = try makeLongRunningCore(in: paths.applicationSupportDirectory)
+        let supervisor = CoreSupervisor(paths: paths)
+        try FileManager.default.createDirectory(at: paths.logsDirectory, withIntermediateDirectories: true)
+        try "".write(to: paths.coreLogFile, atomically: true, encoding: .utf8)
+        try "".write(to: paths.runtimeEventsFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: paths.runtimeEventsFile.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: paths.logsDirectory.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: paths.logsDirectory.path)
+        }
+
+        let status = try supervisor.start(
+            configuration: launchConfiguration(corePath: corePath, endpoint: ControllerEndpoint(port: try allocateFreeLocalPort()))
+        )
+        let pid = try XCTUnwrap(status.pid)
+
+        let stopped = try supervisor.stop()
+
+        XCTAssertEqual(stopped.state, .stopped)
+        XCTAssertNil(stopped.pid)
+        XCTAssertFalse(isProcessAlive(pid))
+    }
+
     private func launchConfiguration(corePath: String, endpoint: ControllerEndpoint) -> CoreLaunchConfiguration {
         CoreLaunchConfiguration(
             corePath: corePath,

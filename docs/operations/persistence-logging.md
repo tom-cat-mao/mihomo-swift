@@ -37,6 +37,27 @@ Kumo/
   preferences.json
 ```
 
+## File Ownership
+
+State, log and work files are owned by whichever side touches them first, so
+ownership depends on install order. The privileged helper runs as root and
+therefore hands the app-support tree back to the authorized user: at daemon
+startup and again after every request that can write app-support state.
+`AppSupportOwnershipRepair` chowns the root plus every non-symlinked descendant
+to that user's uid and primary gid. Symlinked entries are skipped and never
+followed, and `/Library/PrivilegedHelperTools/io.kumo.KumoService` and the
+launchd plist stay root-owned. The repair is a no-op when the caller is not
+root.
+
+Bookkeeping tolerates the repair being incomplete. `logs/runtime-events.jsonl`
+appends never throw — a denied append logs a warning and drops the row — and the
+`controllerReady` bookkeeping a caller writes after a helper-routed start
+degrades the same way, because in service mode the helper's `state.json` is the
+authoritative record. In direct (no-helper) mode, `state.json` and
+`work/core.pid` stay load-bearing and still throw when they cannot be written,
+so a core is never left running without a record that `status()` or `stop()`
+can act on.
+
 ## Backup Format
 
 Kumo can export a directory backup containing:

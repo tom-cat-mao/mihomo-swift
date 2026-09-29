@@ -1,5 +1,10 @@
 import Darwin
 import Foundation
+import os
+
+/// Runtime-event rows are diagnostics, not control state: see
+/// `CoreSupervisor.appendRuntimeEvent(kind:message:)`.
+private let supervisorLogger = Logger(subsystem: "io.kumo.KumoApp", category: "supervisor")
 
 public struct CoreLaunchConfiguration: Sendable {
     public var corePath: String?
@@ -54,7 +59,7 @@ public struct CoreSupervisor: Sendable {
         try removeCorePIDFile()
 
         let corePath = try resolveCorePath(configuration.corePath)
-        try appendRuntimeEvent(kind: "core.starting", message: "Starting Mihomo core at \(corePath).")
+        appendRuntimeEvent(kind: "core.starting", message: "Starting Mihomo core at \(corePath).")
         let runtime = try RuntimeConfigBuilder(
             endpoint: configuration.endpoint,
             proxyPorts: configuration.proxyPorts,
@@ -77,7 +82,7 @@ public struct CoreSupervisor: Sendable {
             failedStatus.readiness = nil
             failedStatus.message = "Failed to start Mihomo core: \(error.localizedDescription)"
             try stateStore.save(failedStatus)
-            try appendRuntimeEvent(kind: "core.failed", message: failedStatus.message ?? "Failed to start Mihomo core.")
+            appendRuntimeEvent(kind: "core.failed", message: failedStatus.message ?? "Failed to start Mihomo core.")
             throw error
         }
 
@@ -100,7 +105,7 @@ public struct CoreSupervisor: Sendable {
             message: "Mihomo core started."
         )
         try stateStore.save(status)
-        try appendRuntimeEvent(kind: "core.started", message: "Mihomo core started with pid \(processID).")
+        appendRuntimeEvent(kind: "core.started", message: "Mihomo core started with pid \(processID).")
         return status
     }
 
@@ -114,7 +119,7 @@ public struct CoreSupervisor: Sendable {
             status.readiness = nil
             try removeCorePIDFile()
             try stateStore.save(status)
-            try appendRuntimeEvent(kind: "core.stopped", message: "Mihomo core was already stopped.")
+            appendRuntimeEvent(kind: "core.stopped", message: "Mihomo core was already stopped.")
             return status
         }
 
@@ -125,7 +130,7 @@ public struct CoreSupervisor: Sendable {
             status.state = .failed
             status.message = "Failed to stop Mihomo core with pid \(failedPIDs.map(String.init).joined(separator: ", "))."
             try stateStore.save(status)
-            try appendRuntimeEvent(kind: "core.stop_failed", message: status.message ?? "Failed to stop Mihomo core.")
+            appendRuntimeEvent(kind: "core.stop_failed", message: status.message ?? "Failed to stop Mihomo core.")
             return status
         }
 
@@ -135,7 +140,7 @@ public struct CoreSupervisor: Sendable {
         status.message = "Mihomo core stopped."
         try removeCorePIDFile()
         try stateStore.save(status)
-        try appendRuntimeEvent(kind: "core.stopped", message: "Mihomo core stopped.")
+        appendRuntimeEvent(kind: "core.stopped", message: "Mihomo core stopped.")
         return status
     }
 
@@ -149,7 +154,7 @@ public struct CoreSupervisor: Sendable {
                 status.readiness = status.readiness ?? .processLaunched
                 status.message = "Mihomo core is running."
                 try stateStore.save(status)
-                try appendRuntimeEvent(kind: "core.pid_recovered", message: "Recovered running Mihomo pid \(pid).")
+                appendRuntimeEvent(kind: "core.pid_recovered", message: "Recovered running Mihomo pid \(pid).")
             }
             return status
         }
@@ -161,17 +166,24 @@ public struct CoreSupervisor: Sendable {
             status.message = "Mihomo core is not running."
             try removeCorePIDFile()
             try stateStore.save(status)
-            try appendRuntimeEvent(kind: "core.stale_pid", message: "Cleared stale Mihomo pid records.")
+            appendRuntimeEvent(kind: "core.stale_pid", message: "Cleared stale Mihomo pid records.")
         }
         return status
     }
 
+    /// Records a readiness transition in `state.json` and the event log. The
+    /// state write still throws when the status file cannot be persisted — that
+    /// is the supervisor's own record of the core — and it is up to the caller
+    /// to decide whether the failure is fatal. In service mode the helper owns
+    /// the file and is the authoritative writer, so `KumoController` treats a
+    /// permission failure here as bookkeeping noise; the direct-mode caller
+    /// keeps surfacing it.
     public func updateReadiness(_ readiness: CoreReadiness, message: String? = nil) throws -> CoreStatus {
         var status = try stateStore.load()
         status.readiness = readiness
         status.message = message ?? status.message
         try stateStore.save(status)
-        try appendRuntimeEvent(kind: "core.readiness", message: message ?? "Core readiness changed to \(readiness.rawValue).")
+        appendRuntimeEvent(kind: "core.readiness", message: message ?? "Core readiness changed to \(readiness.rawValue).")
         return status
     }
 
@@ -443,22 +455,38 @@ public struct CoreSupervisor: Sendable {
         return handle
     }
 
-    private func appendRuntimeEvent(kind: String, message: String) throws {
-        try FileManager.default.createDirectory(at: paths.logsDirectory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(RuntimeEventEntry(kind: kind, message: message))
-        var line = data
-        line.append(0x0A)
+    /// Appends one row to `logs/runtime-events.jsonl`. Best-effort by design:
+    /// the event log is a diagnostic trail, never a precondition for managing
+    /// the core, so a write failure is logged and dropped instead of thrown.
+    /// The failing case in practice is the privileged helper owning `logs/` as
+    /// root on a fresh service-mode install (Issue #3) — the app or CLI must
+    /// still report the start/stop that actually happened.
+    ///
+    /// This is deliberately limited to the event log. State the supervisor
+    /// itself depends on — the `state.json` status and the `work/core.pid`
+    /// record — still throws on failure: a silently unrecorded pid would mean
+    /// an unmanageable core that the next `status()`/`stop()` cannot find.
+    private func appendRuntimeEvent(kind: String, message: String) {
+        do {
+            try FileManager.default.createDirectory(at: paths.logsDirectory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            var line = try encoder.encode(RuntimeEventEntry(kind: kind, message: message))
+            line.append(0x0A)
 
-        if !FileManager.default.fileExists(atPath: paths.runtimeEventsFile.path) {
-            FileManager.default.createFile(atPath: paths.runtimeEventsFile.path, contents: nil)
+            if !FileManager.default.fileExists(atPath: paths.runtimeEventsFile.path) {
+                FileManager.default.createFile(atPath: paths.runtimeEventsFile.path, contents: nil)
+            }
+
+            let handle = try FileHandle(forWritingTo: paths.runtimeEventsFile)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: line)
+        } catch {
+            supervisorLogger.warning(
+                "Unable to append runtime event \(kind, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
         }
-
-        let handle = try FileHandle(forWritingTo: paths.runtimeEventsFile)
-        defer { try? handle.close() }
-        try handle.seekToEnd()
-        try handle.write(contentsOf: line)
     }
 
     private func searchDirectories() -> [String] {
