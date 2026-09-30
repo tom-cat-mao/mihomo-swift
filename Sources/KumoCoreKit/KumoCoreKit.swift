@@ -3,6 +3,10 @@ import os
 
 let shutdownLogger = Logger(subsystem: "io.kumo.KumoApp", category: "shutdown")
 
+/// Reports caller-side readiness bookkeeping that was skipped because the
+/// helper-owned state is the authoritative record (Issue #3).
+private let readinessLogger = Logger(subsystem: "io.kumo.KumoApp", category: "readiness")
+
 /// Result of a best-effort shutdown attempt. `status` is the most recent
 /// observable core status (falls back to the on-disk state store, then a
 /// stopped `CoreStatus()`). `diagnostics` lists every step that failed,
@@ -248,19 +252,55 @@ public struct KumoController: Sendable {
         let status = try stateStore.load()
         let client = MihomoControllerClient(endpoint: status.endpoint)
         var lastError: Error?
+        var controllerAnswered = false
 
         for _ in 0..<maxAttempts {
             do {
                 _ = try await client.version()
-                _ = try supervisor.updateReadiness(.controllerReady, message: "Mihomo controller is ready.")
-                return
+                controllerAnswered = true
+                break
             } catch {
                 lastError = error
                 try await Task.sleep(nanoseconds: intervalNanoseconds)
             }
         }
 
-        throw lastError ?? KumoError.coreNotRunning
+        guard controllerAnswered else {
+            throw lastError ?? KumoError.coreNotRunning
+        }
+
+        // The readiness bookkeeping runs only after the controller proved it is
+        // up, so a failure here must not be mistaken for "never became ready";
+        // see `recordControllerReadiness()` for who may ignore it.
+        try recordControllerReadiness()
+    }
+
+    /// Records `controllerReady` for the runtime the caller just started.
+    ///
+    /// The two modes have different state authority, and the distinction is
+    /// deliberate:
+    ///
+    /// - Service mode: the privileged helper owns `state.json`, the pid record
+    ///   and the runtime event log, and it is the authoritative writer. On a
+    ///   fresh service-mode install the helper created those as root, so a
+    ///   non-root caller-side write is denied (Issue #3). The core is
+    ///   demonstrably ready at this point, so the denial degrades to a warning
+    ///   instead of turning a successful `start` into a failure.
+    /// - Direct mode: no daemon owns the state. The supervisor's own record is
+    ///   what later `status()`/`stop()` calls act on, so a persistence failure
+    ///   must still throw — a silently unrecorded core is an unmanageable core.
+    private func recordControllerReadiness() throws {
+        if runningServiceClient() != nil {
+            do {
+                _ = try supervisor.updateReadiness(.controllerReady, message: "Mihomo controller is ready.")
+            } catch {
+                readinessLogger.warning(
+                    "Helper-owned state is authoritative; skipping caller-side readiness bookkeeping: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        } else {
+            _ = try supervisor.updateReadiness(.controllerReady, message: "Mihomo controller is ready.")
+        }
     }
 
     public func rules() async throws -> [RuleEntry] {

@@ -114,8 +114,23 @@ enum KumoServiceMain {
         let authorizedUID = value(after: "--authorized-uid", in: arguments).flatMap(uid_t.init) ?? getuid()
         let paths = KumoPaths(applicationSupportDirectory: URL(fileURLWithPath: appSupport, isDirectory: true))
         try paths.prepare()
+        // Startup repair. The daemon runs as root, so on a fresh service-mode
+        // install it may have created state files, logs or work files as
+        // root:staff before the app or CLI ever wrote them (Issue #3). Hand
+        // everything back to the authorized user once per launch; that is the
+        // upgrade path for installs already in the broken state.
+        let ownershipRepair = AppSupportOwnershipRepair(
+            applicationSupportDirectory: paths.applicationSupportDirectory,
+            authorizedUID: authorizedUID
+        )
+        ownershipRepair?.repair()
         let credentials = try KumoServiceManager(paths: paths).loadCredentials()
-        let server = KumoServiceSocketServer(paths: paths, credentials: credentials, authorizedUID: authorizedUID)
+        let server = KumoServiceSocketServer(
+            paths: paths,
+            credentials: credentials,
+            authorizedUID: authorizedUID,
+            ownershipRepair: ownershipRepair
+        )
         try await server.run()
     }
 
@@ -193,12 +208,19 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
     private let paths: KumoPaths
     private let credentials: KumoServiceCredentials
     private let authorizedUID: uid_t
+    private let ownershipRepair: AppSupportOwnershipRepair?
     private var seenNonces = Set<String>()
 
-    init(paths: KumoPaths, credentials: KumoServiceCredentials, authorizedUID: uid_t) {
+    init(
+        paths: KumoPaths,
+        credentials: KumoServiceCredentials,
+        authorizedUID: uid_t,
+        ownershipRepair: AppSupportOwnershipRepair?
+    ) {
         self.paths = paths
         self.credentials = credentials
         self.authorizedUID = authorizedUID
+        self.ownershipRepair = ownershipRepair
     }
 
     func run() async throws {
@@ -239,6 +261,7 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
             throw KumoError.serviceUnavailable("Unable to listen on service socket.")
         }
         try KumoServiceMain.saveStatus(paths: paths, installed: true, running: true)
+        ownershipRepair?.repair()
 
         while true {
             let client = accept(descriptor, nil, nil)
@@ -257,10 +280,27 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
             guard KumoServiceRequestSigner.validate(request, credentials: credentials, seenNonces: &seenNonces) else {
                 return KumoServiceTransportResponse(status: 401, error: "Invalid Kumo service signature.")
             }
+            // See `routeWritesAppSupportState(_:)`.
+            defer {
+                if Self.routeWritesAppSupportState(request.path) {
+                    ownershipRepair?.repair()
+                }
+            }
             return try await route(request)
         } catch {
             return KumoServiceTransportResponse(status: 500, error: error.localizedDescription)
         }
+    }
+
+    /// Everything except the couple of pure-read routes runs a
+    /// `KumoController` call that can write app-support files as root:
+    /// `core/start` and `core/stop` obviously, but also `/status`, whose pid
+    /// recovery and stale-pid cleanup persist state. Handing those files back
+    /// to the authorized user after the handler (including when it throws after
+    /// writing a failed status) keeps the caller-side bookkeeping writable
+    /// (Issue #3).
+    private static func routeWritesAppSupportState(_ path: String) -> Bool {
+        path != "/service/status" && path != "/tun/status"
     }
 
     private func route(_ request: KumoServiceSignedRequest) async throws -> KumoServiceTransportResponse {

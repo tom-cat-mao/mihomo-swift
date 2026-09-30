@@ -56,6 +56,38 @@ unreachable PID. The PID record is kept rather than cleared, so the CLI does
 not print `Mihomo core stopped.` for a core that is still running; stopping
 such a core requires the privileged helper or an administrator.
 
+### State ownership and bookkeeping tolerance
+
+The privileged helper runs as root, so it — not the app or CLI — owns every
+app-support file it creates. On a fresh service-mode install that left
+`state.json`, `logs/runtime-events.jsonl` and `work/*` as `root:staff 0644`,
+after which every non-root bookkeeping write failed with `EACCES` and
+`kumo start` reported a false failure for a core that was actually up
+(Issue #3). Three rules keep that from recurring:
+
+- **The helper repairs ownership.** `AppSupportOwnershipRepair` chowns the
+  app-support root and every non-symlinked entry beneath it to the authorized
+  uid (from `--authorized-uid`) and that user's primary gid (`getpwuid`). The
+  daemon runs it once at startup — the upgrade path for installs already in the
+  broken state — and again after every request that can write app-support
+  state, including the pid-recovery writes a plain `/status` read can trigger.
+  The walk is a single bounded pass, never chowns or follows symlinks, and
+  skips `/Library/PrivilegedHelperTools/io.kumo.KumoService` and the launchd
+  plist, which stay root-owned. The call is a no-op unless the process is root,
+  so an unprivileged caller can invoke it unconditionally.
+- **Caller-side bookkeeping is best-effort in service mode.** Runtime events go
+  through a non-throwing append that logs a warning and drops the row when the
+  file cannot be written — the event trail is diagnostic, never a precondition
+  for managing the core. The same holds for the `controllerReady` bookkeeping
+  `waitForControllerReady()` performs after a helper-routed start: the helper's
+  `state.json` is authoritative, and a denied caller-side write must not turn a
+  ready core into a failed `start`.
+- **Direct mode still fails loudly.** Without a helper there is no other
+  writer, so the supervisor's own record stays load-bearing: `state.json` and
+  the `work/core.pid` record (and the readiness update that follows them) still
+  throw when they cannot be persisted. A silently unrecorded pid would mean a
+  core the next `status()` or `stop()` cannot find or stop.
+
 ### Single-instance guard
 
 Before clearing the PID record and spawning, `CoreSupervisor.start()` probes

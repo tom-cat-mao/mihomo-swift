@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The privileged helper now repairs the app-support tree to the authorized user
+  at startup (upgrading installs already in the broken state) and after every
+  request that can write state, so `state.json`, `logs/runtime-events.jsonl`
+  and `work/*` no longer stay `root:staff 0644` on fresh service-mode installs.
+  Runtime-event and readiness bookkeeping is best-effort on the caller side, so
+  a denied bookkeeping write can no longer turn a ready core into a failed
+  `kumo start`; direct-mode state and pid persistence still fail loudly.
+  (Issue #3)
 - Core liveness treats `EPERM` from `kill(pid, 0)` as "alive". A core running as
   root via the privileged helper is no longer misjudged as dead by an
   unprivileged app or CLI, which cleared the recorded PID and allowed a second
