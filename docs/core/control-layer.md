@@ -44,8 +44,55 @@
 - `checkAppUpdate(...)` / `downloadAppUpdate(...)` / `installAppUpdate(...)`
 - `userPreferences()` / `updateUserPreferences(_:)`
 - `installCLILink()` / `uninstallCLILink()`
+- `prepareForAppTermination(policy:)` — best-effort shutdown entry point (see below)
 
 This API is intentionally close to the CLI command vocabulary and the future service API.
+
+## Runtime Tier Routing (Two-Tier Runtime, In Progress)
+
+`KumoController` selects which process owns or runs the Mihomo core per
+operation through an internal `BackendRouter`
+(`Sources/KumoCoreKit/Service/BackendRouter.swift`). All existing public method
+signatures stay stable; routing is not part of the public API.
+
+| Current state | Backend |
+| --- | --- |
+| TUN enabled (per `state.json` runtime settings) | root LaunchDaemon (`io.kumo.KumoService`) |
+| TUN disabled + user agent reachable | user LaunchAgent (`io.kumo.KumoAgent`, "kumod") |
+| otherwise | local `CoreSupervisor` (historical default) |
+
+- A TUN-enabled operation whose root daemon is unreachable fails with
+  `KumoError.serviceUnavailable`. Kumo never silently runs a user-owned core
+  while TUN is active, because that would strand TUN traffic. A privileged
+  process (euid 0) may still own TUN locally.
+- `status()` is read-only and degrades to the shared `state.json` plus pid
+  recovery when the selected socket tier fails mid-call, so a live core owned
+  by another tier is reported as running (for example after a GUI relaunch)
+  instead of stopped.
+- System proxy and TUN-status reads keep their historical root-or-local
+  executor semantics; the router's reachability probe is the single source of
+  truth for both.
+- Reachability probes are injectable (`BackendReachability`) so routing and
+  handoff tests run without sockets, launchd, or spawned processes.
+
+The GUI/CLI wiring on top of this layer — installing the user agent, adopting
+`prepareForAppTermination(policy:)` on quit, CLI tier selection — is follow-up
+work. This layer provides the routing rule, the handoff, and the termination
+policy API only.
+
+## App Termination Policy
+
+`prepareForAppTermination(policy:)` is the single best-effort shutdown entry
+point. It never throws; every failed step is collected in
+`ShutdownResult.diagnostics` and the returned status is the most recent
+observable one.
+
+- `.stopRuntime` (default) preserves today's `shutdownActiveRuntime()`
+  behavior: disable Kumo-managed system proxy state, then stop the running core
+  through whichever tier owns it.
+- `.keepCoreAlive` disables nothing and stops nothing; it only reads the
+  current status. It relies on the user agent (or root daemon) owning the core
+  so the core keeps serving after the GUI quits. GUI wiring pending.
 
 ## Synchronous Facade, Serial App Executor
 

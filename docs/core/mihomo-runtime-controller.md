@@ -109,29 +109,74 @@ existing file is non-empty it is first renamed to
 is still running keeps writing to its renamed file, so lines from concurrent
 cores no longer interleave in `core.log`.
 
-This local supervision path is still available as the fallback. When Kumo
-Helper is installed and reachable, `KumoController` routes start, stop,
-restart, system proxy, and TUN operations through the signed Unix socket
-service backend so the privileged helper owns Mihomo. Helper-routed start and
-restart requests wait for Mihomo's controller endpoint to answer before
-returning, so callers do not observe a running process whose control surface
-is still unavailable. `kumo start` performs the same `GET /version` readiness
-wait as the app and the daemon; if the controller never answers, the command
-fails with the reason and the `logs/core.log` path instead of reporting a
-plain success.
+This local supervision path is still available as the fallback. `KumoController`
+selects the core's owner per operation through `BackendRouter`
+(`Sources/KumoCoreKit/Service/BackendRouter.swift`):
 
-`KumoAppDelegate.applicationShouldTerminate(_:)` delays app termination while
-`KumoAppStore.prepareForTermination()` runs
-`KumoController.shutdownActiveRuntime()`. The shutdown is best-effort and
-log-and-continue: it disables Kumo-managed system proxy state, then stops the
-running Mihomo core through the helper when it is reachable or through the
-local supervisor otherwise. Each step has a fallback — a synchronous
-`networksetup` invocation backs up the async/helper proxy disable, and a
-direct `CoreSupervisor.stop()` backs up the helper-routed core stop — so a
-single hung IPC call does not leave Mihomo or the user's proxy settings in a
-broken state. Diagnostics from every failed step are collected into a
-`ShutdownResult` and surfaced via `errorMessage`; the post-shutdown UI state
-reset always runs, even when every step failed. This mirrors Sparkle's
+- **TUN enabled** (per `state.json` runtime settings) → the privileged root
+  daemon. If the root daemon is unreachable, start/stop/restart fail with
+  `KumoError.serviceUnavailable`; Kumo never silently runs the core as a user
+  process while TUN is active, because that would strand TUN traffic. A
+  privileged process (euid 0) may own TUN locally.
+- **TUN disabled + user agent reachable** → the user LaunchAgent
+  (`io.kumo.KumoAgent`), so the core survives GUI quit.
+- **Otherwise** → the local `CoreSupervisor` (historical default).
+
+`status()` routes through the selected tier when it answers and otherwise
+falls back to the shared `state.json` plus pid recovery, so a core owned by
+another tier is reported as running (for example after a GUI relaunch) instead
+of stopped. System proxy and TUN-status reads keep their root-or-local
+executor semantics, using the same reachability probe as the router. Helper-
+routed start and restart requests wait for Mihomo's controller endpoint to
+answer before returning, so callers do not observe a running process whose
+control surface is still unavailable. `kumo start` performs the same
+`GET /version` readiness wait as the app and the daemon; if the controller
+never answers, the command fails with the reason and the `logs/core.log` path
+instead of reporting a plain success.
+
+### Core ownership handoff (two-tier runtime, in progress)
+
+TUN transitions move the core between tiers instead of leaving it on the wrong
+owner:
+
+- Enabling TUN while the user agent owns a running core stops the core through
+  the agent, persists the TUN setting, and starts it through the root daemon
+  (root-owned). Stopping and starting exposes a short traffic gap while the
+  new core initializes.
+- Disabling TUN while the root daemon owns a running core hands the core back
+  to the user agent when the agent is reachable (stop via root, start via
+  agent), so a later GUI quit does not kill it. When no agent is reachable the
+  root daemon restarts its own core with TUN disabled.
+- Every handoff has rollback: if the target tier fails to start, the previous
+  setting is restored where applicable and the core is restarted on the source
+  tier; the thrown error names the target failure and any rollback problem.
+- The existing guard is unchanged: TUN enable without a reachable privileged
+  tier fails and rolls the stored setting back.
+
+The GUI/CLI wiring of these transitions (installing the user agent, exposing
+the policy on quit) is follow-up work; the KumoCoreKit layer is in place.
+
+The old shutdown path is now expressed through
+`prepareForAppTermination(policy:)`, which never throws and collects failures
+in `ShutdownResult.diagnostics`:
+
+- `.stopRuntime` (default) preserves `shutdownActiveRuntime()`:
+  `KumoAppDelegate.applicationShouldTerminate(_:)` delays app termination
+  while `KumoAppStore.prepareForTermination()` runs it. The shutdown is
+  best-effort and log-and-continue: it disables Kumo-managed system proxy
+  state, then stops the running Mihomo core through the owning tier when it is
+  reachable or through the local supervisor otherwise. Each step has a
+  fallback — a synchronous `networksetup` invocation backs up the async/helper
+  proxy disable, and a direct `CoreSupervisor.stop()` backs up the
+  helper-routed core stop — so a single hung IPC call does not leave Mihomo or
+  the user's proxy settings in a broken state.
+- `.keepCoreAlive` disables nothing and stops nothing; it only reads the
+  current status. It relies on the user agent (or root daemon) owning the core,
+  which is the policy the two-tier runtime exists for. GUI wiring pending.
+
+Diagnostics from every failed step are collected into a `ShutdownResult` and
+surfaced via `errorMessage`; the post-shutdown UI state reset always runs, even
+when every step failed. This mirrors Sparkle's
 `Promise.all([triggerSysProxy(false), stopCore()])` + `will-quit` →
 `disableSysProxySync()` pattern.
 
@@ -140,10 +185,12 @@ hung helper-IPC stop or stuck `networksetup` invocation cannot keep AppKit
 in `.terminateLater` forever; this is the Swift analogue of Sparkle's
 SIGINT → SIGTERM → SIGKILL ladder (capped at +6 s in `process-control.ts`).
 
-The helper daemon may remain installed and reachable after app quit, but it
-must not leave a helper-owned Mihomo process, TUN route, or DNS interception
-active. Stopping Mihomo is the cleanup boundary for the active TUN route
-and Mihomo-managed DNS interception.
+The helper daemon may remain installed and reachable after app quit, but under
+`.stopRuntime` it must not leave a helper-owned Mihomo process, TUN route, or
+DNS interception active. Stopping Mihomo is the cleanup boundary for the active
+TUN route and Mihomo-managed DNS interception. Under `.keepCoreAlive` the
+agent/root-owned core and the Kumo-managed system proxy are deliberately left
+running so traffic keeps flowing after the GUI quits.
 
 ## TUN Runtime Settings
 
@@ -171,8 +218,10 @@ rejected and the stored state is rolled back before Mihomo is restarted.
 When Kumo Helper is running, `POST /tun/enable` updates the same runtime
 settings, rewrites the controlled config, restarts the helper-owned Mihomo
 process, waits for the controller to become ready, and reports the resulting
-`TunStatus`. The macOS authorization involved is helper installation/repair,
-not a NetworkExtension VPN configuration prompt.
+`TunStatus`. In the two-tier runtime, enabling TUN while the user agent owns
+the core first performs the ownership handoff described above (GUI/CLI wiring
+is in progress). The macOS authorization involved is helper installation/
+repair, not a NetworkExtension VPN configuration prompt.
 
 ## DNS Runtime Settings
 

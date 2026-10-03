@@ -43,12 +43,44 @@ public struct KumoController: Sendable {
     let preferencesStore: UserPreferencesStore
     let subStoreSupervisor: SubStoreSupervisor
     let serviceManager: KumoServiceManager
+    let userAgentManager: KumoUserAgentManager
+    /// Selects the runtime tier for every lifecycle, TUN and system-proxy
+    /// operation. See `BackendRouter`.
+    let router: BackendRouter
+    /// Test seam: replaces `serviceManager.status()` so routing tests can
+    /// simulate a reachable privileged tier without installing the helper.
+    let serviceModeStatusProvider: (@Sendable () -> ServiceModeStatus)?
+    /// Test seam: replaces the real per-tier lifecycle calls so handoff
+    /// success and rollback can be exercised without sockets or spawns.
+    let tierOperations: TierOperationsOverride?
+    /// Test seam: replaces the controller HTTP readiness wait.
+    let readinessWaiter: (@Sendable () async throws -> Void)?
     let useServiceBackend: Bool
 
     public init(
         paths: KumoPaths = KumoPaths(),
         useServiceBackend: Bool = true,
         systemProxyCommandRunner: SystemProxyCommandRunner = .live
+    ) {
+        self.init(
+            paths: paths,
+            useServiceBackend: useServiceBackend,
+            systemProxyCommandRunner: systemProxyCommandRunner,
+            reachability: nil,
+            serviceModeStatusProvider: nil,
+            tierOperations: nil,
+            readinessWaiter: nil
+        )
+    }
+
+    init(
+        paths: KumoPaths,
+        useServiceBackend: Bool,
+        systemProxyCommandRunner: SystemProxyCommandRunner,
+        reachability: BackendReachability?,
+        serviceModeStatusProvider: (@Sendable () -> ServiceModeStatus)?,
+        tierOperations: TierOperationsOverride?,
+        readinessWaiter: (@Sendable () async throws -> Void)?
     ) {
         self.paths = paths
         self.profileRepository = ProfileRepository(paths: paths)
@@ -65,12 +97,32 @@ public struct KumoController: Sendable {
         self.preferencesStore = UserPreferencesStore(paths: paths)
         self.subStoreSupervisor = SubStoreSupervisor(paths: paths)
         self.serviceManager = KumoServiceManager(paths: paths)
+        self.userAgentManager = KumoUserAgentManager(paths: paths)
+        self.router = BackendRouter(
+            reachability: reachability ?? .live(paths: paths, useServiceBackend: useServiceBackend),
+            allowsServiceBackend: useServiceBackend
+        )
+        self.serviceModeStatusProvider = serviceModeStatusProvider
+        self.tierOperations = tierOperations
+        self.readinessWaiter = readinessWaiter
         self.useServiceBackend = useServiceBackend
     }
 
     public func status() throws -> CoreStatus {
-        if let client = runningServiceClient() {
-            return try client.sendDecodable(client.statusRequest(), as: CoreStatus.self)
+        let decision = router.decideCoreBackend(tunEnabled: currentTunEnabled())
+        if let client = serviceClient(for: decision) {
+            do {
+                return try client.sendDecodable(client.statusRequest(), as: CoreStatus.self)
+            } catch {
+                // A tier that answered the reachability probe can still fail
+                // this call (restart, socket churn). The shared state file plus
+                // pid recovery is the fallback read, so a live core is never
+                // reported stopped because of a momentary IPC failure.
+                routingLogger.warning(
+                    "Status read through \(decision.backend?.rawValue ?? "none", privacy: .public) failed; falling back to the shared state: \(error.localizedDescription, privacy: .public)"
+                )
+                return try supervisor.status()
+            }
         }
         return try supervisor.status()
     }
@@ -119,9 +171,29 @@ public struct KumoController: Sendable {
 
     @discardableResult
     public func start(corePath: String? = nil) throws -> CoreStatus {
-        if corePath == nil, let client = runningServiceClient() {
-            return try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
+        if corePath == nil {
+            switch try requiredCoreBackend() {
+            case .rootService:
+                guard let client = rootServiceClient() else {
+                    throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
+                }
+                return try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
+            case .userAgent:
+                guard let client = userAgentClient() else {
+                    throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
+                }
+                return try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
+            case .localSupervisor:
+                return try startLocalCore(corePath: nil)
+            }
         }
+        return try startLocalCore(corePath: corePath)
+    }
+
+    /// Direct-mode launch: generate the runtime config from the current profile
+    /// and run the core as a child of this process. Routed callers reach this
+    /// only when `BackendRouter` selects the local supervisor.
+    func startLocalCore(corePath: String?) throws -> CoreStatus {
         let currentStatus = try normalizedStatusForLaunch()
         let profile = try profileRepository.loadDefaultProfile()
         let overrideYAMLs = try overrideRepository.activeYAMLs()
@@ -140,16 +212,26 @@ public struct KumoController: Sendable {
 
     @discardableResult
     public func stop() throws -> CoreStatus {
-        if let client = runningServiceClient() {
+        switch try requiredCoreBackend() {
+        case .rootService:
+            guard let client = rootServiceClient() else {
+                throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
+            }
             return try client.sendDecodable(client.stopCoreRequest(), as: CoreStatus.self)
+        case .userAgent:
+            guard let client = userAgentClient() else {
+                throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
+            }
+            return try client.sendDecodable(client.stopCoreRequest(), as: CoreStatus.self)
+        case .localSupervisor:
+            return try supervisor.stop()
         }
-        return try supervisor.stop()
     }
 
-    /// Best-effort shutdown of whichever runtime is active (helper-routed
-    /// when the privileged service is up, in-app supervisor otherwise).
-    /// Disables Kumo-managed system proxy state and stops the running
-    /// Mihomo core. Never throws — every failed step is recorded in the
+    /// Best-effort shutdown of whichever runtime is active (routed through the
+    /// tier that owns the core: root daemon, user agent, or the in-app
+    /// supervisor). Disables Kumo-managed system proxy state and stops the
+    /// running Mihomo core. Never throws — every failed step is recorded in the
     /// returned `ShutdownResult.diagnostics` and the next step is still
     /// attempted, so the caller is free to clear UI state and exit even
     /// when an error occurred. Includes synchronous-networksetup and local
@@ -200,8 +282,22 @@ public struct KumoController: Sendable {
     }
 
     public func restart(corePath: String? = nil) throws -> CoreStatus {
-        if corePath == nil, let client = runningServiceClient() {
-            return try client.sendDecodable(client.restartCoreRequest(), as: CoreStatus.self)
+        if corePath == nil {
+            switch try requiredCoreBackend() {
+            case .rootService:
+                guard let client = rootServiceClient() else {
+                    throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
+                }
+                return try client.sendDecodable(client.restartCoreRequest(), as: CoreStatus.self)
+            case .userAgent:
+                guard let client = userAgentClient() else {
+                    throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
+                }
+                return try client.sendDecodable(client.restartCoreRequest(), as: CoreStatus.self)
+            case .localSupervisor:
+                _ = try stop()
+                return try start(corePath: nil)
+            }
         }
         _ = try stop()
         return try start(corePath: corePath)
@@ -280,26 +376,27 @@ public struct KumoController: Sendable {
     /// The two modes have different state authority, and the distinction is
     /// deliberate:
     ///
-    /// - Service mode: the privileged helper owns `state.json`, the pid record
-    ///   and the runtime event log, and it is the authoritative writer. On a
-    ///   fresh service-mode install the helper created those as root, so a
-    ///   non-root caller-side write is denied (Issue #3). The core is
-    ///   demonstrably ready at this point, so the denial degrades to a warning
-    ///   instead of turning a successful `start` into a failure.
+    /// - Socket tiers (root daemon or user agent): the tier owns `state.json`,
+    ///   the pid record and the runtime event log, and it is the authoritative
+    ///   writer. On a fresh service-mode install the helper created those as
+    ///   root, so a non-root caller-side write is denied (Issue #3). The core
+    ///   is demonstrably ready at this point, so the denial degrades to a
+    ///   warning instead of turning a successful `start` into a failure.
     /// - Direct mode: no daemon owns the state. The supervisor's own record is
     ///   what later `status()`/`stop()` calls act on, so a persistence failure
     ///   must still throw — a silently unrecorded core is an unmanageable core.
     private func recordControllerReadiness() throws {
-        if runningServiceClient() != nil {
+        switch router.decideCoreBackend(tunEnabled: currentTunEnabled()) {
+        case .backend(.localSupervisor):
+            _ = try supervisor.updateReadiness(.controllerReady, message: "Mihomo controller is ready.")
+        default:
             do {
                 _ = try supervisor.updateReadiness(.controllerReady, message: "Mihomo controller is ready.")
             } catch {
                 readinessLogger.warning(
-                    "Helper-owned state is authoritative; skipping caller-side readiness bookkeeping: \(error.localizedDescription, privacy: .public)"
+                    "Tier-owned state is authoritative; skipping caller-side readiness bookkeeping: \(error.localizedDescription, privacy: .public)"
                 )
             }
-        } else {
-            _ = try supervisor.updateReadiness(.controllerReady, message: "Mihomo controller is ready.")
         }
     }
 
@@ -541,7 +638,7 @@ public struct KumoController: Sendable {
 
     @discardableResult
     public func setSystemProxy(_ isEnabled: Bool, dryRun: Bool = false) async throws -> [ShellCommand] {
-        if !dryRun, let client = runningServiceClient() {
+        if !dryRun, let client = privilegedServiceClient() {
             _ = try client.send(client.setSystemProxyEnabledRequest(isEnabled))
             return []
         }
@@ -596,11 +693,11 @@ public struct KumoController: Sendable {
     }
 
     public func tunStatus() throws -> TunStatus {
-        if let client = runningServiceClient() {
+        if let client = privilegedServiceClient() {
             return try client.sendDecodable(client.tunStatusRequest(), as: TunStatus.self)
         }
         let status = try stateStore.load()
-        let service = serviceManager.status()
+        let service = currentServiceStatus()
         let settings = status.runtimeSettings?.tun ?? TunSettings()
         let logPermissionError = recentTunPermissionError()
         return TunStatus(
@@ -715,83 +812,21 @@ public struct KumoController: Sendable {
         try stateStore.save(status)
     }
 
+    /// Applies full TUN settings through `updateTunSettingsFlow`, which also
+    /// performs tier ownership handoffs when the TUN state transitions.
     @discardableResult
     public func applyTunSettings(_ settings: TunSettings) async throws -> TunStatus {
-        if let client = runningServiceClient() {
-            let request = try client.applyTunSettingsRequest(settings)
-            return try client.sendDecodable(request, as: TunStatus.self)
-        }
-
-        var status = try stateStore.load()
-        let service = serviceManager.status()
-        var runtimeSettings = runtimeSettings(for: status)
-        let normalizedSettings = normalizedTunSettings(settings)
-
-        if normalizedSettings.isEnabled, !service.canManageTun {
-            let message = service.message ?? "TUN requires the Kumo privileged helper."
-            status.serviceModeStatus = service
-            status.tunStatus = TunStatus(isEnabled: false, isRunning: false, requiresService: true, lastError: message)
-            try stateStore.save(status)
-            throw KumoError.serviceUnavailable(message)
-        }
-
-        runtimeSettings.tun = normalizedSettings
-        status.runtimeSettings = runtimeSettings
-        status.proxyPorts.mixedPort = runtimeSettings.mixedPort
-        status.serviceModeStatus = service
-        status.tunStatus = TunStatus(
-            isEnabled: normalizedSettings.isEnabled,
-            isRunning: status.state == .running && normalizedSettings.isEnabled,
-            requiresService: !service.canManageTun,
-            lastError: nil
-        )
-        try stateStore.save(status)
-
-        if status.state == .running {
-            _ = try restart()
-            try await waitForControllerReady()
-        }
-
-        return try tunStatus()
+        try await updateTunSettingsFlow(settings)
     }
 
+    /// Toggles TUN through `updateTunSettingsFlow`, preserving every other
+    /// stored TUN setting.
     @discardableResult
     public func setTunEnabled(_ isEnabled: Bool) async throws -> TunStatus {
-        if let client = runningServiceClient() {
-            return try client.sendDecodable(client.setTunEnabledRequest(isEnabled), as: TunStatus.self)
-        }
-        var status = try stateStore.load()
-        let service = serviceManager.status()
-        var runtimeSettings = runtimeSettings(for: status)
-        var tun = runtimeSettings.tun ?? TunSettings()
-
-        if isEnabled, !service.canManageTun {
-            let message = service.message ?? "TUN requires the Kumo privileged helper."
-            status.serviceModeStatus = service
-            status.tunStatus = TunStatus(isEnabled: false, isRunning: false, requiresService: true, lastError: message)
-            try stateStore.save(status)
-            throw KumoError.serviceUnavailable(message)
-        }
-
+        let status = try stateStore.load()
+        var tun = runtimeSettings(for: status).tun ?? TunSettings()
         tun.isEnabled = isEnabled
-        runtimeSettings.tun = tun
-        status.runtimeSettings = runtimeSettings
-        status.proxyPorts.mixedPort = runtimeSettings.mixedPort
-        status.serviceModeStatus = service
-        status.tunStatus = TunStatus(
-            isEnabled: isEnabled,
-            isRunning: status.state == .running && isEnabled,
-            requiresService: !service.canManageTun,
-            lastError: nil
-        )
-        try stateStore.save(status)
-
-        if status.state == .running {
-            _ = try restart()
-            try await waitForControllerReady()
-        }
-
-        return try tunStatus()
+        return try await updateTunSettingsFlow(tun)
     }
 
     public func subStoreStatus() throws -> SubStoreStatus {
