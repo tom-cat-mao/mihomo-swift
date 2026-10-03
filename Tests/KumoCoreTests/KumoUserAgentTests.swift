@@ -91,18 +91,176 @@ final class KumoUserAgentTests: XCTestCase {
         XCTAssertEqual(status.socketPath, paths.userAgentSocketFile.path)
     }
 
-    func testLaunchAgentPlistRunsUserModeService() {
+    // MARK: - Generated LaunchAgent plist
+
+    func testLaunchAgentPlistRunsUserModeServiceOnDemand() throws {
         let paths = hermeticPaths()
         let executable = URL(fileURLWithPath: "/Applications/Kumo.app/Contents/MacOS/KumoService")
         let plist = KumoUserAgentManager.launchAgentPlist(executable: executable, paths: paths)
+        let object = try plistObject(plist)
 
-        XCTAssertTrue(plist.contains("<string>\(KumoPaths.userAgentLabel)</string>"))
-        XCTAssertTrue(plist.contains("<string>\(executable.path)</string>"))
-        XCTAssertTrue(plist.contains("<string>--mode</string>"))
-        XCTAssertTrue(plist.contains("<string>user</string>"))
-        XCTAssertTrue(plist.contains("<string>\(paths.applicationSupportDirectory.path)</string>"))
-        XCTAssertTrue(plist.contains("<string>\(paths.userAgentLogFile.path)</string>"))
+        XCTAssertEqual(object["Label"] as? String, KumoPaths.userAgentLabel)
+        XCTAssertEqual(object["ProgramArguments"] as? [String], [
+            executable.path,
+            "service",
+            "run",
+            "--mode",
+            "user",
+            "--app-support",
+            paths.applicationSupportDirectory.path,
+            "--idle-timeout",
+            "300"
+        ])
+        // On-demand: launchd holds the endpoint through `Sockets` and starts
+        // the process on the first connection, so the agent is never loaded
+        // at login and never kept alive.
+        XCTAssertEqual(object["RunAtLoad"] as? Bool, false)
+        XCTAssertEqual(object["KeepAlive"] as? Bool, false)
+        XCTAssertEqual(object["StandardOutPath"] as? String, paths.userAgentLogFile.path)
+        XCTAssertEqual(object["StandardErrorPath"] as? String, paths.userAgentLogFile.path)
         XCTAssertFalse(plist.contains("--authorized-uid"))
+
+        let sockets = try XCTUnwrap(object["Sockets"] as? [String: Any])
+        let listener = try XCTUnwrap(
+            sockets[KumoUserAgentManager.launchdListenerSocketName] as? [String: Any]
+        )
+        XCTAssertEqual(listener["SockPathName"] as? String, paths.userAgentSocketFile.path)
+        XCTAssertEqual(listener["SockPathMode"] as? Int, 384)
+        XCTAssertEqual(KumoUserAgentManager.launchdSocketMode, 384)
+    }
+
+    func testLaunchAgentPlistPassesConfiguredIdleTimeout() throws {
+        let paths = hermeticPaths()
+        let executable = URL(fileURLWithPath: "/tmp/KumoService")
+        let manager = KumoUserAgentManager(paths: paths, idleTimeoutSeconds: 42)
+        XCTAssertEqual(manager.idleTimeoutSeconds, 42)
+
+        let object = try plistObject(
+            KumoUserAgentManager.launchAgentPlist(
+                executable: executable,
+                paths: paths,
+                idleTimeoutSeconds: manager.idleTimeoutSeconds
+            )
+        )
+        let arguments = try XCTUnwrap(object["ProgramArguments"] as? [String])
+        XCTAssertEqual(Array(arguments.suffix(2)), ["--idle-timeout", "42"])
+    }
+
+    func testRootLaunchDaemonPlistIsUnchangedByOnDemandWork() throws {
+        let paths = KumoPaths(
+            applicationSupportDirectory: URL(fileURLWithPath: "/tmp/kumo-root-plist-test", isDirectory: true)
+        )
+        let plist = ServiceMode.rootLaunchDaemonPlist(paths: paths, authorizedUID: 501)
+        let object = try plistObject(plist)
+
+        let expected: [AnyHashable: Any] = [
+            "Label": KumoServiceManager.launchDaemonLabel,
+            "ProgramArguments": [
+                "/Library/PrivilegedHelperTools/io.kumo.KumoService",
+                "service",
+                "run",
+                "--app-support",
+                "/tmp/kumo-root-plist-test",
+                "--authorized-uid",
+                "501"
+            ],
+            "RunAtLoad": true,
+            "KeepAlive": true,
+            "StandardOutPath": "/tmp/kumo-root-plist-test/logs/kumo-service.log",
+            "StandardErrorPath": "/tmp/kumo-root-plist-test/logs/kumo-service.log"
+        ]
+        XCTAssertTrue(NSDictionary(dictionary: object).isEqual(to: expected))
+        XCTAssertFalse(plist.contains("Sockets"))
+        XCTAssertFalse(plist.contains("--mode"))
+    }
+
+    // MARK: - Idle-exit policy
+
+    func testIdlePolicyExitsOnlyAfterTimeoutWithNoCoreAndNoRequest() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let policy = ServiceIdlePolicy(timeout: 300, now: start)
+
+        XCTAssertFalse(policy.shouldExit(now: start.addingTimeInterval(299), isCoreRunning: false))
+        XCTAssertTrue(policy.shouldExit(now: start.addingTimeInterval(300), isCoreRunning: false))
+        XCTAssertTrue(policy.shouldExit(now: start.addingTimeInterval(301), isCoreRunning: false))
+    }
+
+    func testIdlePolicyNeverExitsWhileCoreIsRunning() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let policy = ServiceIdlePolicy(timeout: 5, now: start)
+
+        XCTAssertFalse(policy.shouldExit(now: start.addingTimeInterval(10_000), isCoreRunning: true))
+        XCTAssertTrue(policy.shouldExit(now: start.addingTimeInterval(10_000), isCoreRunning: false))
+    }
+
+    func testIdlePolicyNeverExitsWithRequestInFlight() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        var policy = ServiceIdlePolicy(timeout: 5, now: start)
+        policy.requestStarted(at: start)
+
+        XCTAssertFalse(policy.shouldExit(now: start.addingTimeInterval(60), isCoreRunning: false))
+
+        policy.requestFinished(at: start.addingTimeInterval(60))
+        XCTAssertFalse(policy.shouldExit(now: start.addingTimeInterval(64), isCoreRunning: false))
+        XCTAssertTrue(policy.shouldExit(now: start.addingTimeInterval(65), isCoreRunning: false))
+    }
+
+    func testIdlePolicyRequestActivityResetsDeadline() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        var policy = ServiceIdlePolicy(timeout: 300, now: start)
+        policy.requestStarted(at: start.addingTimeInterval(200))
+        policy.requestFinished(at: start.addingTimeInterval(200))
+
+        XCTAssertFalse(policy.shouldExit(now: start.addingTimeInterval(499), isCoreRunning: false))
+        XCTAssertTrue(policy.shouldExit(now: start.addingTimeInterval(500), isCoreRunning: false))
+    }
+
+    func testIdlePolicyCheckIntervalIsCappedAndCorePinned() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let policy = ServiceIdlePolicy(timeout: 300, now: start)
+
+        XCTAssertEqual(
+            policy.nextCheckIntervalSeconds(at: start, isCoreRunning: false),
+            5,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            policy.nextCheckIntervalSeconds(at: start.addingTimeInterval(299.95), isCoreRunning: false),
+            0.1,
+            accuracy: 0.001
+        )
+        // With a core running an exit is impossible, so the loop waits the
+        // full tick instead of spinning at the (long-past) deadline.
+        XCTAssertEqual(
+            policy.nextCheckIntervalSeconds(at: start.addingTimeInterval(10_000), isCoreRunning: true),
+            5,
+            accuracy: 0.001
+        )
+    }
+
+    func testIdleTimeoutParsingDefaultsOverridesAndRejectsInvalidValues() throws {
+        XCTAssertEqual(ServiceIdlePolicy.defaultTimeoutSeconds, 300)
+        XCTAssertEqual(try ServiceIdlePolicy.parseTimeoutSeconds(arguments: []), 300)
+        XCTAssertEqual(
+            try ServiceIdlePolicy.parseTimeoutSeconds(
+                arguments: ["--mode", "user", "--idle-timeout", "3", "--app-support", "/tmp/x"]
+            ),
+            3
+        )
+
+        XCTAssertThrowsError(try ServiceIdlePolicy.parseTimeoutSeconds(arguments: ["--idle-timeout", "0"]))
+        XCTAssertThrowsError(try ServiceIdlePolicy.parseTimeoutSeconds(arguments: ["--idle-timeout", "-1"]))
+        XCTAssertThrowsError(try ServiceIdlePolicy.parseTimeoutSeconds(arguments: ["--idle-timeout", "abc"]))
+        XCTAssertThrowsError(try ServiceIdlePolicy.parseTimeoutSeconds(arguments: ["--idle-timeout"]))
+    }
+
+    // MARK: - Helpers
+
+    private func plistObject(_ plist: String) throws -> [String: Any] {
+        let data = try XCTUnwrap(plist.data(using: .utf8))
+        return try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
+        )
     }
 
     private func hermeticPaths() -> KumoPaths {

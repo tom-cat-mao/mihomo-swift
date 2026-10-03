@@ -9,14 +9,32 @@ import ServiceManagement
 /// socket protocol as the root daemon and reuses the same credentials file;
 /// only the socket path (`kumo-agent.sock`), the log path and the launchd
 /// domain (`gui/<uid>`) differ.
+///
+/// The agent is not permanently resident. The generated plist declares a
+/// launchd `Sockets` listener (`launch_activate_socket` in the agent) with
+/// `RunAtLoad=false` / `KeepAlive=false`, so launchd holds the endpoint and
+/// starts the process on the first client connection. The agent then exits
+/// on its own after `idleTimeoutSeconds` without traffic and with no core
+/// running; see `ServiceIdlePolicy`.
 public struct KumoUserAgentManager: Sendable {
     public static let launchAgentLabel = KumoPaths.userAgentLabel
     public static let launchAgentPlistName = "\(KumoPaths.userAgentLabel).plist"
+    /// launchd `Sockets` entry name the agent adopts with
+    /// `launch_activate_socket("Listener", ...)`.
+    public static let launchdListenerSocketName = "Listener"
+    /// `SockPathMode` for the launchd-created socket: 0600.
+    public static let launchdSocketMode = Int(0o600)
 
+    /// Idle window the generated plist passes to `service run --idle-timeout`.
+    public let idleTimeoutSeconds: Int
     private let paths: KumoPaths
 
-    public init(paths: KumoPaths = KumoPaths()) {
+    public init(
+        paths: KumoPaths = KumoPaths(),
+        idleTimeoutSeconds: Int = ServiceIdlePolicy.defaultTimeoutSeconds
+    ) {
         self.paths = paths
+        self.idleTimeoutSeconds = idleTimeoutSeconds
     }
 
     public func status() -> ServiceModeStatus {
@@ -65,6 +83,9 @@ public struct KumoUserAgentManager: Sendable {
         }
         _ = try? runLaunchctl(["bootout", "\(launchdDomain)/\(Self.launchAgentLabel)"])
         try? FileManager.default.removeItem(at: paths.userAgentPlistFile)
+        // bootout unregisters the job, but this host's launchd does not unlink
+        // a SockPathName socket on bootout (and a self-bound dev run leaves
+        // its own file behind), so remove the endpoint explicitly.
         try? FileManager.default.removeItem(at: paths.userAgentSocketFile)
         return status()
     }
@@ -83,7 +104,15 @@ public struct KumoUserAgentManager: Sendable {
 
     // MARK: - LaunchAgent management
 
-    static func launchAgentPlist(executable: URL, paths: KumoPaths) -> String {
+    /// The generated user-agent plist. On-demand activation: launchd creates
+    /// the socket itself (`Sockets` → `SockPathName`) and starts the agent on
+    /// the first connection, so neither `RunAtLoad` nor `KeepAlive` is set.
+    /// The agent exits again after its idle timeout.
+    public static func launchAgentPlist(
+        executable: URL,
+        paths: KumoPaths,
+        idleTimeoutSeconds: Int = ServiceIdlePolicy.defaultTimeoutSeconds
+    ) -> String {
         """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -100,11 +129,23 @@ public struct KumoUserAgentManager: Sendable {
             <string>user</string>
             <string>--app-support</string>
             <string>\(paths.applicationSupportDirectory.path)</string>
+            <string>--idle-timeout</string>
+            <string>\(idleTimeoutSeconds)</string>
           </array>
+          <key>Sockets</key>
+          <dict>
+            <key>\(Self.launchdListenerSocketName)</key>
+            <dict>
+              <key>SockPathName</key>
+              <string>\(paths.userAgentSocketFile.path)</string>
+              <key>SockPathMode</key>
+              <integer>\(Self.launchdSocketMode)</integer>
+            </dict>
+          </dict>
           <key>RunAtLoad</key>
-          <true/>
+          <false/>
           <key>KeepAlive</key>
-          <true/>
+          <false/>
           <key>StandardOutPath</key>
           <string>\(paths.userAgentLogFile.path)</string>
           <key>StandardErrorPath</key>
@@ -119,14 +160,21 @@ public struct KumoUserAgentManager: Sendable {
             at: paths.launchAgentsDirectory,
             withIntermediateDirectories: true
         )
-        try Self.launchAgentPlist(executable: executable, paths: paths)
-            .write(to: paths.userAgentPlistFile, atomically: true, encoding: .utf8)
+        try Self.launchAgentPlist(
+            executable: executable,
+            paths: paths,
+            idleTimeoutSeconds: idleTimeoutSeconds
+        )
+        .write(to: paths.userAgentPlistFile, atomically: true, encoding: .utf8)
     }
 
     private func reloadAgent() throws {
         _ = try? runLaunchctl(["bootout", "\(launchdDomain)/\(Self.launchAgentLabel)"])
         try runLaunchctl(["bootstrap", launchdDomain, paths.userAgentPlistFile.path])
-        _ = try? runLaunchctl(["kickstart", "-k", "\(launchdDomain)/\(Self.launchAgentLabel)"])
+        // No kickstart: the `Sockets` listener owns the endpoint, so a later
+        // client connection starts the agent on demand. Some macOS versions
+        // start the job once at bootstrap even with RunAtLoad=false; either
+        // way the idle timeout bounds how long that run stays resident.
     }
 
     /// Returns true when the registered agent service was enabled. A missing
@@ -177,10 +225,10 @@ public struct KumoUserAgentManager: Sendable {
 
     private func statusMessage(isInstalled: Bool, isRunning: Bool) -> String? {
         if isRunning {
-            return "Kumo agent is running. The core keeps running when the app quits."
+            return "Kumo agent is running on demand. The core keeps running when the app quits."
         }
         if isInstalled {
-            return "Kumo agent is installed but not reachable. Reinstall the agent to reload it."
+            return "Kumo agent is installed. It starts on demand when a client connects."
         }
         return "The user-level Kumo agent is not installed."
     }

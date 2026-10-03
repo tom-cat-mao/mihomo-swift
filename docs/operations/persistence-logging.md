@@ -84,6 +84,22 @@ unchanged. See
 [Service Mode Roadmap](../roadmap/service-mode-roadmap.md#user-level-agent-tier-in-progress)
 for the staged plan.
 
+The agent is on demand rather than permanently resident. Its generated
+LaunchAgent declares a launchd `Sockets` entry for `kumo-agent.sock`
+(`RunAtLoad=false`, `KeepAlive=false`), so launchd owns the socket and starts
+the agent on the first connection; the agent adopts the descriptor with
+`launch_activate_socket` and falls back to binding the socket itself for
+manual/dev runs. It then exits on its own after `--idle-timeout` seconds
+(default 300) without a served client request and with no Mihomo core
+running; it never exits while a core is running. Because launchd owns the
+socket, the endpoint survives the agent's exit and triggers the next start.
+
+`logs/agent.log` is both the launchd stdout/stderr target and the agent's
+lifecycle log: service start, socket bound/adopted, observed core start/stop,
+and idle-exit with reason are appended there. When stdout already points at
+the same file (the launchd case) the direct file append is skipped so lines
+are not duplicated; interactive runs write to both.
+
 ## Backup Format
 
 Kumo can export a directory backup containing:

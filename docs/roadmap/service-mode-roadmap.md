@@ -95,8 +95,33 @@ so the GUI can quit while the core keeps running.
   system proxy).
 
 The current foundation adds paths, mode parsing, and `KumoUserAgentManager`.
-Core routing through the agent, idle auto-exit, and bundled-app packaging are
-follow-up work; this section is a placeholder until the refactor lands.
+Core routing through the agent and bundled-app packaging are follow-up work;
+this section is updated as those land.
+
+The agent is on demand, not permanently resident:
+
+- The generated plist declares a launchd `Sockets` listener with
+  `RunAtLoad=false` / `KeepAlive=false`, and `KumoService service run` adopts
+  the activated descriptor with `launch_activate_socket` (falling back to
+  binding the socket itself for manual/dev runs). launchd holds the endpoint
+  and starts the agent on the first client connection.
+- The agent exits by itself once `--idle-timeout <seconds>` (default 300)
+  passes without a served client request and with no Mihomo core running.
+  While a core is running it never idle-exits; root mode has no idle exit.
+- `service install --mode user` accepts `--idle-timeout` and passes it into
+  the generated plist's `ProgramArguments`.
+- Lifecycle events (start, socket adopt/bind, observed core start/stop,
+  idle-exit with reason) are appended to `logs/agent.log` in addition to
+  stdout; the socket file is left in place on idle exit because launchd owns
+  it.
+
+Observed launchd behavior on the smoke host (Darwin 27): `bootstrap` starts a
+`Sockets` job once even with `RunAtLoad=false` (reproduced with a minimal
+non-Kumo job), and the idle timeout bounds that run like any other. launchd
+also applies its ~10-second respawn throttle when a run is shorter than that
+window, which can delay the next on-demand start by up to ~10s; with the
+default 300-second idle timeout runs always outlive the throttle, and a
+post-exit connection was served in ~0.1s in the smoke test.
 
 ## Status of Local Subsystems (Phase B)
 
