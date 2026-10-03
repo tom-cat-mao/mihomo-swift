@@ -17,8 +17,6 @@ import ServiceManagement
 /// on its own after `idleTimeoutSeconds` without traffic and with no core
 /// running; see `ServiceIdlePolicy`.
 public struct KumoUserAgentManager: Sendable {
-    public static let launchAgentLabel = KumoPaths.userAgentLabel
-    public static let launchAgentPlistName = "\(KumoPaths.userAgentLabel).plist"
     /// launchd `Sockets` entry name the agent adopts with
     /// `launch_activate_socket("Listener", ...)`.
     public static let launchdListenerSocketName = "Listener"
@@ -35,6 +33,16 @@ public struct KumoUserAgentManager: Sendable {
     ) {
         self.paths = paths
         self.idleTimeoutSeconds = idleTimeoutSeconds
+    }
+
+    /// Effective launchd label, honored by plist generation and launchctl.
+    public var launchAgentLabel: String {
+        paths.userAgentLabel
+    }
+
+    /// Effective plist file name, derived from the effective label.
+    public var launchAgentPlistName: String {
+        "\(paths.userAgentLabel).plist"
     }
 
     public func status() -> ServiceModeStatus {
@@ -79,9 +87,9 @@ public struct KumoUserAgentManager: Sendable {
     @discardableResult
     public func uninstall() throws -> ServiceModeStatus {
         if isBundledApp {
-            try? SMAppService.agent(plistName: Self.launchAgentPlistName).unregister()
+            try? SMAppService.agent(plistName: launchAgentPlistName).unregister()
         }
-        _ = try? runLaunchctl(["bootout", "\(launchdDomain)/\(Self.launchAgentLabel)"])
+        _ = try? runLaunchctl(["bootout", "\(launchdDomain)/\(launchAgentLabel)"])
         try? FileManager.default.removeItem(at: paths.userAgentPlistFile)
         // bootout unregisters the job, but this host's launchd does not unlink
         // a SockPathName socket on bootout (and a self-bound dev run leaves
@@ -108,18 +116,30 @@ public struct KumoUserAgentManager: Sendable {
     /// the socket itself (`Sockets` → `SockPathName`) and starts the agent on
     /// the first connection, so neither `RunAtLoad` nor `KeepAlive` is set.
     /// The agent exits again after its idle timeout.
+    ///
+    /// A dev instance's overridden label is carried into the job's
+    /// `EnvironmentVariables` so the launchd-started process resolves the same
+    /// label. The default label emits no environment block, keeping the
+    /// production plist byte-identical.
     public static func launchAgentPlist(
         executable: URL,
         paths: KumoPaths,
         idleTimeoutSeconds: Int = ServiceIdlePolicy.defaultTimeoutSeconds
     ) -> String {
-        """
+        let environmentVariables = paths.userAgentLabel == KumoPaths.userAgentLabel
+            ? ""
+            : "<key>EnvironmentVariables</key>\n"
+                + "<dict>\n"
+                + "  <key>\(KumoPaths.userAgentLabelEnvKey)</key>\n"
+                + "  <string>\(paths.userAgentLabel)</string>\n"
+                + "</dict>\n"
+        return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
         <dict>
           <key>Label</key>
-          <string>\(Self.launchAgentLabel)</string>
+          <string>\(paths.userAgentLabel)</string>
           <key>ProgramArguments</key>
           <array>
             <string>\(executable.path)</string>
@@ -132,7 +152,7 @@ public struct KumoUserAgentManager: Sendable {
             <string>--idle-timeout</string>
             <string>\(idleTimeoutSeconds)</string>
           </array>
-          <key>Sockets</key>
+        \(environmentVariables)  <key>Sockets</key>
           <dict>
             <key>\(Self.launchdListenerSocketName)</key>
             <dict>
@@ -169,7 +189,7 @@ public struct KumoUserAgentManager: Sendable {
     }
 
     private func reloadAgent() throws {
-        _ = try? runLaunchctl(["bootout", "\(launchdDomain)/\(Self.launchAgentLabel)"])
+        _ = try? runLaunchctl(["bootout", "\(launchdDomain)/\(launchAgentLabel)"])
         try runLaunchctl(["bootstrap", launchdDomain, paths.userAgentPlistFile.path])
         // No kickstart: the `Sockets` listener owns the endpoint, so a later
         // client connection starts the agent on demand. Some macOS versions
@@ -181,7 +201,7 @@ public struct KumoUserAgentManager: Sendable {
     /// embedded plist (packaging not final yet) or a ServiceManagement refusal
     /// falls through to the launchctl fallback.
     private func registerBundledAgentIfPossible() -> Bool {
-        let service = SMAppService.agent(plistName: Self.launchAgentPlistName)
+        let service = SMAppService.agent(plistName: launchAgentPlistName)
         if service.status == .enabled {
             try? service.unregister()
         }
@@ -195,7 +215,7 @@ public struct KumoUserAgentManager: Sendable {
 
     private var isBundledAgentRegistered: Bool {
         guard isBundledApp else { return false }
-        return SMAppService.agent(plistName: Self.launchAgentPlistName).status == .enabled
+        return SMAppService.agent(plistName: launchAgentPlistName).status == .enabled
     }
 
     private var isBundledApp: Bool {

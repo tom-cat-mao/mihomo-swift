@@ -1,17 +1,45 @@
 import Foundation
 
 public struct KumoPaths: Sendable {
-    /// Launchd label of the user-level agent tier ("kumod").
+    /// Default launchd label of the user-level agent tier ("kumod"). The
+    /// effective label is the `userAgentLabel` instance property, which a dev
+    /// instance can override with `KUMO_AGENT_LABEL`.
     public static let userAgentLabel = "io.kumo.KumoAgent"
+
+    /// Opt-in environment overrides that let a dev instance run beside the
+    /// production install. Unset, blank or invalid values fall back to the
+    /// production defaults byte-for-byte.
+    ///
+    /// `KUMO_APP_SUPPORT_DIR` replaces the default app-support root and only
+    /// applies when no explicit directory is injected. `KUMO_AGENT_LABEL`
+    /// replaces the user-agent launchd label (and therefore the plist file
+    /// name and launchctl job) so a dev tier is fully disjoint.
+    public static let appSupportDirectoryEnvKey = "KUMO_APP_SUPPORT_DIR"
+    public static let userAgentLabelEnvKey = "KUMO_AGENT_LABEL"
 
     public var applicationSupportDirectory: URL
     /// Where the user-level LaunchAgent plist is written. Injectable so tests
     /// stay off the real `~/Library/LaunchAgents`.
     public var launchAgentsDirectory: URL
+    /// Effective launchd label of the user-level agent tier. Defaults to
+    /// `KumoPaths.userAgentLabel`; a valid `KUMO_AGENT_LABEL` overrides it.
+    public var userAgentLabel: String
 
-    public init(applicationSupportDirectory: URL? = nil, launchAgentsDirectory: URL? = nil) {
+    /// - Parameter environment: process environment the opt-in dev overrides
+    ///   are read from. Injectable so tests never mutate the real process
+    ///   environment.
+    public init(
+        applicationSupportDirectory: URL? = nil,
+        launchAgentsDirectory: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
         if let applicationSupportDirectory {
             self.applicationSupportDirectory = applicationSupportDirectory
+        } else if let override = Self.environmentOverride(Self.appSupportDirectoryEnvKey, in: environment) {
+            self.applicationSupportDirectory = URL(
+                fileURLWithPath: (override as NSString).expandingTildeInPath,
+                isDirectory: true
+            )
         } else {
             let baseDirectory = FileManager.default.urls(
                 for: .applicationSupportDirectory,
@@ -22,6 +50,34 @@ public struct KumoPaths: Sendable {
         self.launchAgentsDirectory = launchAgentsDirectory
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+
+        if let override = Self.environmentOverride(Self.userAgentLabelEnvKey, in: environment),
+           Self.isValidUserAgentLabel(override) {
+            self.userAgentLabel = override
+        } else {
+            self.userAgentLabel = Self.userAgentLabel
+        }
+    }
+
+    /// A user-agent label must stay a single launchd token: letters, digits,
+    /// dot, hyphen or underscore. Slashes and whitespace are rejected so an
+    /// environment override can never escape the plist directory or steer
+    /// launchctl at another job.
+    public static func isValidUserAgentLabel(_ label: String) -> Bool {
+        guard !label.isEmpty else { return false }
+        return label.allSatisfy { character in
+            character.isASCII
+                && (character.isLetter || character.isNumber
+                    || character == "." || character == "-" || character == "_")
+        }
+    }
+
+    private static func environmentOverride(_ key: String, in environment: [String: String]) -> String? {
+        guard let value = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 
     public var profilesDirectory: URL {
@@ -144,10 +200,11 @@ public struct KumoPaths: Sendable {
         URL(fileURLWithPath: "/Library/LaunchDaemons/io.kumo.KumoService.plist")
     }
 
-    /// User-level LaunchAgent tier ("kumod"). Same app-support tree as the
-    /// root daemon, but its own socket, log and LaunchAgents plist.
+    /// User-level LaunchAgent tier ("kumod"). Same app-support tree shape as
+    /// the root daemon, but its own socket, log and LaunchAgents plist. A dev
+    /// instance's overridden label yields a disjoint plist file name.
     public var userAgentPlistFile: URL {
-        launchAgentsDirectory.appendingPathComponent("\(Self.userAgentLabel).plist")
+        launchAgentsDirectory.appendingPathComponent("\(userAgentLabel).plist")
     }
 
     public var userAgentSocketFile: URL {

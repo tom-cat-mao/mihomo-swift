@@ -6,9 +6,14 @@ final class KumoUserAgentTests: XCTestCase {
     func testUserAgentPathsDeriveFromInjectedRoots() {
         let root = temporaryDirectory()
         let launchAgents = temporaryDirectory()
-        let paths = KumoPaths(applicationSupportDirectory: root, launchAgentsDirectory: launchAgents)
+        let paths = KumoPaths(
+            applicationSupportDirectory: root,
+            launchAgentsDirectory: launchAgents,
+            environment: [:]
+        )
 
         XCTAssertEqual(KumoPaths.userAgentLabel, "io.kumo.KumoAgent")
+        XCTAssertEqual(paths.userAgentLabel, "io.kumo.KumoAgent")
         XCTAssertEqual(paths.userAgentSocketFile, root.appendingPathComponent("kumo-agent.sock"))
         XCTAssertEqual(paths.userAgentLogFile, root.appendingPathComponent("logs/agent.log"))
         XCTAssertEqual(
@@ -19,11 +24,94 @@ final class KumoUserAgentTests: XCTestCase {
 
     func testExistingRootTierPathsAreUnchanged() {
         let root = temporaryDirectory()
-        let paths = KumoPaths(applicationSupportDirectory: root)
+        let paths = KumoPaths(applicationSupportDirectory: root, environment: [:])
 
         XCTAssertEqual(paths.serviceSocketFile, root.appendingPathComponent("kumo-service.sock"))
         XCTAssertEqual(paths.serviceLogFile, root.appendingPathComponent("logs/kumo-service.log"))
         XCTAssertEqual(paths.serviceCredentialsFile, root.appendingPathComponent("service-credentials.json"))
+    }
+
+    // MARK: - Dev-instance environment overrides
+
+    func testDefaultsAreByteIdenticalWithoutEnvironmentOverrides() throws {
+        let paths = KumoPaths(environment: [:])
+        let expectedSupport = try XCTUnwrap(
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        ).appendingPathComponent("Kumo", isDirectory: true)
+
+        XCTAssertEqual(paths.applicationSupportDirectory, expectedSupport)
+        XCTAssertEqual(paths.userAgentLabel, "io.kumo.KumoAgent")
+        XCTAssertEqual(
+            paths.userAgentPlistFile,
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/LaunchAgents/io.kumo.KumoAgent.plist")
+        )
+    }
+
+    func testEnvironmentOverridesAppSupportRootAndAgentLabel() {
+        let paths = KumoPaths(environment: [
+            KumoPaths.appSupportDirectoryEnvKey: "/tmp/kumo-dev-app-support",
+            KumoPaths.userAgentLabelEnvKey: "io.kumo.KumoAgent.dev",
+        ])
+
+        XCTAssertEqual(paths.applicationSupportDirectory.path, "/tmp/kumo-dev-app-support")
+        XCTAssertEqual(paths.userAgentLabel, "io.kumo.KumoAgent.dev")
+        XCTAssertEqual(paths.userAgentSocketFile.path, "/tmp/kumo-dev-app-support/kumo-agent.sock")
+        XCTAssertEqual(paths.userAgentLogFile.path, "/tmp/kumo-dev-app-support/logs/agent.log")
+        XCTAssertEqual(paths.userAgentPlistFile.lastPathComponent, "io.kumo.KumoAgent.dev.plist")
+    }
+
+    func testEnvironmentOverridesExpandTildeAndIgnoreBlankValues() {
+        let expanded = KumoPaths(environment: [
+            KumoPaths.appSupportDirectoryEnvKey: "~/KumoDevAppSupport",
+        ])
+        XCTAssertEqual(
+            expanded.applicationSupportDirectory.path,
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("KumoDevAppSupport").path
+        )
+
+        let blank = KumoPaths(environment: [
+            KumoPaths.appSupportDirectoryEnvKey: "   ",
+            KumoPaths.userAgentLabelEnvKey: "",
+        ])
+        XCTAssertEqual(
+            blank.applicationSupportDirectory,
+            KumoPaths(environment: [:]).applicationSupportDirectory
+        )
+        XCTAssertEqual(blank.userAgentLabel, "io.kumo.KumoAgent")
+    }
+
+    func testExplicitAppSupportDirectoryWinsOverEnvironment() {
+        let explicit = temporaryDirectory()
+        let paths = KumoPaths(
+            applicationSupportDirectory: explicit,
+            environment: [KumoPaths.appSupportDirectoryEnvKey: "/tmp/ignored-override"]
+        )
+
+        XCTAssertEqual(paths.applicationSupportDirectory, explicit)
+    }
+
+    func testInvalidAgentLabelOverrideFallsBackToDefault() {
+        for invalid in ["", "   ", "io.kumo.KumoAgent.dev/../prod", "io.kumo.KumoAgent dev", "io.kumo.KumoAgent\tdev"] {
+            XCTAssertFalse(KumoPaths.isValidUserAgentLabel(invalid))
+            let paths = KumoPaths(environment: [KumoPaths.userAgentLabelEnvKey: invalid])
+            XCTAssertEqual(paths.userAgentLabel, "io.kumo.KumoAgent")
+        }
+        XCTAssertTrue(KumoPaths.isValidUserAgentLabel("io.kumo.KumoAgent.dev"))
+        XCTAssertTrue(KumoPaths.isValidUserAgentLabel("kumo_agent-dev.2"))
+    }
+
+    func testUserAgentManagerUsesEffectiveLabel() {
+        let paths = KumoPaths(
+            applicationSupportDirectory: temporaryDirectory(),
+            launchAgentsDirectory: temporaryDirectory(),
+            environment: [KumoPaths.userAgentLabelEnvKey: "io.kumo.KumoAgent.dev"]
+        )
+        let manager = KumoUserAgentManager(paths: paths)
+
+        XCTAssertEqual(manager.launchAgentLabel, "io.kumo.KumoAgent.dev")
+        XCTAssertEqual(manager.launchAgentPlistName, "io.kumo.KumoAgent.dev.plist")
     }
 
     func testServiceModeDefaultsToRoot() throws {
@@ -100,6 +188,7 @@ final class KumoUserAgentTests: XCTestCase {
         let object = try plistObject(plist)
 
         XCTAssertEqual(object["Label"] as? String, KumoPaths.userAgentLabel)
+        XCTAssertNil(object["EnvironmentVariables"])
         XCTAssertEqual(object["ProgramArguments"] as? [String], [
             executable.path,
             "service",
@@ -146,9 +235,45 @@ final class KumoUserAgentTests: XCTestCase {
         XCTAssertEqual(Array(arguments.suffix(2)), ["--idle-timeout", "42"])
     }
 
+    func testLaunchAgentPlistCarriesDevLabelAndEnvironment() throws {
+        let root = temporaryDirectory()
+        let appSupport = root.appendingPathComponent("app-support", isDirectory: true)
+        let paths = KumoPaths(
+            applicationSupportDirectory: appSupport,
+            launchAgentsDirectory: root.appendingPathComponent("LaunchAgents", isDirectory: true),
+            environment: [KumoPaths.userAgentLabelEnvKey: "io.kumo.KumoAgent.dev"]
+        )
+
+        let plist = KumoUserAgentManager.launchAgentPlist(
+            executable: URL(fileURLWithPath: "/tmp/KumoService"),
+            paths: paths
+        )
+        let object = try plistObject(plist)
+
+        XCTAssertEqual(object["Label"] as? String, "io.kumo.KumoAgent.dev")
+        let environment = try XCTUnwrap(object["EnvironmentVariables"] as? [String: Any])
+        XCTAssertEqual(
+            environment[KumoPaths.userAgentLabelEnvKey] as? String,
+            "io.kumo.KumoAgent.dev"
+        )
+        XCTAssertEqual(paths.userAgentPlistFile.lastPathComponent, "io.kumo.KumoAgent.dev.plist")
+
+        // The socket stays in the (dev) app-support tree, not next to the
+        // production endpoint.
+        let sockets = try XCTUnwrap(object["Sockets"] as? [String: Any])
+        let listener = try XCTUnwrap(
+            sockets[KumoUserAgentManager.launchdListenerSocketName] as? [String: Any]
+        )
+        XCTAssertEqual(
+            listener["SockPathName"] as? String,
+            appSupport.appendingPathComponent("kumo-agent.sock").path
+        )
+    }
+
     func testRootLaunchDaemonPlistIsUnchangedByOnDemandWork() throws {
         let paths = KumoPaths(
-            applicationSupportDirectory: URL(fileURLWithPath: "/tmp/kumo-root-plist-test", isDirectory: true)
+            applicationSupportDirectory: URL(fileURLWithPath: "/tmp/kumo-root-plist-test", isDirectory: true),
+            environment: [:]
         )
         let plist = ServiceMode.rootLaunchDaemonPlist(paths: paths, authorizedUID: 501)
         let object = try plistObject(plist)
@@ -267,7 +392,8 @@ final class KumoUserAgentTests: XCTestCase {
         let root = temporaryDirectory()
         return KumoPaths(
             applicationSupportDirectory: root.appendingPathComponent("app-support", isDirectory: true),
-            launchAgentsDirectory: root.appendingPathComponent("LaunchAgents", isDirectory: true)
+            launchAgentsDirectory: root.appendingPathComponent("LaunchAgents", isDirectory: true),
+            environment: [:]
         )
     }
 
