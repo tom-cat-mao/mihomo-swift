@@ -49,22 +49,39 @@ otherwise → direct mode. Same signed-socket protocol on both service tiers
 
 ## Stage Graph
 
-- **S0 (serial)** — Foundation: `KumoPaths` user-tier paths; `KumoService`
-  binary `--mode root|user`; `KumoUserAgentManager` (SMAppService.agent +
-  launchctl dev fallback); tests.
-- **S1 (parallel worktrees, gated on S0)**
-  - T1 — Three-tier routing in `KumoController`; quit-path change (keep
-    core when kumod alive); launch reconnect; TUN handoff state machine.
-  - T2 — kumod runtime: idle watchdog auto-exit, user-mode logging,
-    launch-at-login integration.
-  - T3 — CLI completion (D4 list) against `KumoController` public API.
-  - T4 — Verification infra: dev-labeled instance
-    (`io.kumo.KumoAgent.dev`, `~/Library/Application Support/KumoDev`),
-    hermetic test harness scripts.
-- **S2 (serial)** — Integration: root→user migration handoff, dual-tier
-  detection/conflict resolution, update-installer interplay, app-bundle
-  packaging of the agent plist/helper.
+- **S0 (serial)** — DONE (`655c824`): `KumoPaths` user-tier paths;
+  `KumoService` binary `--mode root|user`; `KumoUserAgentManager`
+  (SMAppService.agent + launchctl dev fallback); tests.
+- **S1 (parallel worktrees, gated on S0)** — DONE:
+  - T1 — DONE (`0a07ebe`): three-tier `BackendRouter` in KumoCoreKit;
+    `prepareForAppTermination(policy:)`; TUN handoff with rollback;
+    cross-tier reconnect. GUI wiring (calling the policy on quit) is
+    NOT done — needs Xcode (see S2).
+  - T2 — DONE (`c8b827a`): kumod idle watchdog auto-exit, launchd
+    socket activation (RunAtLoad/KeepAlive removed), agent.log
+    lifecycle logging.
+  - T3 — DONE (`f22f21d`): CLI completion — rules/profile/dns/sniffer/
+    tun settings/sysproxy set/providers update/delay test/streaming/
+    `kumo agent` commands.
+  - T4 — DONE (`a16d574`): `KUMO_APP_SUPPORT_DIR`/`KUMO_AGENT_LABEL`
+    env overrides; `Scripts/dev/agent-instance.sh` +
+    `agent-smoke.sh` (hermetic E2E, PASS on merged tree).
+- **S2 (serial; mostly BLOCKED on Xcode install)** — GUI wiring
+  (KumoAppDelegate calls `prepareForAppTermination(policy:)` driven by
+  a new preference + Settings toggle + agent install UI + handoff
+  copy); app-bundle packaging of the agent plist/helper; root→user
+  migration handoff + dual-tier detection; update-installer interplay.
 - **S3** — Docs sync (`docs/`, AGENTS.md requirement), ADR-005, CHANGELOG.
+
+## Environment Notes (this machine)
+
+- No Xcode (CLT only): KumoApp cannot compile, XCTest cannot run.
+  Builds/tests use `KUMO_CLT_BUILD=1 swift build`; XCTest suites are
+  written for CI and typechecked locally.
+- tart 2.40.1 installed at `~/.local/share/tart` (VM image not pulled).
+- Production state on this host: service mode installed + TUN enabled
+  (observed via `kumo status --json`). With TUN on, the core stays
+  root-owned by design (D1); lightweight quit applies when TUN is off.
 
 ## Verification Layers
 
