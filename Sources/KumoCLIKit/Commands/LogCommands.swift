@@ -15,10 +15,16 @@ extension KumoCommand {
             var limit: Int = 100
             @Option(name: .long, help: "Minimum log level.")
             var level: LogLevel?
+            @Flag(name: .long, help: "Stream new log entries until interrupted.")
+            var follow = false
             @OptionGroup var options: CLIOptions
 
             mutating func run() async throws {
                 try options.install()
+                if follow {
+                    try await streamLogs(level: level)
+                    return
+                }
                 let entries = try CLIRuntime.current.controller.recentLogs(limit: limit)
                 let filtered = level.map { minimum in entries.filter { LogLevel(rawValue: $0.level) ?? .notice <= minimum } } ?? entries
                 CLIRuntime.current.write(filtered) { entries in
@@ -70,4 +76,73 @@ extension KumoCommand {
             }
         }
     }
+
+    struct Traffic: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Watch live Mihomo traffic counters.",
+            discussion: "Traffic is only available as a live stream; --watch is required. Press Ctrl-C to stop."
+        )
+
+        @Flag(name: .long, help: "Stream traffic snapshots until interrupted (required).")
+        var watch = false
+        @OptionGroup var options: CLIOptions
+
+        mutating func validate() throws {
+            if !watch {
+                throw ValidationError("kumo traffic requires --watch: traffic is only available as a live stream.")
+            }
+        }
+
+        mutating func run() async throws {
+            try options.install()
+            let runtime = CLIRuntime.current
+            let controller = runtime.controller
+            try await runUntilInterrupted {
+                let stream = try controller.trafficStream()
+                for try await snapshot in stream {
+                    if runtime.options.wantsJSON {
+                        runtime.writeJSONLine(CLIResponse(ok: true, data: snapshot))
+                    } else {
+                        runtime.writeText(trafficSummary(snapshot))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private func streamLogs(level: LogLevel?) async throws {
+    let runtime = CLIRuntime.current
+    let controller = runtime.controller
+    let streamLevel = mihomoLogLevel(level)
+    try await runUntilInterrupted {
+        let stream = try controller.logStream(level: streamLevel)
+        for try await entry in stream {
+            if runtime.options.wantsJSON {
+                runtime.writeJSONLine(CLIResponse(ok: true, data: entry))
+            } else {
+                runtime.writeText("[\(entry.level)] \(entry.message)")
+            }
+        }
+    }
+}
+
+private func mihomoLogLevel(_ level: LogLevel?) -> String {
+    guard let level else { return "info" }
+    switch level {
+    case .silent: return "silent"
+    case .error: return "error"
+    case .warn: return "warning"
+    case .notice, .http, .info: return "info"
+    case .verbose, .silly: return "debug"
+    }
+}
+
+private func trafficSummary(_ snapshot: TrafficSnapshot) -> String {
+    [
+        "upload=\(snapshot.upload)",
+        "download=\(snapshot.download)",
+        "uploadSpeed=\(snapshot.uploadSpeed)",
+        "downloadSpeed=\(snapshot.downloadSpeed)"
+    ].joined(separator: " ")
 }

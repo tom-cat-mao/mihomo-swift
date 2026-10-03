@@ -89,6 +89,20 @@ public final class CLIRuntime: @unchecked Sendable {
         }
     }
 
+    /// Writes a compact single-line JSON envelope, used for NDJSON streams
+    /// (`--follow` / `--watch`).
+    func writeJSONLine<T: Encodable>(_ value: T) {
+        guard !options.isSilent || options.wantsJSON else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(value),
+              let string = String(data: data, encoding: .utf8) else {
+            return
+        }
+        renderer.stdout(string)
+    }
+
     private func writeJSON<T: Encodable>(_ value: T) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
