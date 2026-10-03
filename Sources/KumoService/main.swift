@@ -35,6 +35,18 @@ enum KumoServiceMain {
     }
 
     private static func install(arguments: [String]) throws {
+        let mode = try ServiceMode.parse(arguments: arguments)
+        if mode == .user {
+            // The user tier registers a LaunchAgent; KumoUserAgentManager owns
+            // the launchctl/ServiceManagement details in one place.
+            guard let source = value(after: "--source", in: arguments),
+                  let appSupport = value(after: "--app-support", in: arguments) else {
+                throw KumoError.invalidArguments("Usage: KumoService service install --mode user --source <path> --app-support <path>")
+            }
+            let paths = KumoPaths(applicationSupportDirectory: URL(fileURLWithPath: appSupport, isDirectory: true))
+            try KumoUserAgentManager(paths: paths).install(executable: URL(fileURLWithPath: source))
+            return
+        }
         guard geteuid() == 0 else {
             throw KumoError.serviceUnavailable("KumoService install must run with administrator privileges.")
         }
@@ -81,6 +93,15 @@ enum KumoServiceMain {
     }
 
     private static func uninstall(arguments: [String]) throws {
+        let mode = try ServiceMode.parse(arguments: arguments)
+        if mode == .user {
+            guard let appSupport = value(after: "--app-support", in: arguments) else {
+                throw KumoError.invalidArguments("Usage: KumoService service uninstall --mode user --app-support <path>")
+            }
+            let paths = KumoPaths(applicationSupportDirectory: URL(fileURLWithPath: appSupport, isDirectory: true))
+            try KumoUserAgentManager(paths: paths).uninstall()
+            return
+        }
         guard geteuid() == 0 else {
             throw KumoError.serviceUnavailable("KumoService uninstall must run with administrator privileges.")
         }
@@ -94,6 +115,15 @@ enum KumoServiceMain {
     }
 
     private static func printStatus(arguments: [String]) throws {
+        let mode = try ServiceMode.parse(arguments: arguments)
+        if mode == .user {
+            let appSupport = value(after: "--app-support", in: arguments)
+            let paths = KumoPaths(applicationSupportDirectory: appSupport.map { URL(fileURLWithPath: $0, isDirectory: true) })
+            let status = KumoUserAgentManager(paths: paths).status()
+            let data = try JSONEncoder().encode(status)
+            print(String(data: data, encoding: .utf8) ?? "{}")
+            return
+        }
         let appSupport = value(after: "--app-support", in: arguments)
         let paths = KumoPaths(applicationSupportDirectory: appSupport.map { URL(fileURLWithPath: $0, isDirectory: true) })
         let status = ServiceModeStatus(
@@ -108,25 +138,30 @@ enum KumoServiceMain {
     }
 
     private static func runDaemon(arguments: [String]) async throws {
+        let mode = try ServiceMode.parse(arguments: arguments)
         guard let appSupport = value(after: "--app-support", in: arguments) else {
             throw KumoError.invalidArguments("KumoService service run requires --app-support <path>.")
         }
         let authorizedUID = value(after: "--authorized-uid", in: arguments).flatMap(uid_t.init) ?? getuid()
         let paths = KumoPaths(applicationSupportDirectory: URL(fileURLWithPath: appSupport, isDirectory: true))
         try paths.prepare()
-        // Startup repair. The daemon runs as root, so on a fresh service-mode
-        // install it may have created state files, logs or work files as
-        // root:staff before the app or CLI ever wrote them (Issue #3). Hand
-        // everything back to the authorized user once per launch; that is the
-        // upgrade path for installs already in the broken state.
-        let ownershipRepair = AppSupportOwnershipRepair(
-            applicationSupportDirectory: paths.applicationSupportDirectory,
-            authorizedUID: authorizedUID
-        )
+        // Root-mode startup repair. The daemon runs as root, so on a fresh
+        // service-mode install it may have created state files, logs or work
+        // files as root:staff before the app or CLI ever wrote them (Issue
+        // #3). Hand everything back to the authorized user once per launch;
+        // that is the upgrade path for installs already in the broken state.
+        // The user agent runs as its own owner and never needs this.
+        let ownershipRepair: AppSupportOwnershipRepair? = mode.repairsAppSupportOwnership
+            ? AppSupportOwnershipRepair(
+                applicationSupportDirectory: paths.applicationSupportDirectory,
+                authorizedUID: authorizedUID
+            )
+            : nil
         ownershipRepair?.repair()
         let credentials = try KumoServiceManager(paths: paths).loadCredentials()
         let server = KumoServiceSocketServer(
             paths: paths,
+            mode: mode,
             credentials: credentials,
             authorizedUID: authorizedUID,
             ownershipRepair: ownershipRepair
@@ -206,6 +241,7 @@ enum KumoServiceMain {
 
 private final class KumoServiceSocketServer: @unchecked Sendable {
     private let paths: KumoPaths
+    private let mode: ServiceMode
     private let credentials: KumoServiceCredentials
     private let authorizedUID: uid_t
     private let ownershipRepair: AppSupportOwnershipRepair?
@@ -213,18 +249,21 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
 
     init(
         paths: KumoPaths,
+        mode: ServiceMode,
         credentials: KumoServiceCredentials,
         authorizedUID: uid_t,
         ownershipRepair: AppSupportOwnershipRepair?
     ) {
         self.paths = paths
+        self.mode = mode
         self.credentials = credentials
         self.authorizedUID = authorizedUID
         self.ownershipRepair = ownershipRepair
     }
 
     func run() async throws {
-        try? FileManager.default.removeItem(at: paths.serviceSocketFile)
+        let socketFile = mode.socketFile(in: paths)
+        try? FileManager.default.removeItem(at: socketFile)
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
             throw KumoError.serviceUnavailable("Unable to create service socket.")
@@ -233,7 +272,7 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        let socketPath = paths.serviceSocketFile.path
+        let socketPath = socketFile.path
         let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
         guard socketPath.utf8.count < maxPathLength else {
             throw KumoError.serviceUnavailable("Service socket path is too long: \(socketPath)")
@@ -255,12 +294,16 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
             throw KumoError.serviceUnavailable("Unable to bind service socket at \(socketPath).")
         }
         chmod(socketPath, S_IRUSR | S_IWUSR)
-        chown(socketPath, authorizedUID, getgid())
+        if mode.chownsSharedFilesToAuthorizedUID {
+            chown(socketPath, authorizedUID, getgid())
+        }
 
         guard listen(descriptor, 16) == 0 else {
             throw KumoError.serviceUnavailable("Unable to listen on service socket.")
         }
-        try KumoServiceMain.saveStatus(paths: paths, installed: true, running: true)
+        if mode.writesSharedStatusFile {
+            try KumoServiceMain.saveStatus(paths: paths, installed: true, running: true)
+        }
         ownershipRepair?.repair()
 
         while true {
@@ -312,8 +355,8 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
                 isRunning: true,
                 isAvailable: true,
                 isCurrentProcessPrivileged: geteuid() == 0,
-                socketPath: paths.serviceSocketFile.path,
-                message: "Kumo Helper is running."
+                socketPath: mode.socketFile(in: paths).path,
+                message: mode.serviceStatusMessage
             ))
         case ("GET", "/status"), ("GET", "/sysproxy/status"):
             return try json(controller.status())

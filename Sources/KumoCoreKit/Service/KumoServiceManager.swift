@@ -66,11 +66,17 @@ public struct KumoServiceManager: Sendable {
     }
 
     public func serviceClient() -> KumoServiceClient? {
+        serviceClient(socketPath: paths.serviceSocketFile.path)
+    }
+
+    /// Builds a signed client for an arbitrary socket while reusing the shared
+    /// credentials file. The user-agent tier targets `userAgentSocketFile`.
+    public func serviceClient(socketPath: String) -> KumoServiceClient? {
         guard let credentials = try? loadCredentials() else {
             return nil
         }
         return KumoServiceClient(
-            endpoint: KumoServiceEndpoint(socketPath: paths.serviceSocketFile.path),
+            endpoint: KumoServiceEndpoint(socketPath: socketPath),
             credentials: credentials
         )
     }

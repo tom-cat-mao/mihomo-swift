@@ -27,12 +27,14 @@ Kumo/
     core.log
     core-<yyyyMMdd-HHmmss>.log
     substore.log
+    agent.log
   cores/
     mihomo
   substore/
     status.json
     backend/
     frontend/
+  kumo-agent.sock
   state.json
   preferences.json
 ```
@@ -57,6 +59,30 @@ authoritative record. In direct (no-helper) mode, `state.json` and
 `work/core.pid` stay load-bearing and still throw when they cannot be written,
 so a core is never left running without a record that `status()` or `stop()`
 can act on.
+
+## User-Level Agent (In Progress)
+
+The user-level agent tier ("kumod", `io.kumo.KumoAgent`) is being introduced
+alongside the root helper. It owns the Mihomo core so the GUI can quit while
+the core keeps running, and binds the same signed Unix socket protocol at:
+
+```text
+kumo-agent.sock
+```
+
+Its launchd stdout/stderr are appended to:
+
+```text
+logs/agent.log
+```
+
+The agent runs as the logged-in user, so its socket and credentials are
+created 0600 owned by that user, and `AppSupportOwnershipRepair` — a root
+concern — does not apply. It reuses `service-credentials.json`, so credentials
+are shared across both tiers. The root daemon's socket and log paths are
+unchanged. See
+[Service Mode Roadmap](../roadmap/service-mode-roadmap.md#user-level-agent-tier-in-progress)
+for the staged plan.
 
 ## Backup Format
 

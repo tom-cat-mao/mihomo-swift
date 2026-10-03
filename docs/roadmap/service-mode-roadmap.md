@@ -76,6 +76,28 @@ Unix socket request routing, service-backed core/system proxy/TUN control, and
 TUN configuration generation. It intentionally does not silently install a
 privileged daemon; installation remains an explicit, authorized user action.
 
+## User-Level Agent Tier (In Progress)
+
+The two-tier runtime split is in progress on `feat/two-tier-runtime`: a
+user-level LaunchAgent (`io.kumo.KumoAgent`, "kumod") will own the Mihomo core
+so the GUI can quit while the core keeps running.
+
+- The agent runs as the logged-in user, registers through `SMAppService.agent`
+  in bundled builds, and falls back to `launchctl bootstrap gui/<uid>` with a
+  generated `~/Library/LaunchAgents/io.kumo.KumoAgent.plist` for source-tree
+  runs.
+- It speaks the same signed Unix socket protocol and reuses the existing
+  shared credentials file; only the socket path (`kumo-agent.sock`), log path
+  (`logs/agent.log`) and launchd domain differ from the root daemon.
+- `KumoService service` subcommands accept `--mode root|user` (default
+  `root`); root-mode behavior is unchanged.
+- The root LaunchDaemon stays installed for privileged operations (TUN,
+  system proxy).
+
+The current foundation adds paths, mode parsing, and `KumoUserAgentManager`.
+Core routing through the agent, idle auto-exit, and bundled-app packaging are
+follow-up work; this section is a placeholder until the refactor lands.
+
 ## Status of Local Subsystems (Phase B)
 
 Phase B brings several locally hosted subsystems into the app process,

@@ -1,9 +1,15 @@
 import Foundation
 
 public struct KumoPaths: Sendable {
-    public var applicationSupportDirectory: URL
+    /// Launchd label of the user-level agent tier ("kumod").
+    public static let userAgentLabel = "io.kumo.KumoAgent"
 
-    public init(applicationSupportDirectory: URL? = nil) {
+    public var applicationSupportDirectory: URL
+    /// Where the user-level LaunchAgent plist is written. Injectable so tests
+    /// stay off the real `~/Library/LaunchAgents`.
+    public var launchAgentsDirectory: URL
+
+    public init(applicationSupportDirectory: URL? = nil, launchAgentsDirectory: URL? = nil) {
         if let applicationSupportDirectory {
             self.applicationSupportDirectory = applicationSupportDirectory
         } else {
@@ -13,6 +19,9 @@ public struct KumoPaths: Sendable {
             ).first ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
             self.applicationSupportDirectory = baseDirectory.appendingPathComponent("Kumo", isDirectory: true)
         }
+        self.launchAgentsDirectory = launchAgentsDirectory
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
     }
 
     public var profilesDirectory: URL {
@@ -133,6 +142,20 @@ public struct KumoPaths: Sendable {
 
     public var serviceLaunchDaemonPlistFile: URL {
         URL(fileURLWithPath: "/Library/LaunchDaemons/io.kumo.KumoService.plist")
+    }
+
+    /// User-level LaunchAgent tier ("kumod"). Same app-support tree as the
+    /// root daemon, but its own socket, log and LaunchAgents plist.
+    public var userAgentPlistFile: URL {
+        launchAgentsDirectory.appendingPathComponent("\(Self.userAgentLabel).plist")
+    }
+
+    public var userAgentSocketFile: URL {
+        applicationSupportDirectory.appendingPathComponent("kumo-agent.sock")
+    }
+
+    public var userAgentLogFile: URL {
+        logsDirectory.appendingPathComponent("agent.log")
     }
 
     public var subStoreLogFile: URL {
