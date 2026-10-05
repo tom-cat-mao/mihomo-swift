@@ -120,6 +120,9 @@ selects the core's owner per operation through `BackendRouter`
   privileged process (euid 0) may own TUN locally.
 - **TUN disabled + user agent reachable** → the user LaunchAgent
   (`io.kumo.KumoAgent`), so the core survives GUI quit.
+- **TUN disabled + no agent + root daemon reachable** → the root daemon,
+  preserving pre-agent service-mode semantics so an existing daemon-owned core
+  stays visible and controllable until it is migrated.
 - **Otherwise** → the local `CoreSupervisor` (historical default).
 
 `status()` routes through the selected tier when it answers and otherwise
@@ -134,7 +137,7 @@ control surface is still unavailable. `kumo start` performs the same
 never answers, the command fails with the reason and the `logs/core.log` path
 instead of reporting a plain success.
 
-### Core ownership handoff (two-tier runtime, in progress)
+### Core ownership handoff (two-tier runtime)
 
 TUN transitions move the core between tiers instead of leaving it on the wrong
 owner:
@@ -222,9 +225,9 @@ When Kumo Helper is running, `POST /tun/enable` updates the same runtime
 settings, rewrites the controlled config, restarts the helper-owned Mihomo
 process, waits for the controller to become ready, and reports the resulting
 `TunStatus`. In the two-tier runtime, enabling TUN while the user agent owns
-the core first performs the ownership handoff described above (GUI/CLI wiring
-is in progress). The macOS authorization involved is helper installation/
-repair, not a NetworkExtension VPN configuration prompt.
+the core first performs the ownership handoff described above, driven by the
+GUI toggle and by `kumo tun enable`. The macOS authorization involved is
+helper installation/repair, not a NetworkExtension VPN configuration prompt.
 
 ## DNS Runtime Settings
 
@@ -303,17 +306,29 @@ application pattern.
 - `PUT /proxies/{group}`
 - `GET /proxies/{proxy}/delay`
 - `GET /rules`
+- `PATCH /rules/disable`
+- `GET /providers/proxies`
+- `PUT /providers/proxies/{name}`
+- `GET /providers/rules`
+- `PUT /providers/rules/{name}`
+- `POST /upgrade/geo`
 - `GET /connections`
 - `DELETE /connections`
 - `DELETE /connections/{id}`
 - `GET /traffic` over WebSocket
+- `GET /logs` over WebSocket
 - `GET /memory` over WebSocket
 
 It maps proxy groups into `ProxyGroup`, proxy names into `ProxyNode`, rules into `RuleEntry`, and connections into `ConnectionEntry`.
 
 ## Sparkle-Parity Controller Surface
 
-The following external-controller endpoints are planned for the Configure and Inspect pages:
+The Configure and Inspect pages use these additional external-controller
+endpoints through `MihomoControllerClient` (`rules()`,
+`setRuleEnabled(index:isEnabled:)`, `updateProxyProvider(name:)`,
+`updateRuleProvider(name:)`, `upgradeGeoData()`, `logStream(level:)`), and the
+CLI exposes the same operations (`kumo rules`, `kumo providers update`,
+`kumo logs --follow`):
 
 - `PATCH /rules/disable`
 - `GET /providers/proxies`
@@ -321,7 +336,7 @@ The following external-controller endpoints are planned for the Configure and In
 - `GET /providers/rules`
 - `PUT /providers/rules/{name}`
 - `POST /upgrade/geo`
-- `GET /logs` over WebSocket or an equivalent streaming transport
+- `GET /logs` over WebSocket
 
 ## Current Transport
 
@@ -339,5 +354,5 @@ Controller failures are surfaced as `KumoError.controllerResponse(status, body)`
 - Add resilient reconnect policies for event streams.
 - Add restart policies.
 - Add provider initialization progress.
-- Add provider update and preview APIs.
-- Add structured log streaming and cache limits.
+- Add provider content preview APIs (listing and update already ship).
+- Add cache limits for live log streaming.

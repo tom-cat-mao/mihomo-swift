@@ -308,9 +308,9 @@ command names and JSON schemas compatible:
 - `kumo substore status|prepare|start|stop|restart` manages bundled Sub-Store
   resources and the same local lifecycle used by the SwiftUI app.
 
-App Intents follow the same rule: when service mode lands, intents should
-hit service endpoints rather than `KumoAppStore` directly so they keep
-working when the GUI is closed.
+App Intents still call `KumoAppStore` directly. Routing them through service
+endpoints so they keep working when the GUI is closed remains follow-up work
+(part of the root-daemon route-parity gap tracked in the two-tier backlog).
 
 ## Future Work
 

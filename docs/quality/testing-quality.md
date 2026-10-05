@@ -14,6 +14,10 @@ The first test suite covers:
   npm-style help behavior.
 - Dev-instance environment overrides (`KUMO_APP_SUPPORT_DIR`,
   `KUMO_AGENT_LABEL`) and user-agent label plumbing into the generated plist.
+- Two-tier runtime: routing decisions across TUN/agent/root/local, TUN
+  ownership handoff and rollback, the app termination policy, root-to-agent
+  migration guards, tier socket behavior, and the user-agent manager's launchd
+  plist and idle policy.
 
 These tests target `KumoCoreKit` because that layer carries the most important shared behavior.
 
@@ -119,7 +123,8 @@ Prioritize tests that do not mutate real system state:
 - Profile import and remote refresh errors.
 - Missing core path errors.
 - UI store behavior.
-- Future Unix socket transport.
+- Socket-tier failure and reconnect paths beyond the current tier-routing and
+  handoff tests.
 - Exact system proxy restore from snapshots.
 - App update manifest and checksum flows.
 
@@ -150,6 +155,11 @@ Prioritize tests that do not mutate real system state:
 - Inspect search fields remain available when a query returns no matches.
 - Core runtime and System Proxy settings only commit after the user applies staged edits.
 - TUN helper uninstall asks for confirmation before removing the service.
+- `Settings → General → Background` installs and removes the Background Agent
+  and reflects the tier state after each action.
+- With TUN off, `Keep Mihomo running after quit` on, and the agent installed,
+  quitting the GUI leaves the core serving; turning the preference off stops
+  it on quit.
 - Menu bar status item exposes start, stop, mode switching, refresh, profiles, proxy groups, and system proxy controls.
 - App updates check the default GitHub Releases feed when no manifest override is set.
 - App update DMG downloads fail closed on SHA-256 mismatch and report a clear error when the current app location is not writable.

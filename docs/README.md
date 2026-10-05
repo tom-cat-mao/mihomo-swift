@@ -25,4 +25,4 @@ Tests/
 
 ## Architectural Principle
 
-The GUI, CLI, and future service mode must share the same domain behavior. UI surfaces should call `KumoCoreKit` rather than reimplementing Mihomo lifecycle, profile generation, or system proxy logic.
+The GUI, CLI, and service tiers share the same domain behavior. UI surfaces should call `KumoCoreKit` rather than reimplementing Mihomo lifecycle, profile generation, or system proxy logic.

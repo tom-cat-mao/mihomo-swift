@@ -8,7 +8,7 @@ Kumo stores local state under:
 ~/Library/Application Support/Kumo/
 ```
 
-`KumoPaths` centralizes all paths so GUI, CLI, tests, and future service code use the same layout.
+`KumoPaths` centralizes all paths so GUI, CLI, tests, and service tiers use the same layout.
 
 ## Directory Layout
 
@@ -60,10 +60,10 @@ authoritative record. In direct (no-helper) mode, `state.json` and
 so a core is never left running without a record that `status()` or `stop()`
 can act on.
 
-## User-Level Agent (In Progress)
+## User-Level Agent
 
-The user-level agent tier ("kumod", `io.kumo.KumoAgent`) is being introduced
-alongside the root helper. It owns the Mihomo core so the GUI can quit while
+The user-level agent tier ("kumod", `io.kumo.KumoAgent`) ships alongside the
+root helper. It owns the Mihomo core when TUN is off so the GUI can quit while
 the core keeps running, and binds the same signed Unix socket protocol at:
 
 ```text
@@ -81,8 +81,8 @@ created 0600 owned by that user, and `AppSupportOwnershipRepair` — a root
 concern — does not apply. It reuses `service-credentials.json`, so credentials
 are shared across both tiers. The root daemon's socket and log paths are
 unchanged. See
-[Service Mode Roadmap](../roadmap/service-mode-roadmap.md#user-level-agent-tier-in-progress)
-for the staged plan.
+[Service Mode Roadmap](../roadmap/service-mode-roadmap.md#user-level-agent-tier)
+for the tier overview.
 
 The agent is on demand rather than permanently resident. Its generated
 LaunchAgent declares a launchd `Sockets` entry for `kumo-agent.sock`

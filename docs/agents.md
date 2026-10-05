@@ -113,3 +113,4 @@ ADRs live in [decisions/](decisions/):
 - [ADR-002](decisions/ADR-002-policy-value-types.md) — Policy value types
 - [ADR-003](decisions/ADR-003-hosts-top-level-vs-nested.md) — Hosts top-level vs nested
 - [ADR-004](decisions/ADR-004-restart-vs-patch-for-dns-sniffer.md) — Restart vs patch for DNS/Sniffer
+- [ADR-005](decisions/ADR-005-two-tier-runtime.md) — Two-tier runtime (user agent and root daemon)

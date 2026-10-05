@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`KumoCoreKit` is the shared domain layer for the GUI, CLI, tests, and future service mode. It prevents the app from developing separate, inconsistent implementations for lifecycle control, profile generation, controller calls, and system proxy changes.
+`KumoCoreKit` is the shared domain layer for the GUI, CLI, tests, and the service tiers. It prevents the app from developing separate, inconsistent implementations for lifecycle control, profile generation, controller calls, and system proxy changes.
 
 ## Public Entry Point
 
@@ -48,9 +48,9 @@
 - `tierInstallState()` — installed tiers + current core owner (see below)
 - `coreMigrationPlan()` / `migrateCoreToUserAgent()` — tier migration (see below)
 
-This API is intentionally close to the CLI command vocabulary and the future service API.
+This API is intentionally close to the CLI command vocabulary and the service endpoint vocabulary.
 
-## Runtime Tier Routing (Two-Tier Runtime, In Progress)
+## Runtime Tier Routing (Two-Tier Runtime)
 
 `KumoController` selects which process owns or runs the Mihomo core per
 operation through an internal `BackendRouter`
@@ -61,6 +61,7 @@ signatures stay stable; routing is not part of the public API.
 | --- | --- |
 | TUN enabled (per `state.json` runtime settings) | root LaunchDaemon (`io.kumo.KumoService`) |
 | TUN disabled + user agent reachable | user LaunchAgent (`io.kumo.KumoAgent`, "kumod") |
+| TUN disabled + no agent + root daemon reachable | root LaunchDaemon (pre-agent service-mode semantics; keeps an existing daemon-owned core visible until `migrateCoreToUserAgent()`) |
 | otherwise | local `CoreSupervisor` (historical default) |
 
 - A TUN-enabled operation whose root daemon is unreachable fails with
@@ -178,7 +179,7 @@ or mutate a memoized entry.
 - Keep `Process` and shell execution behind small wrappers.
 - Keep dry-run paths available for tests and agent workflows.
 - Keep error messages specific enough for UI and CLI display.
-- Keep advanced GUI behavior behind `KumoController` so the CLI and future service mode can reuse it.
+- Keep advanced GUI behavior behind `KumoController` so the CLI and the service tiers can reuse it.
 
 ## Sparkle-Parity Growth Areas
 
@@ -191,6 +192,10 @@ The next alignment pass expands the facade in these areas:
 - Overrides: ordered YAML overrides first, followed by reviewed JavaScript transform support.
 - Sub-Store: local service lifecycle and optional custom backend support.
 
-## Future Compatibility
+## Service Compatibility
 
-When a privileged service is introduced, `KumoController` should be able to switch from local implementations to service-backed implementations without changing GUI or CLI command semantics.
+The privileged helper and the user agent already switch core lifecycle, system
+proxy, and TUN operations to service-backed implementations without changing
+GUI or CLI command semantics (`BackendRouter` selects the tier per operation).
+Keep new operations behind `KumoController` so the same holds for future
+endpoints.

@@ -56,7 +56,8 @@ Sub-Store remain discoverable in secondary sections, so daily use stays focused.
 | --- | --- |
 | Native macOS app | SwiftUI interface built around `NavigationSplitView`, `Settings`, an AppKit menu bar status item, and standard macOS controls. |
 | Shared core | `KumoCoreKit` owns Mihomo lifecycle, profile generation, controller calls, state, and system proxy logic. |
-| CLI for humans and agents | The `kumo` executable supports stable command names, `--json`, dry-run system changes, and predictable exit codes. |
+| Lightweight quit | Quitting the app can leave the Mihomo core running under a user-level background agent, so traffic keeps flowing without the GUI. |
+| CLI for humans and agents | The `kumo` executable supports stable command names, `--json`, dry-run system changes, and predictable exit codes, including rules, profiles, DNS/Sniffer/TUN settings, provider updates, delay tests, and streaming logs/traffic. |
 | Mihomo discovery | Kumo can use `--core`, `KUMO_MIHOMO_PATH`, a bundled binary, common Homebrew paths, or a managed install. |
 | Safe defaults | Empty profiles generate a direct config, system proxy changes can be dry-run, and core logs are captured in one place. |
 | Focused UI | Daily actions stay prominent while inspection and configuration tools remain available when needed. |
@@ -156,7 +157,7 @@ exit code `1` means the command failed.
 
 ```text
 ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
-│   KumoApp (SwiftUI)  │   │   KumoCLI (`kumo`)   │   │  KumoService (later) │
+│   KumoApp (SwiftUI)  │   │   KumoCLI (`kumo`)   │   │  KumoService helper  │
 └──────────┬───────────┘   └──────────┬───────────┘   └──────────┬───────────┘
            │                          │                          │
            └────────────┬─────────────┴─────────────┬────────────┘
@@ -267,8 +268,9 @@ make xcode-test
 
 ## Roadmap
 
-Kumo's first version intentionally avoids privileged helpers. The broader plan
-is tracked in [docs/roadmap/service-mode-roadmap.md](docs/roadmap/service-mode-roadmap.md):
+Service mode ships as a privileged helper plus a user-level agent tier; the
+broader plan is tracked in
+[docs/roadmap/service-mode-roadmap.md](docs/roadmap/service-mode-roadmap.md):
 
 - Runtime settings parity for ports, LAN access, log level, controller secret,
   and Geo data.
@@ -276,13 +278,13 @@ is tracked in [docs/roadmap/service-mode-roadmap.md](docs/roadmap/service-mode-r
 - Ordered YAML overrides, followed by a reviewed JavaScript transform sandbox.
 - Sub-Store lifecycle, update flow, custom backend support, and WebView or
   external browser access.
-- Service mode with a Swift-native service, Unix socket transport, and signed
-  requests.
-- Event streams for logs, traffic, and core lifecycle.
+- Service-mode hardening: notarized helper distribution, automatic repair,
+  and proxy-guard events.
+- Core lifecycle event streams (`GET /core/events`); log and traffic streams
+  already ship.
 - Structural YAML merge for profile and runtime config.
 - Network service detection for system proxy.
-- CLI surface growth: `kumo logs`, `kumo doctor`, `kumo config path`, JSON
-  schemas, and shell completion.
+- JSON schemas for automation consumers.
 
 ## Contributing
 
