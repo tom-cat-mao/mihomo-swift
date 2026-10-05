@@ -141,12 +141,15 @@ proxy state for the selected service. The disable path turns Kumo-managed
 manual and auto-proxy states off; a later service-backed pass should
 restore exact previous values from the snapshot.
 
-Foreground app quit uses the same disable path before allowing termination.
-The SwiftUI app delegate returns `.terminateLater`, asks `KumoAppStore` to
-disable Kumo-managed system proxy state and stop Mihomo, then replies to
-AppKit that termination may continue. This prevents macOS from keeping manual
-or PAC proxy settings pointed at `127.0.0.1:<mixed-port>` after Kumo's UI is
-gone.
+Foreground app quit uses the same disable path before allowing termination by
+default. The SwiftUI app delegate returns `.terminateLater`, asks
+`KumoAppStore` to disable Kumo-managed system proxy state and stop Mihomo, then
+replies to AppKit that termination may continue. This prevents macOS from
+keeping manual or PAC proxy settings pointed at `127.0.0.1:<mixed-port>` after
+Kumo's UI is gone. When `Keep Mihomo running after quit` is enabled, the store
+asks for `.keepCoreAlive` instead: the proxy state and the agent- or
+daemon-owned core are deliberately left running so traffic continues without the
+GUI.
 
 ## Permissions
 
@@ -161,10 +164,12 @@ Until the helper or a privileged process is available, TUN enable requests fail
 with a visible service-mode error instead of leaving the UI in a misleading
 "On" state. Once installed, the helper owns privileged operations such as
 starting Mihomo for TUN and applying guarded system proxy changes.
-On foreground app quit, Kumo stops the helper-owned Mihomo process rather than
-uninstalling the helper. Stopping Mihomo is the cleanup boundary for the active
-TUN route and Mihomo-managed DNS interception; the user's persisted TUN
-preference remains available for the next explicit start.
+On foreground app quit (with `Keep Mihomo running after quit` off, the default),
+Kumo stops the helper-owned Mihomo process rather than uninstalling the helper.
+Stopping Mihomo is the cleanup boundary for the active TUN route and
+Mihomo-managed DNS interception; the user's persisted TUN preference remains
+available for the next explicit start. With the preference on, the helper-owned
+core keeps running with that TUN route and DNS interception intact.
 
 ## Advanced Features
 

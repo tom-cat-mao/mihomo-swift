@@ -144,6 +144,12 @@ not affect Mihomo runtime):
   controller when the Settings toggle is re-exposed.
 - `quitOnLastWindowClose` — read by
   `applicationShouldTerminateAfterLastWindowClosed`.
+- `keepCoreRunningOnQuit` — Settings → General → Background toggle. When true,
+  `KumoAppStore.prepareForTermination()` passes `.keepCoreAlive` to
+  `prepareForAppTermination(policy:)`, leaving the core with its owning tier
+  (user agent or root daemon) after the GUI quits. Decoded with
+  `decodeIfPresent` so older `preferences.json` files without it default to
+  `false` (today's stop-on-quit behavior).
 - `updateChannel` (`stable` / `beta`) and `updateManifestURL` — feed
   `AppUpdateManager.checkForUpdate(...)`. A blank `updateManifestURL` uses
   Kumo's default GitHub Releases feed; a value overrides it for local testing

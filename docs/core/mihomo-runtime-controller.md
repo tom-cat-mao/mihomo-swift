@@ -153,8 +153,10 @@ owner:
 - The existing guard is unchanged: TUN enable without a reachable privileged
   tier fails and rolls the stored setting back.
 
-The GUI/CLI wiring of these transitions (installing the user agent, exposing
-the policy on quit) is follow-up work; the KumoCoreKit layer is in place.
+The GUI manages the user agent from Settings → General → Background
+(`KumoUserAgentManager` via `KumoAppStore`) and picks the termination policy on
+quit through `UserPreferences.keepCoreRunningOnQuit`; the CLI exposes the same
+manager through `kumo agent status|install|uninstall`.
 
 The old shutdown path is now expressed through
 `prepareForAppTermination(policy:)`, which never throws and collects failures
@@ -172,7 +174,8 @@ in `ShutdownResult.diagnostics`:
   the user's proxy settings in a broken state.
 - `.keepCoreAlive` disables nothing and stops nothing; it only reads the
   current status. It relies on the user agent (or root daemon) owning the core,
-  which is the policy the two-tier runtime exists for. GUI wiring pending.
+  which is the policy the two-tier runtime exists for. The GUI selects it when
+  the `Keep Mihomo running after quit` preference is on.
 
 Diagnostics from every failed step are collected into a `ShutdownResult` and
 surfaced via `errorMessage`; the post-shutdown UI state reset always runs, even

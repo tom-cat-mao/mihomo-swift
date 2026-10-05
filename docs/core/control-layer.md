@@ -75,10 +75,11 @@ signatures stay stable; routing is not part of the public API.
 - Reachability probes are injectable (`BackendReachability`) so routing and
   handoff tests run without sockets, launchd, or spawned processes.
 
-The GUI/CLI wiring on top of this layer — installing the user agent, adopting
-`prepareForAppTermination(policy:)` on quit, CLI tier selection — is follow-up
-work. This layer provides the routing rule, the handoff, and the termination
-policy API only.
+The GUI installs and manages the user agent from Settings → General →
+Background and adopts `prepareForAppTermination(policy:)` on quit through
+`UserPreferences.keepCoreRunningOnQuit`; the CLI exposes the same
+`KumoUserAgentManager` through `kumo agent status|install|uninstall`. This
+layer provides the routing rule, the handoff, and the termination policy API.
 
 ## App Termination Policy
 
@@ -92,7 +93,8 @@ observable one.
   through whichever tier owns it.
 - `.keepCoreAlive` disables nothing and stops nothing; it only reads the
   current status. It relies on the user agent (or root daemon) owning the core
-  so the core keeps serving after the GUI quits. GUI wiring pending.
+  so the core keeps serving after the GUI quits. The GUI selects this policy
+  when `UserPreferences.keepCoreRunningOnQuit` is on.
 
 ## Synchronous Facade, Serial App Executor
 

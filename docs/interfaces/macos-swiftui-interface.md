@@ -258,9 +258,27 @@ materials so high-density list/detail content remains legible.
 About available as a separate window. Runtime status belongs in the main window
 and status item menu instead of Settings:
 
-- **General** — `Open at Login` (driven by `SMAppService.mainApp`), `Quit when last window closes` (read by `applicationShouldTerminateAfterLastWindowClosed`), an **Appearance** section with a `Language` dropdown, and a Setup section with `Run Setup Again` plus a `Command Line Tool` row (install/remove `/usr/local/bin/kumo`).
+- **General** — `Open at Login` (driven by `SMAppService.mainApp`), `Quit when last window closes` (read by `applicationShouldTerminateAfterLastWindowClosed`), a **Background** section with `Keep Mihomo running after quit` (`UserPreferences.keepCoreRunningOnQuit`) plus a `Background Agent` row, an **Appearance** section with a `Language` dropdown, and a Setup section with `Run Setup Again` plus a `Command Line Tool` row (install/remove `/usr/local/bin/kumo`).
 - **Updates** — channel picker, optional manifest URL override, and GitHub Releases update checks backed by `AppUpdateManager`.
 - **About Kumo window** — app icon, version/build, author GitHub link, project links, and the same update-check state used by Settings.
+
+The **Background** section drives the two-tier runtime from the GUI:
+
+- `Keep Mihomo running after quit` persists `UserPreferences.keepCoreRunningOnQuit`.
+  On quit, `KumoAppStore.prepareForTermination()` passes `.keepCoreAlive` when
+  the preference is on and `.stopRuntime` otherwise to
+  `KumoController.prepareForAppTermination(policy:)` through
+  `CoreRuntimeRunner`. The AppDelegate's 5 s termination gate and the
+  `isInstallingUpdate` fast path are unchanged; post-cleanup UI state reset
+  still runs even though the core may keep serving.
+- `Background Agent` shows the user LaunchAgent tier (`kumod`,
+  `io.kumo.KumoAgent`) status through `KumoUserAgentManager`, mirroring the
+  service-mode status/action row in TUN settings: a Running / Installed / Not
+  Installed badge, `Install` / `Remove` buttons, and the manager's status
+  message. Removal asks for confirmation because quitting Kumo then stops the
+  core unless Kumo Helper owns it. Status refreshes on appear, after every
+  action, and in `KumoAppStore.refreshAll()`; failures surface through
+  `KumoAppStore.errorMessage`.
 
 ### Localization
 

@@ -25,6 +25,7 @@ private struct GeneralSettingsTab: View {
     @State private var cliBusy = false
     @State private var cliErrorMessage: String?
     @State private var showRestartAlert = false
+    @State private var isConfirmingAgentUninstall = false
 
     var body: some View {
         Form {
@@ -41,6 +42,42 @@ private struct GeneralSettingsTab: View {
                 Toggle(String(localized: "Quit when last window closes"), isOn: quitOnLastWindowCloseBinding)
             } header: {
                 Text(String(localized: "Window"))
+            }
+
+            Section {
+                Toggle(String(localized: "Keep Mihomo running after quit"), isOn: keepCoreRunningOnQuitBinding)
+
+                LabeledContent("Background Agent") {
+                    HStack(spacing: 10) {
+                        agentStatusBadge
+
+                        if store.isLoading {
+                            ProgressView().controlSize(.small)
+                        }
+
+                        if store.agentStatus.isInstalled {
+                            Button(String(localized: "Remove")) {
+                                isConfirmingAgentUninstall = true
+                            }
+                            .disabled(store.isLoading)
+                        } else {
+                            Button(String(localized: "Install")) {
+                                Task { await store.installBackgroundAgent() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(store.isLoading)
+                        }
+                    }
+                }
+
+                if let message = store.agentStatus.message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text(String(localized: "Background"))
             }
 
             Section(String(localized: "Appearance")) {
@@ -124,6 +161,39 @@ private struct GeneralSettingsTab: View {
         .task {
             await store.loadPreferences()
             await refreshCLIStatus()
+            await store.refreshAgentStatus()
+        }
+        .confirmationDialog(
+            String(localized: "Remove Background Agent?"),
+            isPresented: $isConfirmingAgentUninstall,
+            titleVisibility: .visible
+        ) {
+            Button(String(localized: "Remove"), role: .destructive) {
+                Task { await store.uninstallBackgroundAgent() }
+            }
+            Button(String(localized: "Cancel"), role: .cancel) {}
+        } message: {
+            Text(String(localized: "Quitting Kumo will stop the core unless Kumo Helper owns it."))
+        }
+    }
+
+    @ViewBuilder
+    private var agentStatusBadge: some View {
+        if store.agentStatus.isRunning {
+            Label(String(localized: "Running"), systemImage: "checkmark.seal.fill")
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(.green)
+                .font(.caption)
+        } else if store.agentStatus.isInstalled {
+            Label(String(localized: "Installed"), systemImage: "checkmark.seal.fill")
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(.green)
+                .font(.caption)
+        } else {
+            Label(String(localized: "Not Installed"), systemImage: "circle.dashed")
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(.secondary)
+                .font(.caption)
         }
     }
 
@@ -197,6 +267,16 @@ private struct GeneralSettingsTab: View {
         } set: { value in
             var prefs = store.preferences
             prefs.quitOnLastWindowClose = value
+            Task { await store.updatePreferences(prefs) }
+        }
+    }
+
+    private var keepCoreRunningOnQuitBinding: Binding<Bool> {
+        Binding {
+            store.preferences.keepCoreRunningOnQuit
+        } set: { value in
+            var prefs = store.preferences
+            prefs.keepCoreRunningOnQuit = value
             Task { await store.updatePreferences(prefs) }
         }
     }

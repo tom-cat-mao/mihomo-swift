@@ -32,6 +32,10 @@ final class KumoAppStore {
     var subStoreRuntimeStatus = SubStoreRuntimeStatus()
     var subStoreEntries: [SubStoreEntry] = []
     var serviceModeStatus = ServiceModeStatus()
+    /// Status of the user-level LaunchAgent tier (`kumod`), shown in
+    /// Settings → General → Background. Distinct from `serviceModeStatus`,
+    /// which describes the privileged root helper.
+    var agentStatus = ServiceModeStatus()
     var tunStatus = TunStatus()
     var coreCandidates: [CoreCandidate] = []
     var preferences = UserPreferences()
@@ -113,6 +117,7 @@ final class KumoAppStore {
         await refreshOverrides()
         await refreshSubStoreRuntimeStatus()
         await refreshServiceModeStatus()
+        await refreshAgentStatus()
         await refreshTunStatus()
     }
 
@@ -258,7 +263,10 @@ final class KumoAppStore {
         proxyGeoTask?.cancel()
         proxyGeoTask = nil
 
-        let result = await runner.shutdownActiveRuntime()
+        // `keepCoreRunningOnQuit` leaves the core with its owning tier (user
+        // agent or root daemon) so it keeps serving after the GUI exits;
+        // otherwise the historical stop-and-disable path runs.
+        let result = await runner.prepareForAppTermination(policy: preferences.appTerminationPolicy)
         status = result.status
         status.systemProxyEnabled = false
         proxyGroups = []
@@ -873,6 +881,10 @@ final class KumoAppStore {
         serviceModeStatus = await runner.serviceModeStatus()
     }
 
+    func refreshAgentStatus() async {
+        agentStatus = await runner.userAgentStatus()
+    }
+
     func refreshTunStatus() async {
         do {
             tunStatus = try await runner.tunStatus()
@@ -895,6 +907,18 @@ final class KumoAppStore {
             serviceModeStatus = try await runner.uninstallServiceMode()
             await refreshStatus()
             await refreshTunStatus()
+        }
+    }
+
+    func installBackgroundAgent() async {
+        await performLoadingTask { [self] in
+            agentStatus = try await runner.installUserAgent()
+        }
+    }
+
+    func uninstallBackgroundAgent() async {
+        await performLoadingTask { [self] in
+            agentStatus = try await runner.uninstallUserAgent()
         }
     }
 

@@ -8,6 +8,10 @@ public struct UserPreferences: Codable, Sendable, Equatable {
     public var launchAtLogin: Bool
     public var hideMenuBarIcon: Bool
     public var quitOnLastWindowClose: Bool
+    /// When true, quitting the GUI leaves the Mihomo core running under its
+    /// owning tier (user agent or root daemon) instead of stopping it. See
+    /// `KumoController.prepareForAppTermination(policy:)`.
+    public var keepCoreRunningOnQuit: Bool
     public var updateChannel: AppUpdateChannel
     public var updateManifestURL: URL?
     /// The user's preferred app language. `nil` means follow the system
@@ -23,6 +27,7 @@ public struct UserPreferences: Codable, Sendable, Equatable {
         launchAtLogin: Bool = false,
         hideMenuBarIcon: Bool = false,
         quitOnLastWindowClose: Bool = false,
+        keepCoreRunningOnQuit: Bool = false,
         updateChannel: AppUpdateChannel = .stable,
         updateManifestURL: URL? = nil,
         appLanguage: String? = nil,
@@ -31,16 +36,24 @@ public struct UserPreferences: Codable, Sendable, Equatable {
         self.launchAtLogin = launchAtLogin
         self.hideMenuBarIcon = hideMenuBarIcon
         self.quitOnLastWindowClose = quitOnLastWindowClose
+        self.keepCoreRunningOnQuit = keepCoreRunningOnQuit
         self.updateChannel = updateChannel
         self.updateManifestURL = updateManifestURL
         self.appLanguage = appLanguage
         self.hasCompletedOnboarding = hasCompletedOnboarding
     }
 
+    /// App-termination policy selected by `keepCoreRunningOnQuit`. The GUI
+    /// passes this to `prepareForAppTermination(policy:)` on quit.
+    public var appTerminationPolicy: AppTerminationPolicy {
+        keepCoreRunningOnQuit ? .keepCoreAlive : .stopRuntime
+    }
+
     private enum CodingKeys: String, CodingKey {
         case launchAtLogin
         case hideMenuBarIcon
         case quitOnLastWindowClose
+        case keepCoreRunningOnQuit
         case updateChannel
         case updateManifestURL
         case appLanguage
@@ -54,6 +67,7 @@ public struct UserPreferences: Codable, Sendable, Equatable {
             launchAtLogin: try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? defaults.launchAtLogin,
             hideMenuBarIcon: try container.decodeIfPresent(Bool.self, forKey: .hideMenuBarIcon) ?? defaults.hideMenuBarIcon,
             quitOnLastWindowClose: try container.decodeIfPresent(Bool.self, forKey: .quitOnLastWindowClose) ?? defaults.quitOnLastWindowClose,
+            keepCoreRunningOnQuit: try container.decodeIfPresent(Bool.self, forKey: .keepCoreRunningOnQuit) ?? defaults.keepCoreRunningOnQuit,
             updateChannel: try container.decodeIfPresent(AppUpdateChannel.self, forKey: .updateChannel) ?? defaults.updateChannel,
             updateManifestURL: try container.decodeIfPresent(URL.self, forKey: .updateManifestURL),
             appLanguage: try container.decodeIfPresent(String.self, forKey: .appLanguage),

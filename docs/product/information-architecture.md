@@ -28,6 +28,7 @@ The following features belong in `Configure` or `Settings`:
 - TUN configuration
 - Sniffer configuration
 - Service mode setup
+- Background Agent setup (user-level agent that keeps the core running after quit)
 - Core path overrides
 - External resources and provider management
 - Ordered YAML overrides and future JavaScript transforms
@@ -35,9 +36,11 @@ The following features belong in `Configure` or `Settings`:
 
 Inspect-only features such as connection tables, full logs, and rules live in `Inspect`, because they answer what the core is doing rather than how it should be configured.
 
-Settings is reserved for app-level preferences such as launch, window, language,
-and update choices. Runtime status summaries belong in `Daily` surfaces and the
-menu bar status item, not in the Settings window.
+Settings is reserved for app-level preferences such as launch, window, quit
+behavior, background-agent setup, language, and update choices. Runtime status
+summaries belong in `Daily` surfaces and the menu bar status item, not in the
+Settings window; setup rows may show the install state needed to drive their own
+actions (Command Line Tool, Background Agent).
 
 ## Empty and Error States
 
