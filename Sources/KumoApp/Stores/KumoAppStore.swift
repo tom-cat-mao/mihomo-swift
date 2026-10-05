@@ -32,6 +32,10 @@ final class KumoAppStore {
     var subStoreRuntimeStatus = SubStoreRuntimeStatus()
     var subStoreEntries: [SubStoreEntry] = []
     var serviceModeStatus = ServiceModeStatus()
+    /// Status of the user-level LaunchAgent tier (`kumod`), shown in
+    /// Settings → General → Background. Distinct from `serviceModeStatus`,
+    /// which describes the privileged root helper.
+    var agentStatus = ServiceModeStatus()
     var tunStatus = TunStatus()
     var coreCandidates: [CoreCandidate] = []
     var preferences = UserPreferences()
@@ -64,11 +68,15 @@ final class KumoAppStore {
     /// `KumoApp.init` reads the persisted preferences before the first frame,
     /// and `SubStoreStore` receives a controller to build its client. Every
     /// other controller call in this store goes through `runner` so the file
-    /// IO, helper IPC and Yams parsing stay off the main thread.
-    let controller = KumoController()
+    /// IO, helper IPC and Yams parsing stay off the main thread. Injectable so
+    /// tests can run the store against a hermetic app-support directory.
+    let controller: KumoController
     /// Serial executor for all controller work this store performs.
     private let runner: CoreRuntimeRunner
-    private let appNotificationCoordinator = AppNotificationCoordinator.shared
+    /// Resolved on demand rather than at store construction: constructing the
+    /// store must not touch `UserNotifications`, whose center is unavailable
+    /// in non-app processes (SwiftPM test bundles) and would throw there.
+    private var appNotificationCoordinator: AppNotificationCoordinator { .shared }
     private let proxyGeoLookup: ProxyGeoLookup
     private static let updatePollingIntervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
     private static let profileUpdatePollingIntervalNanoseconds: UInt64 = 60 * 1_000_000_000
@@ -81,6 +89,10 @@ final class KumoAppStore {
     private var profileUpdatePollingTask: Task<Void, Never>?
     private var isPollingForUpdates = false
     private var lastProfileRefreshFailureNotifications: [String: Date] = [:]
+    /// One-shot gate for the post-update agent repair in `refreshAll()`:
+    /// launch must repair at most once, and manual refreshes must not re-run
+    /// launchctl churn.
+    private var didAttemptAgentUpdateRepair = false
 
     private enum AppUpdateCheckSource {
         case manual
@@ -92,7 +104,8 @@ final class KumoAppStore {
         case automatic
     }
 
-    init() {
+    init(controller: KumoController = KumoController()) {
+        self.controller = controller
         let runner = CoreRuntimeRunner(controller: controller)
         self.runner = runner
         self.proxyGeoLookup = ProxyGeoLookup(cacheURL: runner.paths.proxyGeoCacheFile)
@@ -113,6 +126,8 @@ final class KumoAppStore {
         await refreshOverrides()
         await refreshSubStoreRuntimeStatus()
         await refreshServiceModeStatus()
+        await refreshAgentStatus()
+        await repairInstalledAgentAfterAppUpdate()
         await refreshTunStatus()
     }
 
@@ -250,6 +265,23 @@ final class KumoAppStore {
         }
     }
 
+    /// Stops this process's runtime children before handing the bundle to the
+    /// detached update installer. The install flow ends with
+    /// `NSApplication.terminate`, and `KumoAppDelegate.applicationShouldTerminate`
+    /// takes the `.terminateNow` fast path while `isInstallingUpdate` is set,
+    /// so `prepareForTermination()` never runs there. Without this the
+    /// Sub-Store sidecar — a child of the GUI process — is orphaned across
+    /// the relaunch.
+    func prepareForUpdateInstall() async {
+        if status.systemProxyEnabled {
+            setSystemProxyEnabled(false)
+        }
+        if status.state == .running {
+            await stopCore()
+        }
+        await runner.stopSubStoreService()
+    }
+
     func prepareForTermination() async {
         stopUpdatePolling()
         stopProfileUpdatePolling()
@@ -258,7 +290,20 @@ final class KumoAppStore {
         proxyGeoTask?.cancel()
         proxyGeoTask = nil
 
-        let result = await runner.shutdownActiveRuntime()
+        // `keepCoreRunningOnQuit` leaves the core with its owning tier (user
+        // agent or root daemon) so it keeps serving after the GUI exits;
+        // otherwise the historical stop-and-disable path runs. The Sub-Store
+        // sidecar is always a child of this process, so quitting must stop it
+        // too — otherwise the orphaned Node process keeps writing the
+        // Sub-Store data store and the next launch spawns a second instance
+        // on a fresh port. Both legs run concurrently so the quit path waits
+        // for max(core shutdown, sidecar stop) rather than their sum; the
+        // delegate's 5 s gate still bounds the whole cleanup.
+        let policy = preferences.appTerminationPolicy
+        async let runtimeShutdown = runner.prepareForAppTermination(policy: policy)
+        async let sidecarShutdown: Void = runner.stopSubStoreService()
+        let result = await runtimeShutdown
+        await sidecarShutdown
         status = result.status
         status.systemProxyEnabled = false
         proxyGroups = []
@@ -870,7 +915,58 @@ final class KumoAppStore {
     }
 
     func refreshServiceModeStatus() async {
-        serviceModeStatus = await runner.serviceModeStatus()
+        var status = await runner.serviceModeStatus()
+        if let prompt = await helperVersionRepairPrompt() {
+            status.message = prompt
+        }
+        serviceModeStatus = status
+    }
+
+    func refreshAgentStatus() async {
+        agentStatus = await runner.userAgentStatus()
+    }
+
+    /// Detection-only hint for the privileged helper: the binary under
+    /// `/Library/PrivilegedHelperTools` is copied at install time and is not
+    /// silently replaced on app updates. The prompt routes the user to the
+    /// existing Install / Repair Service action, which performs the
+    /// administrator authorization — nothing elevates on launch.
+    private func helperVersionRepairPrompt() async -> String? {
+        let paths = runner.paths
+        let version = bundleShortVersion
+        return await Task.detached(priority: .utility) {
+            KumoServiceManager(paths: paths)
+                .helperVersionVerdict(currentVersion: version)
+                .repairMessage
+        }.value
+    }
+
+    /// After an in-app update the bundle is replaced, but the LaunchAgent job
+    /// registered by the previous version keeps its old plist (paths, plist
+    /// shape). When the version recorded at install time no longer matches
+    /// the running app — or predates stamping — re-run the idempotent install
+    /// once so the job is rewritten. Skipped while a core is running or
+    /// starting so a live tunnel is never torn down by the reload; the next
+    /// launch repairs instead. Failures surface through `errorMessage` and
+    /// never abort launch.
+    private func repairInstalledAgentAfterAppUpdate() async {
+        guard !didAttemptAgentUpdateRepair else { return }
+        guard status.state != .running, status.state != .starting else { return }
+        didAttemptAgentUpdateRepair = true
+
+        let paths = runner.paths
+        let version = bundleShortVersion
+        do {
+            let repaired = try await Task.detached(priority: .utility) {
+                try KumoUserAgentManager(paths: paths)
+                    .repairInstallIfVersionChanged(currentVersion: version)
+            }.value
+            if repaired != nil {
+                await refreshAgentStatus()
+            }
+        } catch {
+            errorMessage = displayMessage(for: error)
+        }
     }
 
     func refreshTunStatus() async {
@@ -895,6 +991,18 @@ final class KumoAppStore {
             serviceModeStatus = try await runner.uninstallServiceMode()
             await refreshStatus()
             await refreshTunStatus()
+        }
+    }
+
+    func installBackgroundAgent() async {
+        await performLoadingTask { [self] in
+            agentStatus = try await runner.installUserAgent()
+        }
+    }
+
+    func uninstallBackgroundAgent() async {
+        await performLoadingTask { [self] in
+            agentStatus = try await runner.uninstallUserAgent()
         }
     }
 
@@ -1280,12 +1388,7 @@ final class KumoAppStore {
                 message: "Installing Kumo \(manifest.version)..."
             )
             isInstallingUpdate = true
-            if status.systemProxyEnabled {
-                setSystemProxyEnabled(false)
-            }
-            if status.state == .running {
-                await stopCore()
-            }
+            await prepareForUpdateInstall()
 
             try await runner.installAppUpdate(
                 dmgURL: downloaded.fileURL,

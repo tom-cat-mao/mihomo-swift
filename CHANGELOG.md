@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.0.17] - 2026-10-06
+
+### Added
+- `Keep Mihomo running after quit` (Settings → General → Background): the GUI
+  can quit while Mihomo keeps serving under the user agent or root daemon.
+  Backed by `UserPreferences.keepCoreRunningOnQuit` and
+  `KumoController.prepareForAppTermination(policy:)`.
+- `Background Agent` row in Settings → General → Background to install,
+  remove, and inspect the user-level LaunchAgent (`kumod`,
+  `io.kumo.KumoAgent`).
+- User-level agent tier: `kumod` runs as the logged-in user behind launchd
+  socket activation (`kumo-agent.sock`), owns the core when TUN is off, and
+  idle-exits after 5 minutes with no core running.
+- TUN ownership handoff: enabling or disabling TUN transfers core ownership
+  between the user agent and the root daemon through `transferCoreOwnership`,
+  which stops the core on the source tier and starts it on the target tier; if
+  the target start fails, rollback restores the core on the source tier. TUN
+  always runs privileged, and TUN-off cores can outlive the GUI.
+- `kumo agent status|install|uninstall|migrate` plus `tierInstallState()`,
+  `coreMigrationPlan()`, and `migrateCoreToUserAgent()` for dual-tier
+  detection and root-to-agent migration.
+- CLI write surface: `rules list|enable|disable`; `providers update
+  --proxy|--rule|--geo`; `test`; profile `list|use|delete|import|content`;
+  `dns` / `sniffer` show|enable|disable|set; `tun settings`; `sysproxy set`;
+  JSON settings patches via `--file` / `--stdin`.
+- Streaming CLI output: `kumo logs --follow` and `kumo traffic --watch`
+  (NDJSON in `--json` mode, Ctrl-C exits cleanly).
+- Dev infrastructure: `KUMO_APP_SUPPORT_DIR` / `KUMO_AGENT_LABEL` overrides
+  and hermetic `Scripts/dev/` agent instance and smoke scripts.
+
+### Changed
+- Quit now routes through `prepareForAppTermination(policy:)`: `.stopRuntime`
+  preserves the previous stop behavior; `.keepCoreAlive` (the new preference)
+  leaves the core and Kumo-managed system proxy running.
+- Core lifecycle and privileged operations route through the tier that owns
+  the core: TUN on → root daemon; TUN off → user agent → root daemon → local
+  process. An existing root-daemon-owned core stays visible and controllable
+  until it is migrated.
+- `KumoService service run --mode root|user` selects the tier; root mode is
+  unchanged. Both tiers use the same signed socket protocol and credentials
+  file.
+- `Kumo.app` ships the user-tier payload (`Contents/MacOS/KumoService` and a
+  rendered `Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist`); the
+  installer validates the plist for the current machine before
+  `SMAppService.agent` registration and falls back to a generated
+  `~/Library/LaunchAgents` plist plus `launchctl bootstrap`.
+- CLT-only machines can build with `KUMO_CLT_BUILD=1` to skip Xcode-only
+  targets.
+
 ## [0.0.16] - 2026-10-02
 
 ### Fixed

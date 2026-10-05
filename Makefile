@@ -20,6 +20,8 @@ RELEASE_OUTPUT := $(DERIVED_DATA)/release
 DESTINATION ?= platform=macOS
 BUILD_NUMBER ?= 1
 SUBSTORE_RUNTIME_SCRIPT := Scripts/prepare_substore_runtime.sh
+AGENT_LAUNCHAGENT_SCRIPT := Scripts/prepare_agent_launchagent.sh
+AGENT_LAUNCHAGENT_REL := Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist
 
 # Architecture: arm64 (Apple Silicon, default) or amd64 (Intel)
 ARCH ?= arm64
@@ -48,30 +50,66 @@ prepare-substore-runtime: ## Download the generated Sub-Store Node runtime into 
 app: generate ## Build the Kumo .app bundle in Debug to build/Build/Products/Debug.
 	$(MAKE) prepare-substore-runtime
 	$(XCODEBUILD) -project $(PROJECT) -scheme $(SCHEME_APP) -configuration Debug -derivedDataPath $(DERIVED_DATA) build
-	@if [ -x "$(SERVICE_PATH_DEBUG)" ]; then \
+# The Xcode post-build scripts already embed the helper, CLI, and LaunchAgent
+# plist. This post-CodeSign re-run must stay a no-op when the content is
+# unchanged, so copy/render only when the destination bytes differ.
+	@if [ -x "$(SERVICE_PATH_DEBUG)" ] && ! cmp -s "$(SERVICE_PATH_DEBUG)" "$(APP_PATH_DEBUG)/Contents/MacOS/KumoService"; then \
 		mkdir -p "$(APP_PATH_DEBUG)/Contents/MacOS"; \
 		cp "$(SERVICE_PATH_DEBUG)" "$(APP_PATH_DEBUG)/Contents/MacOS/KumoService"; \
 		chmod 755 "$(APP_PATH_DEBUG)/Contents/MacOS/KumoService"; \
 	fi
-	@if [ -x "$(CLI_PATH_DEBUG)" ]; then \
+	@if [ -x "$(CLI_PATH_DEBUG)" ] && ! cmp -s "$(CLI_PATH_DEBUG)" "$(APP_PATH_DEBUG)/Contents/Helpers/kumo"; then \
 		mkdir -p "$(APP_PATH_DEBUG)/Contents/Helpers"; \
 		cp "$(CLI_PATH_DEBUG)" "$(APP_PATH_DEBUG)/Contents/Helpers/kumo"; \
 		chmod 755 "$(APP_PATH_DEBUG)/Contents/Helpers/kumo"; \
+	fi
+	@dest="$(abspath $(APP_PATH_DEBUG))/$(AGENT_LAUNCHAGENT_REL)"; \
+	mkdir -p "$$(dirname "$$dest")"; \
+	tmp="$$(mktemp)"; \
+	if ! KUMO_HELPER_PATH="$(abspath $(APP_PATH_DEBUG))/Contents/MacOS/KumoService" \
+		KUMO_AGENT_PLIST_OUTPUT="$$tmp" \
+		bash $(AGENT_LAUNCHAGENT_SCRIPT) >/dev/null; then \
+		rm -f "$$tmp"; \
+		exit 1; \
+	fi; \
+	if cmp -s "$$tmp" "$$dest"; then \
+		rm -f "$$tmp"; \
+	else \
+		mv "$$tmp" "$$dest"; \
+		chmod 644 "$$dest"; \
+		printf 'Rendered %s\n' "$$dest"; \
 	fi
 
 .PHONY: app-release
 app-release: generate ## Build the Kumo .app bundle in Release to build/Build/Products/Release.
 	$(MAKE) prepare-substore-runtime
 	$(XCODEBUILD) -project $(PROJECT) -scheme $(SCHEME_APP) -configuration Release -derivedDataPath $(DERIVED_DATA) build ARCHS=$(XCODE_ARCH) ONLY_ACTIVE_ARCH=NO $(if $(VERSION),MARKETING_VERSION="$(VERSION)" CURRENT_PROJECT_VERSION="$(BUILD_NUMBER)",)
-	@if [ -x "$(SERVICE_PATH_RELEASE)" ]; then \
+# See the `app` target: re-embed only when the bundle content actually differs.
+	@if [ -x "$(SERVICE_PATH_RELEASE)" ] && ! cmp -s "$(SERVICE_PATH_RELEASE)" "$(APP_PATH_RELEASE)/Contents/MacOS/KumoService"; then \
 		mkdir -p "$(APP_PATH_RELEASE)/Contents/MacOS"; \
 		cp "$(SERVICE_PATH_RELEASE)" "$(APP_PATH_RELEASE)/Contents/MacOS/KumoService"; \
 		chmod 755 "$(APP_PATH_RELEASE)/Contents/MacOS/KumoService"; \
 	fi
-	@if [ -x "$(CLI_PATH_RELEASE)" ]; then \
+	@if [ -x "$(CLI_PATH_RELEASE)" ] && ! cmp -s "$(CLI_PATH_RELEASE)" "$(APP_PATH_RELEASE)/Contents/Helpers/kumo"; then \
 		mkdir -p "$(APP_PATH_RELEASE)/Contents/Helpers"; \
 		cp "$(CLI_PATH_RELEASE)" "$(APP_PATH_RELEASE)/Contents/Helpers/kumo"; \
 		chmod 755 "$(APP_PATH_RELEASE)/Contents/Helpers/kumo"; \
+	fi
+	@dest="$(abspath $(APP_PATH_RELEASE))/$(AGENT_LAUNCHAGENT_REL)"; \
+	mkdir -p "$$(dirname "$$dest")"; \
+	tmp="$$(mktemp)"; \
+	if ! KUMO_HELPER_PATH="$(abspath $(APP_PATH_RELEASE))/Contents/MacOS/KumoService" \
+		KUMO_AGENT_PLIST_OUTPUT="$$tmp" \
+		bash $(AGENT_LAUNCHAGENT_SCRIPT) >/dev/null; then \
+		rm -f "$$tmp"; \
+		exit 1; \
+	fi; \
+	if cmp -s "$$tmp" "$$dest"; then \
+		rm -f "$$tmp"; \
+	else \
+		mv "$$tmp" "$$dest"; \
+		chmod 644 "$$dest"; \
+		printf 'Rendered %s\n' "$$dest"; \
 	fi
 
 .PHONY: require-release-version

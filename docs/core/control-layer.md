@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`KumoCoreKit` is the shared domain layer for the GUI, CLI, tests, and future service mode. It prevents the app from developing separate, inconsistent implementations for lifecycle control, profile generation, controller calls, and system proxy changes.
+`KumoCoreKit` is the shared domain layer for the GUI, CLI, tests, and the service tiers. It prevents the app from developing separate, inconsistent implementations for lifecycle control, profile generation, controller calls, and system proxy changes.
 
 ## Public Entry Point
 
@@ -44,8 +44,92 @@
 - `checkAppUpdate(...)` / `downloadAppUpdate(...)` / `installAppUpdate(...)`
 - `userPreferences()` / `updateUserPreferences(_:)`
 - `installCLILink()` / `uninstallCLILink()`
+- `prepareForAppTermination(policy:)` — best-effort shutdown entry point (see below)
+- `tierInstallState()` — installed tiers + current core owner (see below)
+- `coreMigrationPlan()` / `migrateCoreToUserAgent()` — tier migration (see below)
 
-This API is intentionally close to the CLI command vocabulary and the future service API.
+This API is intentionally close to the CLI command vocabulary and the service endpoint vocabulary.
+
+## Runtime Tier Routing (Two-Tier Runtime)
+
+`KumoController` selects which process owns or runs the Mihomo core per
+operation through an internal `BackendRouter`
+(`Sources/KumoCoreKit/Service/BackendRouter.swift`). All existing public method
+signatures stay stable; routing is not part of the public API.
+
+| Current state | Backend |
+| --- | --- |
+| TUN enabled (per `state.json` runtime settings) | root LaunchDaemon (`io.kumo.KumoService`) |
+| TUN disabled + user agent reachable | user LaunchAgent (`io.kumo.KumoAgent`, "kumod") |
+| TUN disabled + no agent + root daemon reachable | root LaunchDaemon (pre-agent service-mode semantics; keeps an existing daemon-owned core visible until `migrateCoreToUserAgent()`) |
+| otherwise | local `CoreSupervisor` (historical default) |
+
+- A TUN-enabled operation whose root daemon is unreachable fails with
+  `KumoError.serviceUnavailable`. Kumo never silently runs a user-owned core
+  while TUN is active, because that would strand TUN traffic. A privileged
+  process (euid 0) may still own TUN locally.
+- `status()` is read-only and degrades to the shared `state.json` plus pid
+  recovery when the selected socket tier fails mid-call, so a live core owned
+  by another tier is reported as running (for example after a GUI relaunch)
+  instead of stopped.
+- System proxy and TUN-status reads keep their historical root-or-local
+  executor semantics; the router's reachability probe is the single source of
+  truth for both.
+- Reachability probes are injectable (`BackendReachability`) so routing and
+  handoff tests run without sockets, launchd, or spawned processes.
+
+The GUI installs and manages the user agent from Settings → General →
+Background and adopts `prepareForAppTermination(policy:)` on quit through
+`UserPreferences.keepCoreRunningOnQuit`; the CLI exposes the same
+`KumoUserAgentManager` through `kumo agent status|install|uninstall|migrate`.
+This layer provides the routing rule, the handoff, the migration API, and the
+termination policy API.
+
+## Tier Detection and Migration
+
+`tierInstallState()` reports `none | rootOnly | userOnly | dual` from the two
+managers' status plus the current core owner
+(`rootService | userAgent | localSupervisor | unavailable`) and the TUN state
+driving routing. The owner comes from the running core's ownership record
+(`CoreStatus.ownerTier`); the router decision is the fallback for a state
+written before ownership recording. It performs no core-lifecycle call and is
+safe for periodic UI refresh.
+
+`migrateCoreToUserAgent()` moves a running, root-owned core to the user agent
+so it can keep serving without the privileged daemon owning it:
+
+- Refuses while TUN is enabled — the core must stay root-owned while TUN is
+  active — and refuses until the agent is installed; both errors name the
+  reason and the caller installs the agent first.
+- When the ownership record (or, for legacy states, the router decision)
+  proves the root daemon owns the running core, the handoff goes through
+  `transferCoreOwnership(from: .rootService, to: .userAgent)`; a failed agent
+  start restores the root-owned core and reports every rollback outcome.
+- With no running core, or when the agent already owns it, the call is a no-op
+  success that only reports the tier state, so it is idempotent.
+- `coreMigrationPlan()` is the non-mutating assessment behind
+  `kumo agent migrate --dry-run`: guard refusals are collected in
+  `blockers` instead of thrown.
+
+The pre-update core stop in the app already routes through the tier-aware
+`stop()` (`KumoAppStore.stopCore` → `CoreRuntimeRunner.stop` →
+`KumoController.stop`), so an agent-owned core is stopped on the agent before
+the bundle is replaced.
+
+## App Termination Policy
+
+`prepareForAppTermination(policy:)` is the single best-effort shutdown entry
+point. It never throws; every failed step is collected in
+`ShutdownResult.diagnostics` and the returned status is the most recent
+observable one.
+
+- `.stopRuntime` (default) preserves today's `shutdownActiveRuntime()`
+  behavior: disable Kumo-managed system proxy state, then stop the running core
+  through whichever tier owns it.
+- `.keepCoreAlive` disables nothing and stops nothing; it only reads the
+  current status. It relies on the user agent (or root daemon) owning the core
+  so the core keeps serving after the GUI quits. The GUI selects this policy
+  when `UserPreferences.keepCoreRunningOnQuit` is on.
 
 ## Synchronous Facade, Serial App Executor
 
@@ -98,19 +182,36 @@ or mutate a memoized entry.
 - Keep `Process` and shell execution behind small wrappers.
 - Keep dry-run paths available for tests and agent workflows.
 - Keep error messages specific enough for UI and CLI display.
-- Keep advanced GUI behavior behind `KumoController` so the CLI and future service mode can reuse it.
+- Keep advanced GUI behavior behind `KumoController` so the CLI and the service tiers can reuse it.
 
 ## Sparkle-Parity Growth Areas
 
-The next alignment pass expands the facade in these areas:
+Shipped: runtime settings (ports, LAN, log level, controller secret, IPv6, Geo
+data), provider listing/update plus Geo upgrade, rule metadata and
+enable/disable, structured recent logs and a live log stream, ordered YAML
+overrides, and the Sub-Store lifecycle with custom backend support. DNS,
+Sniffer, and TUN changes restart the core per
+[ADR-004](../decisions/ADR-004-restart-vs-patch-for-dns-sniffer.md); simple
+scalar runtime settings still PATCH `/configs`.
 
-- Runtime settings: controlled ports, LAN, log level, controller secret, IPv6, and Geo data settings.
-- Providers: proxy provider and rule provider listing, refresh, and safe content preview.
-- Rules: richer rule metadata and rule enable/disable operations.
-- Logs: structured recent logs plus a live log event stream.
-- Overrides: ordered YAML overrides first, followed by reviewed JavaScript transform support.
-- Sub-Store: local service lifecycle and optional custom backend support.
+Still open:
 
-## Future Compatibility
+- Provider initialization progress reporting.
+- Reviewed JavaScript override transforms (sandbox design first).
+- Service-side log streaming and helper-hosted PAC hosting; PAC hosting runs in
+  the app process today.
+- Root-daemon route parity: the daemon's signed-socket surface stays scoped to
+  privileged routes (service/core/sysproxy/TUN), and the rest of the write
+  surface plus agent management run in-process until a daemon-brokered
+  equivalent lands.
+- Routing App Intents through service endpoints so they keep working while the
+  GUI is closed.
+- JSON schemas for automation consumers.
 
-When a privileged service is introduced, `KumoController` should be able to switch from local implementations to service-backed implementations without changing GUI or CLI command semantics.
+## Service Compatibility
+
+The privileged helper and the user agent already switch core lifecycle, system
+proxy, and TUN operations to service-backed implementations without changing
+GUI or CLI command semantics (`BackendRouter` selects the tier per operation).
+Keep new operations behind `KumoController` so the same holds for future
+endpoints.

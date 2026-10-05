@@ -75,6 +75,15 @@ public actor CoreRuntimeRunner {
         await controller.shutdownActiveRuntime()
     }
 
+    /// App-termination preparation for the quit path; see
+    /// `KumoController.prepareForAppTermination(policy:)`.
+    @discardableResult
+    public func prepareForAppTermination(
+        policy: AppTerminationPolicy = .stopRuntime
+    ) async -> ShutdownResult {
+        await controller.prepareForAppTermination(policy: policy)
+    }
+
     public func waitForControllerReady(
         maxAttempts: Int = 30,
         intervalNanoseconds: UInt64 = 200_000_000
@@ -305,6 +314,22 @@ public actor CoreRuntimeRunner {
     @discardableResult
     public func uninstallServiceMode() throws -> ServiceModeStatus {
         try controller.uninstallServiceMode()
+    }
+
+    /// Status of the user-level LaunchAgent tier (`kumod`). The probe connects
+    /// to the agent socket, which launchd starts on demand.
+    public func userAgentStatus() -> ServiceModeStatus {
+        controller.userAgentManager.status()
+    }
+
+    @discardableResult
+    public func installUserAgent() throws -> ServiceModeStatus {
+        try controller.userAgentManager.install()
+    }
+
+    @discardableResult
+    public func uninstallUserAgent() throws -> ServiceModeStatus {
+        try controller.userAgentManager.uninstall()
     }
 
     // MARK: - TUN / DNS / Sniffer

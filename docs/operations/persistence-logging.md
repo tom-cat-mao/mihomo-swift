@@ -8,7 +8,7 @@ Kumo stores local state under:
 ~/Library/Application Support/Kumo/
 ```
 
-`KumoPaths` centralizes all paths so GUI, CLI, tests, and future service code use the same layout.
+`KumoPaths` centralizes all paths so GUI, CLI, tests, and service tiers use the same layout.
 
 ## Directory Layout
 
@@ -27,12 +27,14 @@ Kumo/
     core.log
     core-<yyyyMMdd-HHmmss>.log
     substore.log
+    agent.log
   cores/
     mihomo
   substore/
     status.json
     backend/
     frontend/
+  kumo-agent.sock
   state.json
   preferences.json
 ```
@@ -57,6 +59,46 @@ authoritative record. In direct (no-helper) mode, `state.json` and
 `work/core.pid` stay load-bearing and still throw when they cannot be written,
 so a core is never left running without a record that `status()` or `stop()`
 can act on.
+
+## User-Level Agent
+
+The user-level agent tier ("kumod", `io.kumo.KumoAgent`) ships alongside the
+root helper. It owns the Mihomo core when TUN is off so the GUI can quit while
+the core keeps running, and binds the same signed Unix socket protocol at:
+
+```text
+kumo-agent.sock
+```
+
+Its launchd stdout/stderr are appended to:
+
+```text
+logs/agent.log
+```
+
+The agent runs as the logged-in user, so its socket and credentials are
+created 0600 owned by that user, and `AppSupportOwnershipRepair` — a root
+concern — does not apply. It reuses `service-credentials.json`, so credentials
+are shared across both tiers. The root daemon's socket and log paths are
+unchanged. See
+[Service Mode Roadmap](../roadmap/service-mode-roadmap.md#user-level-agent-tier)
+for the tier overview.
+
+The agent is on demand rather than permanently resident. Its generated
+LaunchAgent declares a launchd `Sockets` entry for `kumo-agent.sock`
+(`RunAtLoad=false`, `KeepAlive=false`), so launchd owns the socket and starts
+the agent on the first connection; the agent adopts the descriptor with
+`launch_activate_socket` and falls back to binding the socket itself for
+manual/dev runs. It then exits on its own after `--idle-timeout` seconds
+(default 300) without a served client request and with no Mihomo core
+running; it never exits while a core is running. Because launchd owns the
+socket, the endpoint survives the agent's exit and triggers the next start.
+
+`logs/agent.log` is both the launchd stdout/stderr target and the agent's
+lifecycle log: service start, socket bound/adopted, observed core start/stop,
+and idle-exit with reason are appended there. When stdout already points at
+the same file (the launchd case) the direct file append is skipped so lines
+are not duplicated; interactive runs write to both.
 
 ## Backup Format
 
@@ -102,6 +144,12 @@ not affect Mihomo runtime):
   controller when the Settings toggle is re-exposed.
 - `quitOnLastWindowClose` — read by
   `applicationShouldTerminateAfterLastWindowClosed`.
+- `keepCoreRunningOnQuit` — Settings → General → Background toggle. When true,
+  `KumoAppStore.prepareForTermination()` passes `.keepCoreAlive` to
+  `prepareForAppTermination(policy:)`, leaving the core with its owning tier
+  (user agent or root daemon) after the GUI quits. Decoded with
+  `decodeIfPresent` so older `preferences.json` files without it default to
+  `false` (today's stop-on-quit behavior).
 - `updateChannel` (`stable` / `beta`) and `updateManifestURL` — feed
   `AppUpdateManager.checkForUpdate(...)`. A blank `updateManifestURL` uses
   Kumo's default GitHub Releases feed; a value overrides it for local testing
@@ -238,7 +286,7 @@ public places without review.
 
 ## Overrides
 
-Overrides are planned under:
+`OverrideRepository` stores overrides under:
 
 ```text
 overrides/
@@ -246,10 +294,13 @@ overrides/
   files/
     <id>.yaml
     <id>.js
-    <id>.log
 ```
 
-YAML overrides are applied before Kumo-controlled runtime settings. JavaScript overrides require a reviewed sandbox before they are enabled.
+`overrides.json` holds item metadata (name, kind, format, global/profile
+scope, remote URL, fingerprint) and `files/` holds each override body. YAML
+overrides are applied before Kumo-controlled runtime settings. JavaScript
+overrides can be stored and edited, but they are not applied until a reviewed
+sandbox exists.
 
 ## Future Work
 

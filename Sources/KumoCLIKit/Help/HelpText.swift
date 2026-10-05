@@ -1,64 +1,52 @@
+import Foundation
+
 enum HelpText {
-    static let topLevel = """
-    kumo <command>
+    /// Short help (`kumo -h`) with the common task list and the full set of
+    /// top-level command names, derived from the live command tree.
+    static var topLevel: String {
+        """
+        kumo <command>
 
-    Usage:
+        Usage:
 
-    kumo status --json          show current Kumo runtime state
-    kumo start                  start Kumo with the managed Mihomo core
-    kumo doctor --json          inspect runtime, profile, and core candidates
-    kumo proxies                list proxy groups and selected proxies
-    kumo skills install --dry-run --json
-                                 preview agent skill installation
-    kumo <command> -h           quick help on a command
-    kumo -l                     display usage info for all commands
-    kumo help <term>            show detailed help for a topic
+        kumo status --json          show current Kumo runtime state
+        kumo start                  start Kumo with the managed Mihomo core
+        kumo doctor --json          inspect runtime, profile, and core candidates
+        kumo proxies                list proxy groups and selected proxies
+        kumo rules --json           list Mihomo rules with enabled state
+        kumo dns --json             show DNS runtime settings
+        kumo agent status --json    show user-level agent (kumod) state
+        kumo skills install --dry-run --json
+                                     preview agent skill installation
+        kumo <command> -h           quick help on a command
+        kumo -l                     display usage info for all commands
+        kumo help <term>            show detailed help for a topic
 
-    All commands:
+        All commands:
 
-        backup, completion, config, connections, core, doctor,
-        help, logs, mode, profile, providers, proxies, restart,
-        service, skills, start, status, stop, substore, sysproxy,
-        tun, runtime-events
+        \(wrappedCommandList())
 
-    Kumo CLI binary:
-        Kumo.app/Contents/Helpers/kumo
+        Kumo CLI binary:
+            Kumo.app/Contents/Helpers/kumo
 
-    Installed command:
-        /usr/local/bin/kumo -> Kumo.app/Contents/Helpers/kumo
+        Installed command:
+            /usr/local/bin/kumo -> Kumo.app/Contents/Helpers/kumo
 
-    kumo@0.0.1
-    """
+        kumo@\(KumoCommand.configuration.version)
+        """
+    }
 
-    static let long = """
-    \(topLevel)
-
-    status          Show current Kumo runtime state
-
-                    Usage:
-                    kumo status [--json]
-
-                    Options:
-                    [--json] [--color <always|auto|never>]
-                    [--loglevel <silent|error|warn|notice|http|info|verbose|silly>]
-
-                    aliases: st
-
-                    Run "kumo help status" for more info
-
-    skills          Manage bundled Kumo agent skills
-
-                    Usage:
-                    kumo skills status [--agent <agent|all>] [--scope <global|project>] [--json]
-                    kumo skills install [--agent <agent|all>] [--scope <global|project>] [--dry-run] [--force] [--json]
-                    kumo skills uninstall [--agent <agent|all>] [--scope <global|project>] [--dry-run] [--json]
-
-                    Options:
-                    [--agent <cursor|claude|codex|gemini|agents|all>]
-                    [--scope <global|project>] [--dry-run] [--force] [--json]
-
-                    Run "kumo help skills" for more info
-    """
+    /// Long help (`kumo -l`) with one section per top-level command. The
+    /// command list, paths, abstracts, and aliases all come from
+    /// `CommandIndex`, so every registered command is listed here no matter
+    /// how the tree changes.
+    static var long: String {
+        var sections: [String] = [topLevel]
+        for entry in CommandIndex.topLevel.sorted(by: { $0.name < $1.name }) {
+            sections.append(longSection(for: entry))
+        }
+        return sections.joined(separator: "\n\n")
+    }
 
     static let completion = """
     Tab Completion for kumo
@@ -71,77 +59,169 @@ enum HelpText {
     kumo completion bash > /usr/local/etc/bash_completion.d/kumo
     """
 
+    /// Detailed help for `kumo help <term>`.
     static func topic(_ terms: [String]) -> String {
-        let key = terms.joined(separator: " ")
+        let normalized = terms.map { $0.lowercased() }
+        let key = normalized.joined(separator: " ")
         switch key {
         case "", "kumo":
             return topLevel
         case "json":
-            return """
-            Kumo JSON output
-
-            Usage:
-            kumo <command> --json
-
-            Successful commands write:
-            {
-              "data": {},
-              "error": null,
-              "ok": true
-            }
-
-            Failed commands write:
-            {
-              "data": null,
-              "error": "message",
-              "ok": false
-            }
-
-            JSON output is written to stdout. Human-readable errors are written to stderr only when --json is not used.
-            Exit code 0 means success. Exit code 1 means failure.
-            """
-        case "skills", "skills install":
-            return """
-            Install bundled Kumo agent skills
-
-            Usage:
-            kumo skills install [--agent <agent|all>] [--scope <global|project>] [--dry-run] [--force] [--json]
-
-            Options:
-            [--agent <cursor|claude|codex|gemini|agents|all>]
-            [--scope <global|project>]
-            [--dry-run]
-            [--force]
-            [--json]
-
-            alias: add
-
-            Run "kumo help skills install" for more info
-            """
+            return jsonTopic
         default:
-            return "No detailed help found for \(key).\nRun \"kumo --help\" for more info."
+            break
         }
+
+        guard let entry = CommandIndex.entry(forPath: normalized) else {
+            return "No detailed help found for \(key).\nRun \"kumo -l\" to list all commands."
+        }
+        if let topic = HelpTopics.byPath[entry.commandPath] {
+            return render(topic, for: entry)
+        }
+        return synthesizedTopic(for: entry)
     }
+
+    // MARK: - Rendering
+
+    private static let continuationIndent = String(repeating: " ", count: 20)
+
+    private static func wrappedCommandList() -> String {
+        let names = CommandIndex.topLevel.map(\.name).sorted()
+        let width = 72
+        var lines: [String] = []
+        var current = ""
+        for name in names {
+            let candidate = current.isEmpty ? name : current + ", " + name
+            if !current.isEmpty, candidate.count + 4 > width {
+                lines.append("    " + current + ",")
+                current = name
+            } else {
+                current = candidate
+            }
+        }
+        if !current.isEmpty {
+            lines.append("    " + current)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func longSection(for entry: CommandIndex.Entry) -> String {
+        let topic = HelpTopics.byPath[entry.commandPath]
+        var lines = [entry.name.padding(toLength: 16, withPad: " ", startingAt: 0) + entry.abstract]
+        if !entry.aliases.isEmpty {
+            lines.append(continuationIndent + "aliases: " + entry.aliases.joined(separator: ", "))
+        }
+        if !entry.children.isEmpty {
+            let descendants = entry.descendants.map(\.commandPath).sorted()
+            lines.append(continuationIndent + "Commands: " + descendants.joined(separator: ", "))
+        }
+        let usage = topic?.usage ?? generatedUsage(for: entry)
+        if !usage.isEmpty {
+            lines.append(continuationIndent + "Usage:")
+            lines.append(contentsOf: usage.map { continuationIndent + $0 })
+        }
+        lines.append(continuationIndent + "Run \"kumo help \(entry.commandPath)\" for more info")
+        return lines.joined(separator: "\n")
+    }
+
+    private static func render(_ topic: HelpTopic, for entry: CommandIndex.Entry) -> String {
+        var sections: [String] = [
+            entry.commandPath,
+            topic.summary,
+            "",
+            "Usage:",
+            topic.usage.joined(separator: "\n")
+        ]
+        if !topic.options.isEmpty {
+            sections.append("")
+            sections.append("Options:")
+            sections.append(topic.options.joined(separator: "\n"))
+        }
+        sections.append("")
+        sections.append("Example:")
+        sections.append(topic.example)
+        for detail in topic.details {
+            sections.append("")
+            sections.append(detail)
+        }
+        if !entry.aliases.isEmpty {
+            sections.append("")
+            sections.append("aliases: " + entry.aliases.joined(separator: ", "))
+        }
+        return sections.joined(separator: "\n")
+    }
+
+    private static func synthesizedTopic(for entry: CommandIndex.Entry) -> String {
+        var sections: [String] = [entry.commandPath, entry.abstract]
+        let usage = generatedUsage(for: entry)
+        if !usage.isEmpty {
+            sections.append("")
+            sections.append("Usage:")
+            sections.append(usage.joined(separator: "\n"))
+        }
+        if let parent = CommandIndex.topLevel.first(where: { entry.path.starts(with: $0.path) }), parent.path.count < entry.path.count {
+            sections.append("")
+            sections.append("Run \"kumo help \(parent.commandPath)\" for the command overview.")
+        }
+        return sections.joined(separator: "\n")
+    }
+
+    private static func generatedUsage(for entry: CommandIndex.Entry) -> [String] {
+        let usage = KumoCommand.usageString(for: entry.type)
+        return usage.isEmpty ? [] : [usage]
+    }
+
+    private static let jsonTopic = """
+    Kumo JSON output
+
+    Usage:
+    kumo <command> --json
+
+    Successful commands write:
+    {
+      "data": {},
+      "error": null,
+      "ok": true
+    }
+
+    Failed commands write:
+    {
+      "data": null,
+      "error": "message",
+      "ok": false
+    }
+
+    Streaming commands (kumo logs --follow, kumo traffic --watch) write one
+    compact envelope per line (NDJSON).
+
+    JSON output is written to stdout. Human-readable errors are written to stderr only when --json is not used.
+    Exit code 0 means success. Exit code 1 means failure.
+    """
 }
 
 enum CompletionScripts {
+    /// Top-level command names plus aliases, derived from the command tree.
+    static var commandNames: String {
+        CommandIndex.completionWords.joined(separator: " ")
+    }
+
     static func script(for shell: CompletionShell) -> String {
         switch shell {
         case .zsh:
             return """
             #compdef kumo
             # Generated completion script for kumo
-            _arguments '1: :((status start stop restart mode proxies proxy select logs connections providers runtime-events doctor config c backup core profile sysproxy service tun substore skills completion help))'
+            _arguments '1: :((\(commandNames)))'
             """
         case .bash:
             return """
             # Generated completion script for kumo
-            complete -W "status start stop restart mode proxies proxy select logs connections providers runtime-events doctor config c backup core profile sysproxy service tun substore skills completion help" kumo
+            complete -W "\(commandNames)" kumo
             """
         case .fish:
             return """
             # Generated completion script for kumo
-            complete -c kumo -f -a "status start stop restart mode proxies proxy select logs connections providers runtime-events doctor config c backup core profile sysproxy service tun substore skills completion help"
+            complete -c kumo -f -a "\(commandNames)"
             """
         }
     }

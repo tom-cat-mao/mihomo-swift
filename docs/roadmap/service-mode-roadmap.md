@@ -76,6 +76,59 @@ Unix socket request routing, service-backed core/system proxy/TUN control, and
 TUN configuration generation. It intentionally does not silently install a
 privileged daemon; installation remains an explicit, authorized user action.
 
+## User-Level Agent Tier
+
+The two-tier runtime adds a user-level LaunchAgent (`io.kumo.KumoAgent`,
+"kumod") that owns the Mihomo core when TUN is off, so the GUI can quit while
+the core keeps running. The root LaunchDaemon stays the TUN and privileged
+operations tier; `BackendRouter` selects the tier per operation.
+
+- The agent runs as the logged-in user, registers through `SMAppService.agent`
+  in bundled builds, and falls back to `launchctl bootstrap gui/<uid>` with a
+  generated `~/Library/LaunchAgents/io.kumo.KumoAgent.plist` for source-tree
+  runs.
+- It speaks the same signed Unix socket protocol and reuses the existing
+  shared credentials file; only the socket path (`kumo-agent.sock`), log path
+  (`logs/agent.log`) and launchd domain differ from the root daemon.
+- `KumoService service` subcommands accept `--mode root|user` (default
+  `root`); root-mode behavior is unchanged.
+- The root LaunchDaemon stays installed for privileged operations (TUN,
+  system proxy).
+
+`Kumo.app` bundles the tier payload (`Contents/MacOS/KumoService` plus
+`Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist`). Installation
+validates the rendered plist against the current machine before
+`SMAppService.agent` registration and falls back to a generated
+`~/Library/LaunchAgents` plist plus `launchctl bootstrap`. Core routing, TUN
+ownership handoff, the termination policy, and root-to-agent migration are
+documented in [Control Layer](../core/control-layer.md) and
+[ADR-005](../decisions/ADR-005-two-tier-runtime.md).
+
+The agent is on demand, not permanently resident:
+
+- The generated plist declares a launchd `Sockets` listener with
+  `RunAtLoad=false` / `KeepAlive=false`, and `KumoService service run` adopts
+  the activated descriptor with `launch_activate_socket` (falling back to
+  binding the socket itself for manual/dev runs). launchd holds the endpoint
+  and starts the agent on the first client connection.
+- The agent exits by itself once `--idle-timeout <seconds>` (default 300)
+  passes without a served client request and with no Mihomo core running.
+  While a core is running it never idle-exits; root mode has no idle exit.
+- `service install --mode user` accepts `--idle-timeout` and passes it into
+  the generated plist's `ProgramArguments`.
+- Lifecycle events (start, socket adopt/bind, observed core start/stop,
+  idle-exit with reason) are appended to `logs/agent.log` in addition to
+  stdout; the socket file is left in place on idle exit because launchd owns
+  it.
+
+Observed launchd behavior on the smoke host (Darwin 27): `bootstrap` starts a
+`Sockets` job once even with `RunAtLoad=false` (reproduced with a minimal
+non-Kumo job), and the idle timeout bounds that run like any other. launchd
+also applies its ~10-second respawn throttle when a run is shorter than that
+window, which can delay the next on-demand start by up to ~10s; with the
+default 300-second idle timeout runs always outlive the throttle, and a
+post-exit connection was served in ~0.1s in the smoke test.
+
 ## Status of Local Subsystems (Phase B)
 
 Phase B brings several locally hosted subsystems into the app process,
@@ -88,13 +141,14 @@ service-mode migration can absorb them later without scope surprises.
   request "PAC enabled" rather than hosting the listener directly.
 - **Sub-Store local lifecycle is implemented in the app process** via
   `SubStoreSupervisor` (Node `Process` lifecycle + `logs/substore.log`).
-  The future service should own this process so the GUI can be quit without
-  killing Sub-Store. Sub-Store's UI is fully SwiftUI-native and talks to the
+  A future service tier should own this process so the GUI can be quit
+  without killing Sub-Store. Sub-Store's UI is fully SwiftUI-native and talks to the
   backend over HTTP, so the service hand-off only needs to relocate the
   backend process, not any web frontend.
-- **Open at Login** uses `SMAppService.mainApp`. Once a helper bundle
-  exists, switch to a `SMAppService.daemon`/`agent` registration so the
-  service can run independently of the UI.
+- **Open at Login** uses `SMAppService.mainApp`. Switching it to a
+  `SMAppService.daemon`/`agent` registration so the service can run
+  independently of the UI remains future work even though the bundled agent
+  tier now exists.
 - **Spotlight indexing** uses `CSSearchableIndex.default()` from the app
   process. This works without a service; only the data source has to move
   if profile state is later owned by the service.

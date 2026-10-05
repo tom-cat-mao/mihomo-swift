@@ -37,10 +37,17 @@ public struct CoreLaunchConfiguration: Sendable {
 public struct CoreSupervisor: Sendable {
     private let paths: KumoPaths
     private let stateStore: CoreStateStore
+    /// The runtime tier this supervisor process represents, stamped into
+    /// `CoreStatus.ownerTier` on every successful start. The GUI and CLI keep
+    /// the local-supervisor default; the root daemon and the user agent
+    /// construct their internal controllers with their own tier so the shared
+    /// state records the true owner of the core.
+    private let ownerTier: RuntimeOwnerTier
 
-    public init(paths: KumoPaths = KumoPaths()) {
+    public init(paths: KumoPaths = KumoPaths(), ownerTier: RuntimeOwnerTier = .localSupervisor) {
         self.paths = paths
         self.stateStore = CoreStateStore(paths: paths)
+        self.ownerTier = ownerTier
     }
 
     @discardableResult
@@ -79,6 +86,7 @@ public struct CoreSupervisor: Sendable {
             var failedStatus = currentStatus
             failedStatus.state = .failed
             failedStatus.pid = nil
+            failedStatus.ownerTier = nil
             failedStatus.readiness = nil
             failedStatus.message = "Failed to start Mihomo core: \(error.localizedDescription)"
             try stateStore.save(failedStatus)
@@ -92,6 +100,7 @@ public struct CoreSupervisor: Sendable {
             state: .running,
             pid: processID,
             corePath: corePath,
+            ownerTier: ownerTier,
             mode: configuration.mode,
             endpoint: runtime.endpoint,
             proxyPorts: runtime.proxyPorts,
@@ -116,6 +125,7 @@ public struct CoreSupervisor: Sendable {
         guard !pids.isEmpty else {
             status.state = .stopped
             status.pid = nil
+            status.ownerTier = nil
             status.readiness = nil
             try removeCorePIDFile()
             try stateStore.save(status)
@@ -136,6 +146,7 @@ public struct CoreSupervisor: Sendable {
 
         status.state = .stopped
         status.pid = nil
+        status.ownerTier = nil
         status.readiness = nil
         status.message = "Mihomo core stopped."
         try removeCorePIDFile()
@@ -162,6 +173,7 @@ public struct CoreSupervisor: Sendable {
         if !pids.isEmpty {
             status.state = .stopped
             status.pid = nil
+            status.ownerTier = nil
             status.readiness = nil
             status.message = "Mihomo core is not running."
             try removeCorePIDFile()

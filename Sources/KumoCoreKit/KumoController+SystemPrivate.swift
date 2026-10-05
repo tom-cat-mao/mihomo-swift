@@ -49,7 +49,7 @@ extension KumoController {
 
     func normalizedStatusForLaunch() throws -> CoreStatus {
         var status = try stateStore.load()
-        let service = serviceManager.status()
+        let service = currentServiceStatus()
         status.serviceModeStatus = service
         if var runtimeSettings = status.runtimeSettings,
            var tun = runtimeSettings.tun,
@@ -94,12 +94,40 @@ extension KumoController {
         }
     }
 
-    func runningServiceClient() -> KumoServiceClient? {
-        guard useServiceBackend,
-              let client = serviceManager.serviceClient(),
-              serviceManager.status().isRunning else {
+    /// The signed root-daemon client, when the service backend is enabled.
+    /// Reachability is decided by `BackendRouter`, not by this factory.
+    func rootServiceClient() -> KumoServiceClient? {
+        guard useServiceBackend else {
             return nil
         }
-        return client
+        return serviceManager.serviceClient()
+    }
+
+    /// The signed user-agent client, when the service backend is enabled.
+    func userAgentClient() -> KumoServiceClient? {
+        guard useServiceBackend else {
+            return nil
+        }
+        return userAgentManager.client()
+    }
+
+    /// The root-daemon client for privileged operations (system proxy, TUN):
+    /// only when the router selects the root tier for them.
+    func privilegedServiceClient() -> KumoServiceClient? {
+        guard router.privilegedBackend() == .rootService else {
+            return nil
+        }
+        return rootServiceClient()
+    }
+
+    /// TUN state consulted by the router for every operation.
+    func currentTunEnabled() -> Bool {
+        (try? stateStore.load().runtimeSettings?.tun?.isEnabled) ?? false
+    }
+
+    /// Service-mode status with the test seam applied, so routing tests can
+    /// simulate a reachable privileged tier without installing the helper.
+    func currentServiceStatus() -> ServiceModeStatus {
+        serviceModeStatusProvider?() ?? serviceManager.status()
     }
 }

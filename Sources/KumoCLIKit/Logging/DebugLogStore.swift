@@ -55,21 +55,40 @@ struct DebugLogStore {
         return url
     }
 
+    /// Returns up to `limit` log entries, newest first.
+    ///
+    /// `limit` counts individual log entries, not files: every line in every
+    /// `kumo-debug` file is an entry, so the CLI never silently shows fewer
+    /// entries than requested just because they live in older files.
     func recentEntries(limit: Int, minimumLevel: LogLevel?) -> [CLILogEntry] {
+        guard limit > 0 else { return [] }
         let files = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey])) ?? []
-        return files
-            .filter { $0.lastPathComponent.contains("kumo-debug") }
-            .sorted { $0.lastPathComponent > $1.lastPathComponent }
-            .prefix(limit)
-            .map { url in
-                let summary = (try? String(contentsOf: url, encoding: .utf8).split(separator: "\n").last.map(String.init)) ?? url.lastPathComponent
-                let level = LogLevel.allCases.first { summary.contains(" \($0.rawValue) ") } ?? .notice
-                return CLILogEntry(createdAt: url.lastPathComponent, level: level, summary: summary)
+        var entries: [CLILogEntry] = []
+        for url in files
+            .filter({ $0.lastPathComponent.contains("kumo-debug") })
+            .sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let lines = contents.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+            for line in lines.reversed() {
+                guard let entry = Self.entry(from: line) else { continue }
+                if let minimumLevel, !minimumLevel.allows(entry.level) { continue }
+                entries.append(entry)
+                if entries.count == limit {
+                    return entries
+                }
             }
-            .filter { entry in
-                guard let minimumLevel else { return true }
-                return minimumLevel.allows(entry.level)
-            }
+        }
+        return entries
+    }
+
+    private static func entry(from line: String) -> CLILogEntry? {
+        let tokens = line.split(separator: " ", omittingEmptySubsequences: true)
+        guard tokens.count >= 4, let level = LogLevel(rawValue: String(tokens[3])) else { return nil }
+        return CLILogEntry(
+            createdAt: tokens[0...2].joined(separator: " "),
+            level: level,
+            summary: tokens.dropFirst(4).joined(separator: " ")
+        )
     }
 
     func clean(dryRun: Bool) throws -> CLILogCleanReport {

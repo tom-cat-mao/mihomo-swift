@@ -66,38 +66,22 @@ jobs:
           mkdir -p artifacts/arm64
           cp -R build/release/* artifacts/arm64/
 
-      - name: Build amd64 DMG
-        run: |
-          rm -rf build/release
-          VERSION_STR="${{ steps.version.outputs.version }}"
-          RELEASE_TAG="${{ steps.version.outputs.tag }}" make release-dmg \
-            VERSION="$VERSION_STR" \
-            BUILD_NUMBER="${GITHUB_RUN_NUMBER}" \
-            ARCH=amd64 \
-            CHANNEL="${{ steps.version.outputs.channel }}"
-          mkdir -p artifacts/amd64
-          cp -R build/release/* artifacts/amd64/
-
       - name: Collect artifacts
         run: |
           set -euo pipefail
           mkdir -p upload
           cp artifacts/arm64/*.dmg upload/
-          cp artifacts/amd64/*.dmg upload/
           if [ -f artifacts/arm64/latest.yml ]; then
             cp artifacts/arm64/latest.yml upload/latest.yml
           else
             cp artifacts/arm64/latest-arm64.yml upload/latest.yml
           fi
-          cp artifacts/amd64/latest-amd64.yml upload/latest-amd64.yml
 
           echo "Collected release assets:"
           ls -lh upload/
 
           grep -q 'assetName: Kumo-macos-${{ steps.version.outputs.version }}-arm64.dmg' upload/latest.yml
-          grep -q 'assetName: Kumo-macos-${{ steps.version.outputs.version }}-amd64.dmg' upload/latest-amd64.yml
           grep -q '/download/${{ steps.version.outputs.tag }}/' upload/latest.yml
-          grep -q '/download/${{ steps.version.outputs.tag }}/' upload/latest-amd64.yml
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -151,14 +135,10 @@ jobs:
           fi
 
           test -f upload/Kumo-macos-${VERSION_STR}-arm64.dmg
-          test -f upload/Kumo-macos-${VERSION_STR}-amd64.dmg
           test -f upload/latest.yml
-          test -f upload/latest-amd64.yml
 
           grep -q "assetName: Kumo-macos-${VERSION_STR}-arm64.dmg" upload/latest.yml
-          grep -q "assetName: Kumo-macos-${VERSION_STR}-amd64.dmg" upload/latest-amd64.yml
           grep -q "/download/${TAG}/" upload/latest.yml
-          grep -q "/download/${TAG}/" upload/latest-amd64.yml
 
           RELEASE_NOTES=""
           if [ -f CHANGELOG.md ]; then
@@ -179,9 +159,7 @@ jobs:
 
           ASSETS=(
             upload/Kumo-macos-${VERSION_STR}-arm64.dmg
-            upload/Kumo-macos-${VERSION_STR}-amd64.dmg
             upload/latest.yml
-            upload/latest-amd64.yml
           )
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then

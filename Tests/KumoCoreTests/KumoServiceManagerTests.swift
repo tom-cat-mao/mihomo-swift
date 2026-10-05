@@ -36,4 +36,155 @@ final class KumoServiceManagerTests: XCTestCase {
 
         XCTAssertEqual(candidates.first?.path, "/Applications/Kumo.app/Contents/MacOS/KumoService")
     }
+
+    // MARK: - Shared credentials retention
+
+    func testUninstallKeepsSharedCredentialsWhileUserAgentIsInstalled() throws {
+        let paths = hermeticPaths()
+        _ = try KumoServiceManager(paths: paths).ensureCredentials()
+        try FileManager.default.createDirectory(
+            at: paths.launchAgentsDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("installed".utf8).write(to: paths.userAgentPlistFile)
+
+        let recorder = ServiceCommandRecorder()
+        let manager = KumoServiceManager(paths: paths, serviceCommandRunner: recorder.runner())
+        _ = try manager.uninstallService()
+
+        XCTAssertEqual(recorder.invocations(), [[
+            "service",
+            "uninstall",
+            "--app-support",
+            paths.applicationSupportDirectory.path,
+        ]])
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: paths.serviceCredentialsFile.path),
+            "kumod still needs the shared credentials to start"
+        )
+    }
+
+    func testUninstallDeletesSharedCredentialsWhenUserAgentIsAbsent() throws {
+        let paths = hermeticPaths()
+        _ = try KumoServiceManager(paths: paths).ensureCredentials()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.serviceCredentialsFile.path))
+
+        let manager = KumoServiceManager(paths: paths, serviceCommandRunner: { _, _ in })
+        _ = try manager.uninstallService()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.serviceCredentialsFile.path))
+    }
+
+    // MARK: - Helper version stamp (post-update repair detection)
+
+    func testInstallServiceRecordsHelperVersionStamp() throws {
+        let paths = hermeticPaths()
+        let recorder = ServiceCommandRecorder()
+        let manager = KumoServiceManager(paths: paths, serviceCommandRunner: recorder.runner())
+
+        _ = try manager.installService(appVersion: "0.0.17")
+
+        let invocation = try XCTUnwrap(recorder.invocations().first)
+        XCTAssertEqual(Array(invocation.prefix(2)), ["service", "install"])
+        XCTAssertTrue(invocation.contains(paths.applicationSupportDirectory.path))
+        XCTAssertEqual(manager.recordedHelperVersion(), "0.0.17")
+    }
+
+    func testHelperVersionVerdictTracksStampState() throws {
+        let paths = hermeticPaths()
+        // Pin the install state: the LaunchDaemon path and helper are fixed
+        // `/Library` locations that a developer machine may really have.
+        let notInstalled = KumoServiceManager(paths: paths, isInstalledOverride: false)
+        XCTAssertEqual(notInstalled.helperVersionVerdict(currentVersion: "0.0.17"), .notInstalled)
+        XCTAssertNil(notInstalled.helperVersionVerdict(currentVersion: "0.0.17").repairMessage)
+
+        let manager = KumoServiceManager(paths: paths, isInstalledOverride: true)
+        // Installed before stamping existed: unverifiable, so it prompts the
+        // existing Install / Repair Service action once.
+        XCTAssertEqual(
+            manager.helperVersionVerdict(currentVersion: "0.0.17"),
+            .stale(installedVersion: nil)
+        )
+
+        try KumoInstallVersionStamp.write(version: "0.0.16", to: manager.helperVersionStampFile)
+        XCTAssertEqual(
+            manager.helperVersionVerdict(currentVersion: "0.0.17"),
+            .stale(installedVersion: "0.0.16")
+        )
+        XCTAssertNotNil(manager.helperVersionVerdict(currentVersion: "0.0.17").repairMessage)
+
+        try KumoInstallVersionStamp.write(version: "0.0.17", to: manager.helperVersionStampFile)
+        XCTAssertEqual(manager.helperVersionVerdict(currentVersion: "0.0.17"), .current)
+        XCTAssertNil(manager.helperVersionVerdict(currentVersion: "0.0.17").repairMessage)
+    }
+
+    func testInstalledVerdictComesFromSavedInstallFlag() throws {
+        let paths = hermeticPaths()
+        try writeInstalledStatus(to: paths)
+        let manager = KumoServiceManager(paths: paths)
+
+        XCTAssertEqual(
+            manager.helperVersionVerdict(currentVersion: "0.0.17"),
+            .stale(installedVersion: nil),
+            "an install recorded in service-status.json must be detected without a stamp"
+        )
+    }
+
+    func testUninstallServiceRemovesHelperVersionStamp() throws {
+        let paths = hermeticPaths()
+        _ = try KumoServiceManager(paths: paths).ensureCredentials()
+        let manager = KumoServiceManager(paths: paths, serviceCommandRunner: { _, _ in })
+        try KumoInstallVersionStamp.write(version: "0.0.17", to: manager.helperVersionStampFile)
+
+        _ = try manager.uninstallService()
+
+        XCTAssertNil(manager.recordedHelperVersion())
+    }
+
+    private func writeInstalledStatus(to paths: KumoPaths) throws {
+        try FileManager.default.createDirectory(
+            at: paths.applicationSupportDirectory,
+            withIntermediateDirectories: true
+        )
+        let status = ServiceModeStatus(
+            isInstalled: true,
+            isRunning: false,
+            socketPath: paths.serviceSocketFile.path
+        )
+        try JSONEncoder().encode(status).write(to: paths.serviceStatusFile, options: .atomic)
+    }
+
+    private func hermeticPaths() -> KumoPaths {
+        KumoPaths(
+            applicationSupportDirectory: temporaryDirectory(),
+            launchAgentsDirectory: temporaryDirectory(),
+            environment: [:]
+        )
+    }
+
+    private func temporaryDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+}
+
+/// Records privileged service-command invocations so uninstall bookkeeping can
+/// be asserted without osascript authorization.
+private final class ServiceCommandRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [[String]] = []
+
+    func runner() -> @Sendable ([String], String) throws -> Void {
+        { [self] arguments, _ in
+            lock.lock()
+            recorded.append(arguments)
+            lock.unlock()
+        }
+    }
+
+    func invocations() -> [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
 }

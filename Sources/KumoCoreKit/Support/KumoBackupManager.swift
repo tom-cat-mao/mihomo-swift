@@ -56,8 +56,39 @@ public struct KumoBackupManager: Sendable {
         try replaceIfPresent(source.appendingPathComponent("profiles", isDirectory: true), with: paths.profilesDirectory)
         try replaceIfPresent(source.appendingPathComponent("overrides", isDirectory: true), with: paths.overridesDirectory)
         try replaceIfPresent(source.appendingPathComponent("substore", isDirectory: true), with: paths.subStoreDirectory)
-        try replaceIfPresent(source.appendingPathComponent("state.json"), with: paths.stateFile)
+        try restoreStateFile(from: source.appendingPathComponent("state.json"))
         return manifest
+    }
+
+    /// Restores `state.json` without carrying process-local runtime state from
+    /// the exporting machine. A restored pid can collide with an unrelated
+    /// process here, which `CoreSupervisor` would then treat as a running
+    /// core: start refuses with `coreAlreadyRunning`, and stop signals the
+    /// innocent process until it dies. A restored proxy-on flag would also let
+    /// Kumo later disable this machine's active network service even though no
+    /// proxy was applied here. The state is therefore forced to stopped with
+    /// no pid, no readiness and system proxy off; every other field (mode,
+    /// ports, runtime settings, ...) is preserved for the user.
+    private func restoreStateFile(from source: URL) throws {
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            return
+        }
+        try replaceIfPresent(source, with: paths.stateFile)
+
+        let store = CoreStateStore(paths: paths)
+        do {
+            var restored = try store.load()
+            restored.state = .stopped
+            restored.pid = nil
+            restored.readiness = nil
+            restored.systemProxyEnabled = false
+            try store.save(restored)
+        } catch {
+            // Never leave an unsanitized state file behind: an undecodable
+            // backup must not reinstate a potentially colliding pid.
+            try? FileManager.default.removeItem(at: paths.stateFile)
+            throw error
+        }
     }
 
     private func manifestURL(in directory: URL) -> URL {

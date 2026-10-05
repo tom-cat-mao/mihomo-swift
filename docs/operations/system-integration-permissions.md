@@ -81,10 +81,48 @@ current `Kumo.app`.
 ## LaunchAgent (Open at Login)
 
 `KumoAppDelegate` keeps `SMAppService.mainApp` in sync with
-`UserPreferences.launchAtLogin` whenever the app launches. The Settings
-"Preferences" tab toggles the same preference and registers/unregisters
-through `SMAppService`. Registration only succeeds when `Kumo.app` lives in
-`/Applications` (macOS launch services requirement).
+`UserPreferences.launchAtLogin` whenever the app launches. The **Open at
+Login** toggle in Settings → General toggles the same preference and
+registers/unregisters through `SMAppService`. Registration only succeeds when
+`Kumo.app` lives in `/Applications` (macOS launch services requirement).
+
+## Bundled User Agent (kumod)
+
+For the two-tier runtime, `Kumo.app` also carries the unprivileged user-tier
+("kumod") payload:
+
+- `Contents/MacOS/KumoService` — the same helper binary the privileged tier
+  uses; launchd starts it as `KumoService service run --mode user`.
+- `Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist` — the LaunchAgent
+  registration `SMAppService.agent(plistName:)` requires at that exact path.
+  The `Copy Kumo Agent LaunchAgent` post-build phase in `project.yml` renders
+  it from `Resources/KumoApp/LaunchAgents/io.kumo.KumoAgent.plist` with
+  `Scripts/prepare_agent_launchagent.sh`, so the paths are absolute and the
+  keys match `KumoUserAgentManager.launchAgentPlist(...)`, which generates the
+  equivalent plist for source-tree and dev installs.
+
+The bundled plist keeps the on-demand contract: a launchd `Sockets` listener
+owns `kumo-agent.sock` with mode `0600` and starts the agent on the first
+client connection. `RunAtLoad` and `KeepAlive` stay false, so the agent is not
+resident at login and exits again after its idle timeout.
+
+`KumoUserAgentManager.install()` only uses `SMAppService.agent` when the
+bundled plist is valid for the current machine. Because the plist is rendered
+at build time with the build machine's absolute paths, `install()` parses it
+first and requires `ProgramArguments[0]` to exist and be executable and the
+`--app-support` value to equal the current user's app-support directory. When
+either check fails — the app was built or installed elsewhere — registration
+is skipped entirely and the generated plist is written to
+`~/Library/LaunchAgents` plus `launchctl bootstrap`, which resolves the
+current machine's paths at install time. Registration follows the same
+`/Applications` rule as `SMAppService.mainApp`. Rendering the bundled plist
+per user at install time (instead of build time) remains follow-up work in
+`Sources/`.
+
+The rendered plist and the helper are in place before Xcode signs the bundle,
+so both stay covered by the app's code signature; the helper is copied and
+chmodded exactly like the pre-existing `Contents/MacOS/KumoService` embedding,
+with no separate signing step.
 
 ## Dock Badge
 
@@ -141,12 +179,44 @@ proxy state for the selected service. The disable path turns Kumo-managed
 manual and auto-proxy states off; a later service-backed pass should
 restore exact previous values from the snapshot.
 
-Foreground app quit uses the same disable path before allowing termination.
-The SwiftUI app delegate returns `.terminateLater`, asks `KumoAppStore` to
-disable Kumo-managed system proxy state and stop Mihomo, then replies to
-AppKit that termination may continue. This prevents macOS from keeping manual
-or PAC proxy settings pointed at `127.0.0.1:<mixed-port>` after Kumo's UI is
-gone.
+Foreground app quit uses the same disable path before allowing termination by
+default. The SwiftUI app delegate returns `.terminateLater`, asks
+`KumoAppStore` to disable Kumo-managed system proxy state and stop Mihomo, then
+replies to AppKit that termination may continue. This prevents macOS from
+keeping manual or PAC proxy settings pointed at `127.0.0.1:<mixed-port>` after
+Kumo's UI is gone. When `Keep Mihomo running after quit` is enabled, the store
+asks for `.keepCoreAlive` instead: the proxy state and the agent- or
+daemon-owned core are deliberately left running so traffic continues without the
+GUI.
+
+## Runtime Tier Migration
+
+The two-tier runtime can hand a running core from the privileged
+`io.kumo.KumoService` LaunchDaemon to the unprivileged `io.kumo.KumoAgent`
+LaunchAgent so the core keeps serving without the privileged daemon owning it.
+
+- Migration refuses while TUN is enabled: TUN requires a root-owned core, so
+  disable TUN first (`kumo tun disable`). It also refuses until the agent is
+  installed; the caller installs it (`kumo agent install`) and retries. Both
+  refusals name the reason. Ownership comes from the running core's record
+  (`CoreStatus.ownerTier`), so a root-owned core is still migrated after the
+  agent install makes routing prefer the agent; only legacy states without a
+  record fall back to the routing decision.
+- With TUN off, `kumo agent install` records the root ownership it proves
+  instead of refusing, so the install-first recovery cannot deadlock against
+  the migration's missing-agent guard. While TUN is enabled the install still
+  refuses (the migration would too) and names the remedy: disable TUN, retry
+  the install, then run `kumo agent migrate`.
+- When the root daemon owns a running core, the core is stopped there and
+  started by the agent, with the root daemon restored if the agent start fails.
+  With no running core — or when the agent already owns it — migration is a
+  no-op that only reports state.
+- `kumo agent migrate [--dry-run] [--json]` exposes this; `--dry-run` reports
+  the installed tiers, the router's current core owner, and any guard refusals
+  without touching launchd, sockets, or the core.
+- The pre-update core stop stays tier-aware: the app calls
+  `KumoController.stop()`, which routes to whichever tier owns the core, so an
+  agent-owned core is stopped before the bundle is replaced.
 
 ## Permissions
 
@@ -161,10 +231,12 @@ Until the helper or a privileged process is available, TUN enable requests fail
 with a visible service-mode error instead of leaving the UI in a misleading
 "On" state. Once installed, the helper owns privileged operations such as
 starting Mihomo for TUN and applying guarded system proxy changes.
-On foreground app quit, Kumo stops the helper-owned Mihomo process rather than
-uninstalling the helper. Stopping Mihomo is the cleanup boundary for the active
-TUN route and Mihomo-managed DNS interception; the user's persisted TUN
-preference remains available for the next explicit start.
+On foreground app quit (with `Keep Mihomo running after quit` off, the default),
+Kumo stops the helper-owned Mihomo process rather than uninstalling the helper.
+Stopping Mihomo is the cleanup boundary for the active TUN route and
+Mihomo-managed DNS interception; the user's persisted TUN preference remains
+available for the next explicit start. With the preference on, the helper-owned
+core keeps running with that TUN route and DNS interception intact.
 
 ## Advanced Features
 

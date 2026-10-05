@@ -70,6 +70,18 @@ targets:
           else
             echo "warning: KumoService helper not found at ${HELPER_SOURCE}"
           fi
+      - name: Copy Kumo Agent LaunchAgent
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          # SMAppService.agent(plistName:) requires the user-agent plist inside
+          # the bundle. Render it from the checked-in template with the helper
+          # path this bundle actually has (same shape as
+          # KumoUserAgentManager.launchAgentPlist, per-user paths resolved for
+          # the build machine).
+          KUMO_HELPER_PATH="${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Contents/MacOS/KumoService" \
+          KUMO_AGENT_PLIST_OUTPUT="${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist" \
+          bash "${SRCROOT}/Scripts/prepare_agent_launchagent.sh"
       - name: Copy Kumo CLI
         basedOnDependencyAnalysis: false
         script: |
@@ -90,7 +102,7 @@ targets:
       base:
         PRODUCT_NAME: Kumo
         PRODUCT_BUNDLE_IDENTIFIER: io.kumo.KumoApp
-        MARKETING_VERSION: "0.0.15"
+        MARKETING_VERSION: "0.0.17"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic

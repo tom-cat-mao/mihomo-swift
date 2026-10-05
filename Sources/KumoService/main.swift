@@ -35,6 +35,20 @@ enum KumoServiceMain {
     }
 
     private static func install(arguments: [String]) throws {
+        let mode = try ServiceMode.parse(arguments: arguments)
+        if mode == .user {
+            // The user tier registers a LaunchAgent; KumoUserAgentManager owns
+            // the launchctl/ServiceManagement details in one place.
+            guard let source = value(after: "--source", in: arguments),
+                  let appSupport = value(after: "--app-support", in: arguments) else {
+                throw KumoError.invalidArguments("Usage: KumoService service install --mode user --source <path> --app-support <path> [--idle-timeout <seconds>]")
+            }
+            let idleTimeoutSeconds = try ServiceIdlePolicy.parseTimeoutSeconds(arguments: arguments)
+            let paths = KumoPaths(applicationSupportDirectory: URL(fileURLWithPath: appSupport, isDirectory: true))
+            try KumoUserAgentManager(paths: paths, idleTimeoutSeconds: idleTimeoutSeconds)
+                .install(executable: URL(fileURLWithPath: source))
+            return
+        }
         guard geteuid() == 0 else {
             throw KumoError.serviceUnavailable("KumoService install must run with administrator privileges.")
         }
@@ -69,7 +83,7 @@ enum KumoServiceMain {
         chown(paths.serviceCredentialsFile.path, authorizedUID, getgid())
         chmod(paths.serviceCredentialsFile.path, S_IRUSR | S_IWUSR)
 
-        let plist = launchDaemonPlist(paths: paths, authorizedUID: authorizedUID)
+        let plist = ServiceMode.rootLaunchDaemonPlist(paths: paths, authorizedUID: authorizedUID)
         try plist.write(to: paths.serviceLaunchDaemonPlistFile, atomically: true, encoding: .utf8)
         chown(paths.serviceLaunchDaemonPlistFile.path, 0, 0)
         chmod(paths.serviceLaunchDaemonPlistFile.path, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
@@ -81,6 +95,15 @@ enum KumoServiceMain {
     }
 
     private static func uninstall(arguments: [String]) throws {
+        let mode = try ServiceMode.parse(arguments: arguments)
+        if mode == .user {
+            guard let appSupport = value(after: "--app-support", in: arguments) else {
+                throw KumoError.invalidArguments("Usage: KumoService service uninstall --mode user --app-support <path>")
+            }
+            let paths = KumoPaths(applicationSupportDirectory: URL(fileURLWithPath: appSupport, isDirectory: true))
+            try KumoUserAgentManager(paths: paths).uninstall()
+            return
+        }
         guard geteuid() == 0 else {
             throw KumoError.serviceUnavailable("KumoService uninstall must run with administrator privileges.")
         }
@@ -94,6 +117,15 @@ enum KumoServiceMain {
     }
 
     private static func printStatus(arguments: [String]) throws {
+        let mode = try ServiceMode.parse(arguments: arguments)
+        if mode == .user {
+            let appSupport = value(after: "--app-support", in: arguments)
+            let paths = KumoPaths(applicationSupportDirectory: appSupport.map { URL(fileURLWithPath: $0, isDirectory: true) })
+            let status = KumoUserAgentManager(paths: paths).status()
+            let data = try JSONEncoder().encode(status)
+            print(String(data: data, encoding: .utf8) ?? "{}")
+            return
+        }
         let appSupport = value(after: "--app-support", in: arguments)
         let paths = KumoPaths(applicationSupportDirectory: appSupport.map { URL(fileURLWithPath: $0, isDirectory: true) })
         let status = ServiceModeStatus(
@@ -108,61 +140,45 @@ enum KumoServiceMain {
     }
 
     private static func runDaemon(arguments: [String]) async throws {
+        let mode = try ServiceMode.parse(arguments: arguments)
         guard let appSupport = value(after: "--app-support", in: arguments) else {
             throw KumoError.invalidArguments("KumoService service run requires --app-support <path>.")
         }
         let authorizedUID = value(after: "--authorized-uid", in: arguments).flatMap(uid_t.init) ?? getuid()
+        // The user agent is on-demand: it exits after `--idle-timeout` seconds
+        // without traffic and with no core running. Root-mode behavior is
+        // unchanged — the privileged daemon stays resident.
+        let idleTimeout: TimeInterval = mode == .user
+            ? TimeInterval(try ServiceIdlePolicy.parseTimeoutSeconds(arguments: arguments))
+            : 0
         let paths = KumoPaths(applicationSupportDirectory: URL(fileURLWithPath: appSupport, isDirectory: true))
         try paths.prepare()
-        // Startup repair. The daemon runs as root, so on a fresh service-mode
-        // install it may have created state files, logs or work files as
-        // root:staff before the app or CLI ever wrote them (Issue #3). Hand
-        // everything back to the authorized user once per launch; that is the
-        // upgrade path for installs already in the broken state.
-        let ownershipRepair = AppSupportOwnershipRepair(
-            applicationSupportDirectory: paths.applicationSupportDirectory,
-            authorizedUID: authorizedUID
-        )
+        // Root-mode startup repair. The daemon runs as root, so on a fresh
+        // service-mode install it may have created state files, logs or work
+        // files as root:staff before the app or CLI ever wrote them (Issue
+        // #3). Hand everything back to the authorized user once per launch;
+        // that is the upgrade path for installs already in the broken state.
+        // The user agent runs as its own owner and never needs this.
+        let ownershipRepair: AppSupportOwnershipRepair? = mode.repairsAppSupportOwnership
+            ? AppSupportOwnershipRepair(
+                applicationSupportDirectory: paths.applicationSupportDirectory,
+                authorizedUID: authorizedUID
+            )
+            : nil
         ownershipRepair?.repair()
         let credentials = try KumoServiceManager(paths: paths).loadCredentials()
+        let logger = mode == .user ? KumoServiceLogger(fileURL: paths.userAgentLogFile) : nil
+        logger?.log("service starting: mode=\(mode.rawValue) pid=\(getpid()) idle-timeout=\(Int(idleTimeout))s")
         let server = KumoServiceSocketServer(
             paths: paths,
+            mode: mode,
             credentials: credentials,
             authorizedUID: authorizedUID,
-            ownershipRepair: ownershipRepair
+            ownershipRepair: ownershipRepair,
+            idleTimeout: idleTimeout,
+            logger: logger
         )
         try await server.run()
-    }
-
-    private static func launchDaemonPlist(paths: KumoPaths, authorizedUID: uid_t) -> String {
-        """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>Label</key>
-          <string>\(KumoServiceManager.launchDaemonLabel)</string>
-          <key>ProgramArguments</key>
-          <array>
-            <string>\(paths.serviceExecutableFile.path)</string>
-            <string>service</string>
-            <string>run</string>
-            <string>--app-support</string>
-            <string>\(paths.applicationSupportDirectory.path)</string>
-            <string>--authorized-uid</string>
-            <string>\(authorizedUID)</string>
-          </array>
-          <key>RunAtLoad</key>
-          <true/>
-          <key>KeepAlive</key>
-          <true/>
-          <key>StandardOutPath</key>
-          <string>\(paths.serviceLogFile.path)</string>
-          <key>StandardErrorPath</key>
-          <string>\(paths.serviceLogFile.path)</string>
-        </dict>
-        </plist>
-        """
     }
 
     fileprivate static func saveStatus(paths: KumoPaths, installed: Bool, running: Bool) throws {
@@ -206,36 +222,110 @@ enum KumoServiceMain {
 
 private final class KumoServiceSocketServer: @unchecked Sendable {
     private let paths: KumoPaths
+    private let mode: ServiceMode
     private let credentials: KumoServiceCredentials
     private let authorizedUID: uid_t
     private let ownershipRepair: AppSupportOwnershipRepair?
+    private let idleTimeout: TimeInterval
+    private let logger: KumoServiceLogger?
     private var seenNonces = Set<String>()
 
     init(
         paths: KumoPaths,
+        mode: ServiceMode,
         credentials: KumoServiceCredentials,
         authorizedUID: uid_t,
-        ownershipRepair: AppSupportOwnershipRepair?
+        ownershipRepair: AppSupportOwnershipRepair?,
+        idleTimeout: TimeInterval,
+        logger: KumoServiceLogger?
     ) {
         self.paths = paths
+        self.mode = mode
         self.credentials = credentials
         self.authorizedUID = authorizedUID
         self.ownershipRepair = ownershipRepair
+        self.idleTimeout = idleTimeout
+        self.logger = logger
     }
 
     func run() async throws {
-        try? FileManager.default.removeItem(at: paths.serviceSocketFile)
+        let socketFile = mode.socketFile(in: paths)
+        let listener = try prepareListener(socketFile: socketFile)
+        defer { close(listener.descriptor) }
+
+        if mode.writesSharedStatusFile {
+            try KumoServiceMain.saveStatus(paths: paths, installed: true, running: true)
+        }
+        ownershipRepair?.repair()
+
+        // Root mode keeps blocking in accept() forever. The user agent
+        // re-evaluates an idle-exit policy between accepts and exits once it
+        // has been idle for `idleTimeout` seconds with no core running.
+        var idlePolicy = mode == .user
+            ? ServiceIdlePolicy(timeout: idleTimeout, now: Date())
+            : nil
+
+        while true {
+            let isCoreRunning = idlePolicy == nil ? false : ownedCoreIsRunning()
+            let pollTimeout = idlePolicy.map { policy in
+                Int32((policy.nextCheckIntervalSeconds(at: Date(), isCoreRunning: isCoreRunning) * 1000).rounded())
+            } ?? -1
+
+            var descriptorState = pollfd(fd: listener.descriptor, events: Int16(POLLIN), revents: 0)
+            let pollResult = Darwin.poll(&descriptorState, 1, pollTimeout)
+            if pollResult == 0 {
+                // Re-check core ownership at the decision point so a core
+                // started by another tier during the poll window still
+                // suppresses the exit.
+                guard idlePolicy != nil, ownedCoreIsRunning() == false else { continue }
+                if idlePolicy?.shouldExit(now: Date(), isCoreRunning: false) == true {
+                    logger?.log("idle-exit: no client request for \(Int(idleTimeout))s and no core running")
+                    close(listener.descriptor)
+                    removeSelfBoundSocketIfNeeded(listener, socketFile: socketFile)
+                    Foundation.exit(0)
+                }
+                continue
+            }
+            if pollResult < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                throw KumoError.serviceUnavailable("Service socket poll failed.")
+            }
+
+            let client = accept(listener.descriptor, nil, nil)
+            guard client >= 0 else { continue }
+            idlePolicy?.requestStarted(at: Date())
+            let response = await handleConnection(client)
+            try? writeResponse(response, to: client)
+            close(client)
+            idlePolicy?.requestFinished(at: Date())
+        }
+    }
+
+    /// A launchd-activated listener (`Sockets` in the user-agent plist) is
+    /// adopted instead of binding a fresh socket, so launchd can start the
+    /// agent on demand and keep the endpoint alive across idle exits. Root
+    /// mode and manual/dev runs fall back to binding the socket themselves.
+    private func prepareListener(socketFile: URL) throws -> Listener {
+        if mode == .user,
+           let activated = LaunchdSocketActivation.activatedListener(named: KumoUserAgentManager.launchdListenerSocketName) {
+            logger?.log("socket adopted from launchd at \(socketFile.path)")
+            return Listener(descriptor: activated, adoptedFromLaunchd: true)
+        }
+
+        try? FileManager.default.removeItem(at: socketFile)
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
             throw KumoError.serviceUnavailable("Unable to create service socket.")
         }
-        defer { close(descriptor) }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        let socketPath = paths.serviceSocketFile.path
+        let socketPath = socketFile.path
         let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
         guard socketPath.utf8.count < maxPathLength else {
+            close(descriptor)
             throw KumoError.serviceUnavailable("Service socket path is too long: \(socketPath)")
         }
         _ = withUnsafeMutablePointer(to: &address.sun_path) { pointer in
@@ -252,24 +342,48 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
             }
         }
         guard bindResult == 0 else {
+            close(descriptor)
             throw KumoError.serviceUnavailable("Unable to bind service socket at \(socketPath).")
         }
         chmod(socketPath, S_IRUSR | S_IWUSR)
-        chown(socketPath, authorizedUID, getgid())
+        if mode.chownsSharedFilesToAuthorizedUID {
+            chown(socketPath, authorizedUID, getgid())
+        }
 
         guard listen(descriptor, 16) == 0 else {
+            close(descriptor)
             throw KumoError.serviceUnavailable("Unable to listen on service socket.")
         }
-        try KumoServiceMain.saveStatus(paths: paths, installed: true, running: true)
-        ownershipRepair?.repair()
+        logger?.log("socket bound at \(socketPath)")
+        return Listener(descriptor: descriptor, adoptedFromLaunchd: false)
+    }
 
-        while true {
-            let client = accept(descriptor, nil, nil)
-            guard client >= 0 else { continue }
-            let response = await handleConnection(client)
-            try? writeResponse(response, to: client)
-            close(client)
+    /// A launchd-created socket must survive the agent: launchd owns the path
+    /// and reuses it to start the agent on the next connection.
+    private func removeSelfBoundSocketIfNeeded(_ listener: Listener, socketFile: URL) {
+        guard !listener.adoptedFromLaunchd else { return }
+        try? FileManager.default.removeItem(at: socketFile)
+    }
+
+    /// True while a Mihomo core this tier is responsible for is running.
+    /// Unknown/unreadable state is treated as running so the agent never
+    /// exits out from under a core it cannot observe.
+    private func ownedCoreIsRunning() -> Bool {
+        do {
+            let status = try KumoController(paths: paths, useServiceBackend: false, ownerTier: ownerTier).status()
+            return status.state == .running
+        } catch {
+            logger?.log("idle-check failed to read core status: \(error.localizedDescription)")
+            return true
         }
+    }
+
+    /// The tier this process represents when it launches the core directly:
+    /// the root daemon owns cores as `rootService`, the user agent as
+    /// `userAgent`. The shared state records this so ownership survives
+    /// routing changes.
+    private var ownerTier: RuntimeOwnerTier {
+        mode == .root ? .rootService : .userAgent
     }
 
     private func handleConnection(_ descriptor: Int32) async -> KumoServiceTransportResponse {
@@ -304,7 +418,7 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
     }
 
     private func route(_ request: KumoServiceSignedRequest) async throws -> KumoServiceTransportResponse {
-        let controller = KumoController(paths: paths, useServiceBackend: false)
+        let controller = KumoController(paths: paths, useServiceBackend: false, ownerTier: ownerTier)
         switch (request.method, request.path) {
         case ("GET", "/service/status"):
             return try json(ServiceModeStatus(
@@ -312,19 +426,23 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
                 isRunning: true,
                 isAvailable: true,
                 isCurrentProcessPrivileged: geteuid() == 0,
-                socketPath: paths.serviceSocketFile.path,
-                message: "Kumo Helper is running."
+                socketPath: mode.socketFile(in: paths).path,
+                message: mode.serviceStatusMessage
             ))
         case ("GET", "/status"), ("GET", "/sysproxy/status"):
             return try json(controller.status())
         case ("POST", "/core/start"):
-            _ = try controller.start()
+            let started = try controller.start()
+            logger?.log("core start observed: pid \(started.pid.map(String.init) ?? "unknown")")
             try await controller.waitForControllerReady()
             return try json(controller.status())
         case ("POST", "/core/stop"):
-            return try json(controller.stop())
+            let stopped = try controller.stop()
+            logger?.log("core stop observed: state=\(stopped.state.rawValue)")
+            return try json(stopped)
         case ("POST", "/core/restart"):
-            _ = try controller.restart()
+            let restarted = try controller.restart()
+            logger?.log("core restart observed: pid \(restarted.pid.map(String.init) ?? "unknown")")
             try await controller.waitForControllerReady()
             return try json(controller.status())
         case ("POST", "/sysproxy/enable"):
@@ -379,5 +497,92 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
                 bytesWritten += result
             }
         }
+    }
+}
+
+private struct Listener {
+    let descriptor: Int32
+    /// True when the descriptor came from `launch_activate_socket`, meaning
+    /// launchd owns the socket path and must be left to manage it.
+    let adoptedFromLaunchd: Bool
+}
+
+/// Adapts launchd's on-demand socket activation (`Sockets` in the plist).
+/// `<launch.h>` is not part of the Darwin Swift overlay, so the C entry point
+/// is declared directly.
+private enum LaunchdSocketActivation {
+    /// Returns the first activated listener, or nil when the process was not
+    /// started by launchd for a `Sockets` entry of this name (manual runs,
+    /// root daemon, misconfiguration). Extra descriptors are closed.
+    static func activatedListener(named name: String) -> Int32? {
+        var descriptors: UnsafeMutablePointer<Int32>?
+        var count = 0
+        let result = name.withCString { launch_activate_socket($0, &descriptors, &count) }
+        guard result == 0, let descriptors, count > 0 else {
+            return nil
+        }
+        defer { free(descriptors) }
+        for index in 1..<count {
+            close(descriptors[index])
+        }
+        return descriptors[0]
+    }
+}
+
+@_silgen_name("launch_activate_socket")
+private func launch_activate_socket(
+    _ name: UnsafePointer<CChar>,
+    _ descriptors: UnsafeMutablePointer<UnsafeMutablePointer<Int32>?>,
+    _ count: UnsafeMutablePointer<Int>
+) -> Int32
+
+/// Appends user-agent lifecycle lines to `logs/agent.log`. Under launchd the
+/// same file receives stdout/stderr, so when stdout already points at the log
+/// file the direct append is skipped and stdout is the only writer (avoiding
+/// duplicate lines); in dev runs stdout is a terminal and both are written.
+private final class KumoServiceLogger: @unchecked Sendable {
+    private let fileURL: URL
+    private let writesToStandardOutput: Bool
+    private let formatter: ISO8601DateFormatter
+
+    init(fileURL: URL) {
+        self.fileURL = fileURL
+        Self.ensureLogFile(at: fileURL)
+        self.writesToStandardOutput = !Self.standardOutputIsSameFile(as: fileURL)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        self.formatter = formatter
+    }
+
+    func log(_ message: String) {
+        let line = "[\(formatter.string(from: Date()))] \(message)\n"
+        if writesToStandardOutput {
+            FileHandle.standardOutput.write(Data(line.utf8))
+        }
+        do {
+            let handle = try FileHandle(forWritingTo: fileURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(line.utf8))
+        } catch {
+            fputs("kumod: unable to append agent log: \(error.localizedDescription)\n", stderr)
+        }
+    }
+
+    private static func ensureLogFile(at url: URL) {
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+    }
+
+    private static func standardOutputIsSameFile(as url: URL) -> Bool {
+        var outputStat = stat()
+        guard fstat(STDOUT_FILENO, &outputStat) == 0 else { return false }
+        var fileStat = stat()
+        guard stat(url.path, &fileStat) == 0 else { return false }
+        return outputStat.st_dev == fileStat.st_dev && outputStat.st_ino == fileStat.st_ino
     }
 }

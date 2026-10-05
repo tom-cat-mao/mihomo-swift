@@ -15,6 +15,10 @@ struct KumoApp: App {
         let prefs = appStore.controller.userPreferences()
         let locManager = LocalizationManager(preferences: prefs)
         appStore.localizationManager = locManager
+        // Attach during launch, before any view exists: App Intents and the
+        // Services menu resolve the store through `KumoAppContext`, and a cold
+        // (headless) launch never runs the SwiftUI view tree's `.task`.
+        KumoAppContext.shared.attach(store: appStore)
         _store = State(initialValue: appStore)
         _subStore = State(initialValue: SubStoreStore(controller: appStore.controller))
         _localizationManager = State(initialValue: locManager)

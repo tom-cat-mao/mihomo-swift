@@ -565,10 +565,35 @@ public struct SystemProxySnapshot: Codable, Equatable, Sendable {
     }
 }
 
+/// Which runtime tier launched — and therefore owns — the running Mihomo
+/// core. Recorded in `CoreStatus.ownerTier` so ownership transitions are
+/// observable state instead of an inference from `BackendRouter` reachability.
+///
+/// `CoreStatus.ownerTier == nil` is the legacy encoding (no record); `.unknown`
+/// is the decoded form of a tier string written by a newer build. Both mean
+/// "no usable record" to read paths, which then fall back to routing inference.
+public enum RuntimeOwnerTier: String, Codable, Sendable, CaseIterable {
+    case rootService
+    case userAgent
+    case localSupervisor
+    case unknown
+
+    /// Unrecognized tier strings decode as `.unknown` so a state file written
+    /// by a newer build never fails the whole `CoreStatus` decode.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = RuntimeOwnerTier(rawValue: raw) ?? .unknown
+    }
+}
+
 public struct CoreStatus: Codable, Equatable, Sendable {
     public var state: CoreRunState
     public var pid: Int32?
     public var corePath: String?
+    /// The tier that launched the running core, recorded on every successful
+    /// start and cleared on stop. `nil` means no record (legacy state or a
+    /// stopped core); readers fall back to `BackendRouter` inference then.
+    public var ownerTier: RuntimeOwnerTier?
     public var mode: OutboundMode
     public var endpoint: ControllerEndpoint
     public var proxyPorts: ProxyPortConfiguration
@@ -585,6 +610,7 @@ public struct CoreStatus: Codable, Equatable, Sendable {
         state: CoreRunState = .stopped,
         pid: Int32? = nil,
         corePath: String? = nil,
+        ownerTier: RuntimeOwnerTier? = nil,
         mode: OutboundMode = .rule,
         endpoint: ControllerEndpoint = ControllerEndpoint(),
         proxyPorts: ProxyPortConfiguration = ProxyPortConfiguration(),
@@ -600,6 +626,7 @@ public struct CoreStatus: Codable, Equatable, Sendable {
         self.state = state
         self.pid = pid
         self.corePath = corePath
+        self.ownerTier = ownerTier
         self.mode = mode
         self.endpoint = endpoint
         self.proxyPorts = proxyPorts

@@ -45,11 +45,6 @@ public enum LogLevel: String, Codable, ExpressibleByArgument, CaseIterable, Comp
     }
 }
 
-enum OnOff: String, ExpressibleByArgument {
-    case on
-    case off
-}
-
 enum CompletionShell: String, ExpressibleByArgument {
     case zsh
     case bash
@@ -78,6 +73,12 @@ extension OutboundMode: ExpressibleByArgument {
 }
 
 extension AgentSkillsScope: ExpressibleByArgument {
+    public init?(argument: String) {
+        self.init(rawValue: argument)
+    }
+}
+
+extension SystemProxyMode: ExpressibleByArgument {
     public init?(argument: String) {
         self.init(rawValue: argument)
     }
