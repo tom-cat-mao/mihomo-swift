@@ -18,6 +18,9 @@ The first test suite covers:
   ownership handoff and rollback, the app termination policy, root-to-agent
   migration guards, tier socket behavior, and the user-agent manager's launchd
   plist and idle policy.
+- App-level behavior (`Tests/KumoAppTests/`): quit-path sidecar termination,
+  termination policy mapping, startup store attach for App Intents, and the
+  update-install flow including tier version-stamp repair prompts.
 
 These tests target `KumoCoreKit` because that layer carries the most important shared behavior.
 

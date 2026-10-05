@@ -18,10 +18,14 @@ Kumo is a native macOS client for Mihomo. The first version focuses on a calm da
 ```text
 Sources/
   KumoCoreKit/   Shared domain, runtime, controller, system integration code
+  KumoCLIKit/    CLI command tree, output modes, help/completion
   KumoCLI/       Command-line frontend for humans and agents
   KumoApp/       SwiftUI macOS frontend
+  KumoService/   Helper binary: root LaunchDaemon and user LaunchAgent (kumod)
 Tests/
   KumoCoreTests/ Unit tests for the shared control layer
+  KumoCLITests/  CLI parsing, help, and envelope tests
+  KumoAppTests/  App-level tests (termination, update flow, intents store)
 ```
 
 ## Architectural Principle
