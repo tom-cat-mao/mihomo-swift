@@ -46,43 +46,94 @@ extension KumoController {
     // MARK: Tier lifecycle operations
 
     func performTierStop(_ backend: RuntimeBackend) throws -> CoreStatus {
+        var status: CoreStatus
         if let tierOperations {
-            return try tierOperations.stop(backend)
-        }
-        switch backend {
-        case .localSupervisor:
-            return try supervisor.stop()
-        case .rootService:
-            guard let client = rootServiceClient() else {
-                throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
+            status = try tierOperations.stop(backend)
+        } else {
+            switch backend {
+            case .localSupervisor:
+                status = try supervisor.stop()
+            case .rootService:
+                guard let client = rootServiceClient() else {
+                    throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
+                }
+                status = try client.sendDecodable(client.stopCoreRequest(), as: CoreStatus.self)
+            case .userAgent:
+                guard let client = userAgentClient() else {
+                    throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
+                }
+                status = try client.sendDecodable(client.stopCoreRequest(), as: CoreStatus.self)
             }
-            return try client.sendDecodable(client.stopCoreRequest(), as: CoreStatus.self)
-        case .userAgent:
-            guard let client = userAgentClient() else {
-                throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
-            }
-            return try client.sendDecodable(client.stopCoreRequest(), as: CoreStatus.self)
         }
+
+        // Only a core that actually stopped loses its owner; a failed stop
+        // means the core — and its owner — are still there.
+        if status.state == .stopped {
+            status.ownerTier = nil
+            recordCoreOwnership(nil)
+        }
+        return status
     }
 
     func performTierStart(_ backend: RuntimeBackend) throws -> CoreStatus {
+        var status: CoreStatus
         if let tierOperations {
-            return try tierOperations.start(backend)
-        }
-        switch backend {
-        case .localSupervisor:
-            return try startLocalCore(corePath: nil)
-        case .rootService:
-            guard let client = rootServiceClient() else {
-                throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
+            status = try tierOperations.start(backend)
+        } else {
+            switch backend {
+            case .localSupervisor:
+                status = try startLocalCore(corePath: nil)
+            case .rootService:
+                guard let client = rootServiceClient() else {
+                    throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
+                }
+                status = try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
+            case .userAgent:
+                guard let client = userAgentClient() else {
+                    throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
+                }
+                status = try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
             }
-            return try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
-        case .userAgent:
-            guard let client = userAgentClient() else {
-                throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
-            }
-            return try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
         }
+
+        // A tier that records ownership itself (the root daemon's and the user
+        // agent's internal controllers do) wins; the routing tier only fills a
+        // missing record, which is what an older tier build returns.
+        if status.ownerTier == nil || status.ownerTier == .unknown {
+            status.ownerTier = backend.ownerTier
+        }
+        recordCoreOwnership(status.ownerTier)
+        return status
+    }
+
+    // MARK: Ownership record
+
+    /// Best-effort persistence of the ownership record for the shared state.
+    ///
+    /// The tier that owns the state records ownership in its own authoritative
+    /// write; this caller-side write repairs states written by a tier that
+    /// predates the record. It never fails the operation it accompanies: a
+    /// bookkeeping denial (Issue #3) must not turn a successful start or stop
+    /// into a failure.
+    func recordCoreOwnership(_ tier: RuntimeOwnerTier?) {
+        guard var status = try? stateStore.load(), status.ownerTier != tier else {
+            return
+        }
+        status.ownerTier = tier
+        try? stateStore.save(status)
+    }
+
+    /// The recorded owner of the running core, or nil when the state cannot be
+    /// read, no core is running, or the record is missing/unknown (legacy
+    /// states). Read paths fall back to routing inference in that case.
+    func recordedCoreOwnerTier() -> RuntimeOwnerTier? {
+        guard let status = try? stateStore.load(),
+              status.state == .running,
+              let owner = status.ownerTier,
+              owner != .unknown else {
+            return nil
+        }
+        return owner
     }
 
     /// Explicit ownership transfer between runtime tiers.

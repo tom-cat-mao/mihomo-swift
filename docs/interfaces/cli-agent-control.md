@@ -258,10 +258,13 @@ LaunchAgents plist, or the socket.
 
 `kumo agent migrate` hands a running, root-owned core to the user agent. It
 refuses while TUN is enabled (the core must stay root-owned) and until the
-agent is installed, with the refusal reason in the error envelope. With no
-running core, or when the agent already owns it, it is a no-op success, so
-re-running it is safe. `--dry-run` prints the installed tiers
-(`none|rootOnly|userOnly|dual`), the router's current core owner
+agent is installed, with the refusal reason in the error envelope. Ownership
+comes from the running core's record (`CoreStatus.ownerTier`), so a root-owned
+core is still handed over after the agent install makes routing prefer the
+agent; only legacy states without a record fall back to the router's owner.
+With no running core, or when the agent already owns it, it is a no-op
+success, so re-running it is safe. `--dry-run` prints the installed tiers
+(`none|rootOnly|userOnly|dual`), the current core owner
 (`rootService|userAgent|localSupervisor|unavailable`), the TUN state, and any
 guard refusals without stopping or starting anything.
 

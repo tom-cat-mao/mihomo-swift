@@ -14,14 +14,50 @@ final class CoreSupervisorTests: XCTestCase {
         )
         let pid = try XCTUnwrap(status.pid)
 
+        XCTAssertEqual(status.ownerTier, .localSupervisor, "the default supervisor records itself as the owner")
         XCTAssertEqual(try String(contentsOf: paths.corePIDFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), "\(pid)")
 
         let stopped = try supervisor.stop()
 
         XCTAssertEqual(stopped.state, .stopped)
         XCTAssertNil(stopped.pid)
+        XCTAssertNil(stopped.ownerTier, "stop clears the ownership record")
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.corePIDFile.path))
         XCTAssertFalse(isProcessAlive(pid))
+    }
+
+    // MARK: - Ownership record
+
+    func testStartStampsConfiguredOwnerTierAndStopClearsIt() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let corePath = try makeLongRunningCore(in: paths.applicationSupportDirectory)
+        let supervisor = CoreSupervisor(paths: paths, ownerTier: .rootService)
+        let stateStore = CoreStateStore(paths: paths)
+
+        let status = try supervisor.start(
+            configuration: launchConfiguration(corePath: corePath, endpoint: ControllerEndpoint(port: try allocateFreeLocalPort()))
+        )
+
+        XCTAssertEqual(status.ownerTier, .rootService)
+        XCTAssertEqual(try stateStore.load().ownerTier, .rootService, "the tier ships in the persisted status, not only the return value")
+
+        let stopped = try supervisor.stop()
+
+        XCTAssertNil(stopped.ownerTier)
+        XCTAssertNil(try stateStore.load().ownerTier)
+    }
+
+    func testStalePIDCleanupClearsTheOwnershipRecord() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let stateStore = CoreStateStore(paths: paths)
+        let deadPID = try exitedProcessID()
+        try stateStore.save(CoreStatus(state: .running, pid: deadPID, ownerTier: .rootService))
+
+        let status = try CoreSupervisor(paths: paths).status()
+
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertNil(status.ownerTier, "a core that is gone cannot keep an owner")
+        XCTAssertNil(try stateStore.load().ownerTier)
     }
 
     func testStopUsesPIDFileWhenStatePIDIsMissing() throws {
@@ -292,6 +328,16 @@ final class CoreSupervisorTests: XCTestCase {
 
         XCTFail("Timed out waiting for recorded core arguments")
         return []
+    }
+
+    /// Spawns and reaps a short-lived process so its pid is provably dead.
+    private func exitedProcessID() throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "exit 0"]
+        try process.run()
+        process.waitUntilExit()
+        return process.processIdentifier
     }
 
     private func temporaryDirectory() -> URL {

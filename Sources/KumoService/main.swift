@@ -370,12 +370,20 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
     /// exits out from under a core it cannot observe.
     private func ownedCoreIsRunning() -> Bool {
         do {
-            let status = try KumoController(paths: paths, useServiceBackend: false).status()
+            let status = try KumoController(paths: paths, useServiceBackend: false, ownerTier: ownerTier).status()
             return status.state == .running
         } catch {
             logger?.log("idle-check failed to read core status: \(error.localizedDescription)")
             return true
         }
+    }
+
+    /// The tier this process represents when it launches the core directly:
+    /// the root daemon owns cores as `rootService`, the user agent as
+    /// `userAgent`. The shared state records this so ownership survives
+    /// routing changes.
+    private var ownerTier: RuntimeOwnerTier {
+        mode == .root ? .rootService : .userAgent
     }
 
     private func handleConnection(_ descriptor: Int32) async -> KumoServiceTransportResponse {
@@ -410,7 +418,7 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
     }
 
     private func route(_ request: KumoServiceSignedRequest) async throws -> KumoServiceTransportResponse {
-        let controller = KumoController(paths: paths, useServiceBackend: false)
+        let controller = KumoController(paths: paths, useServiceBackend: false, ownerTier: ownerTier)
         switch (request.method, request.path) {
         case ("GET", "/service/status"):
             return try json(ServiceModeStatus(

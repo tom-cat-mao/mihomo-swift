@@ -52,6 +52,58 @@ final class KumoControllerTierSocketTests: XCTestCase {
         XCTAssertEqual(agent.receivedPaths(), ["/core/start"])
     }
 
+    /// A tier build that predates ownership recording returns a status with no
+    /// `ownerTier`; the routed start still records the tier the request went
+    /// to, both in the returned status and in the shared state.
+    func testStartRecordsTheSocketTierThatOwnsTheCore() throws {
+        let paths = hermeticPaths()
+        _ = try KumoServiceManager(paths: paths).ensureCredentials()
+        let stateStore = CoreStateStore(paths: paths)
+        try stateStore.save(CoreStatus(state: .running, pid: 999))
+
+        let agent = try FakeServiceSocket(socketPath: paths.userAgentSocketFile.path) { _ in
+            KumoServiceTransportResponse(
+                status: 200,
+                body: try JSONEncoder().encode(CoreStatus(state: .running, pid: 888))
+            )
+        }
+        defer { agent.stop() }
+        let controller = makeController(paths: paths, rootReachable: true, agentReachable: true)
+
+        let status = try controller.start()
+
+        XCTAssertEqual(status.ownerTier, .userAgent)
+        XCTAssertEqual(try stateStore.load().ownerTier, .userAgent)
+        XCTAssertEqual(agent.receivedPaths(), ["/core/start"])
+    }
+
+    func testStopClearsTheRecordedOwnerTier() throws {
+        let paths = hermeticPaths()
+        _ = try KumoServiceManager(paths: paths).ensureCredentials()
+        let stateStore = CoreStateStore(paths: paths)
+        try stateStore.save(CoreStatus(
+            state: .running,
+            pid: 999,
+            ownerTier: .userAgent,
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
+        ))
+
+        let agent = try FakeServiceSocket(socketPath: paths.userAgentSocketFile.path) { _ in
+            KumoServiceTransportResponse(
+                status: 200,
+                body: try JSONEncoder().encode(CoreStatus(state: .stopped))
+            )
+        }
+        defer { agent.stop() }
+        let controller = makeController(paths: paths, rootReachable: true, agentReachable: true)
+
+        let status = try controller.stop()
+
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertNil(status.ownerTier)
+        XCTAssertNil(try stateStore.load().ownerTier, "a stopped core must not keep an owner")
+    }
+
     func testStopRoutesToUserAgentWhenTunIsOff() throws {
         // The app-update path (KumoAppStore.stopCore -> CoreRuntimeRunner.stop)
         // must stop a TUN-off core through the owning socket tier; this pins

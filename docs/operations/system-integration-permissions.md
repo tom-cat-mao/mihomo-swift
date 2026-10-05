@@ -198,7 +198,15 @@ LaunchAgent so the core keeps serving without the privileged daemon owning it.
 - Migration refuses while TUN is enabled: TUN requires a root-owned core, so
   disable TUN first (`kumo tun disable`). It also refuses until the agent is
   installed; the caller installs it (`kumo agent install`) and retries. Both
-  refusals name the reason.
+  refusals name the reason. Ownership comes from the running core's record
+  (`CoreStatus.ownerTier`), so a root-owned core is still migrated after the
+  agent install makes routing prefer the agent; only legacy states without a
+  record fall back to the routing decision.
+- With TUN off, `kumo agent install` records the root ownership it proves
+  instead of refusing, so the install-first recovery cannot deadlock against
+  the migration's missing-agent guard. While TUN is enabled the install still
+  refuses (the migration would too) and names the remedy: disable TUN, retry
+  the install, then run `kumo agent migrate`.
 - When the root daemon owns a running core, the core is stopped there and
   started by the agent, with the root daemon restored if the agent start fails.
   With no running core — or when the agent already owns it — migration is a

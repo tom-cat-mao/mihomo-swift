@@ -15,11 +15,14 @@ final class KumoControllerShutdownTests: XCTestCase {
         try stateStore.save(CoreStatus(endpoint: ControllerEndpoint(port: try allocateFreeLocalPort())))
         let running = try controller.start(corePath: corePath)
         let pid = try XCTUnwrap(running.pid)
+        XCTAssertEqual(running.ownerTier, .localSupervisor)
 
         let result = await controller.shutdownActiveRuntime()
 
         XCTAssertEqual(result.status.state, .stopped)
         XCTAssertNil(result.status.pid)
+        XCTAssertNil(result.status.ownerTier, "a successful shutdown clears the ownership record")
+        XCTAssertNil(try stateStore.load().ownerTier)
         XCTAssertFalse(isProcessAlive(pid))
         XCTAssertTrue(result.diagnostics.isEmpty, "unexpected diagnostics: \(result.diagnostics)")
     }

@@ -389,35 +389,68 @@ public struct KumoUserAgentManager: Sendable {
     }
 
     /// Refuses to install the agent on top of a core that the root daemon
-    /// provably owns.
+    /// provably owns while TUN is enabled.
     ///
-    /// Installing the agent while the root daemon runs the core strands that
-    /// core: routing then prefers the agent, but the agent cannot signal the
-    /// root-owned pid (EPERM), so stops report failure and
-    /// `migrateCoreToUserAgent()` reads the routing decision as agent
-    /// ownership and silently no-ops.
+    /// Installing the agent while the root daemon runs the core used to strand
+    /// that core: routing then prefers the agent, but the agent cannot signal
+    /// the root-owned pid (EPERM) and `migrateCoreToUserAgent()` read the
+    /// routing decision as agent ownership and silently no-opped. The
+    /// ownership record fixes the migration, so the guard now fires only when
+    /// TUN pins the core to the root daemon and the core cannot be handed
+    /// over at all (`kumo agent migrate` refuses while TUN is on).
     ///
-    /// The refusal fires only when all three conditions are provable: the root
-    /// daemon is reachable, the shared state reports a running core with a
-    /// pid, and this process cannot signal that pid (EPERM). Every ambiguous
-    /// state — no state file, unreadable state, no running core, missing or
-    /// stale pid, unreachable daemon — allows the install.
+    /// Ownership is consulted from the record first (`CoreStatus.ownerTier`);
+    /// only a legacy state without one falls back to the process probe. A
+    /// non-root record proves the core is not root-owned, so the install is
+    /// allowed regardless of what the probe would report.
+    ///
+    /// With TUN off, the install is the first step of the recovery: it is
+    /// allowed, and the proven root ownership is stamped into the state so the
+    /// follow-up `kumo agent migrate` reads the record instead of the routing
+    /// decision, which now prefers the just-installed agent.
+    ///
+    /// The guard fires only when the conditions are provable: the root daemon
+    /// is reachable, the shared state reports a running core with a pid,
+    /// ownership resolves to the root daemon, and TUN is enabled. Every
+    /// ambiguous state — no state file, unreadable state, no running core,
+    /// missing or stale pid, unreachable daemon — allows the install.
     private func rootOwnedCoreInstallRefusal() -> KumoError? {
         let daemonReachable = rootDaemonReachability?()
             ?? KumoServiceManager(paths: paths).status().isRunning
         guard daemonReachable else { return nil }
 
-        guard let status = try? CoreStateStore(paths: paths).load(),
+        let stateStore = CoreStateStore(paths: paths)
+        guard let status = try? stateStore.load(),
               status.state == .running,
               let pid = status.pid else {
             return nil
         }
 
-        let ownership = processOwnershipProbe?(pid) ?? Self.processOwnership(of: pid)
-        guard ownership == .otherUser else { return nil }
+        let provenByRecord: Bool
+        if let owner = status.ownerTier, owner != .unknown {
+            // The record is authoritative; the probe is only a legacy fallback.
+            guard owner == .rootService else { return nil }
+            provenByRecord = true
+        } else {
+            let ownership = processOwnershipProbe?(pid) ?? Self.processOwnership(of: pid)
+            guard ownership == .otherUser else { return nil }
+            provenByRecord = false
+        }
+
+        let tunEnabled = status.runtimeSettings?.tun?.isEnabled ?? false
+        if !tunEnabled {
+            if !provenByRecord {
+                // Record what the probe just proved so the migration can find
+                // it. Best-effort: a denied write must not block the install.
+                var recorded = status
+                recorded.ownerTier = .rootService
+                try? stateStore.save(recorded)
+            }
+            return nil
+        }
 
         return KumoError.serviceUnavailable(
-            "Kumo Helper is running the Mihomo core as root, and the user agent cannot take over a root-owned core. Run `kumo agent migrate` first, then retry installing the agent."
+            "TUN is enabled, so Kumo Helper must keep the running Mihomo core while TUN is active. Disable TUN, then retry installing the agent, then run `kumo agent migrate` to hand the core over."
         )
     }
 

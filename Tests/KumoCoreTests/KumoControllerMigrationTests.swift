@@ -78,6 +78,78 @@ final class KumoControllerMigrationTests: XCTestCase {
         XCTAssertEqual(unavailable.ownerUnavailableReason != nil, true)
     }
 
+    // MARK: - Ownership record
+
+    func testCoreOwnerComesFromTheRecordOverRoutingInference() throws {
+        // Both tiers installed and reachable: routing prefers the agent, but
+        // the record proves the root daemon owns the running core. This is the
+        // state the install guard used to refuse to create and that made
+        // `migrate` no-op.
+        let fixture = makeFixture(
+            rootInstalled: true,
+            agentInstalled: true,
+            rootReachable: true,
+            agentReachable: true
+        )
+        try fixture.stateStore.save(CoreStatus(state: .running, pid: 999, ownerTier: .rootService))
+
+        let state = fixture.controller.tierInstallState()
+
+        XCTAssertEqual(state.coreOwner, .rootService)
+    }
+
+    func testCoreOwnerFallsBackToRoutingWhenTheRecordIsMissingOrUnusable() throws {
+        let fixture = makeFixture(
+            rootInstalled: true,
+            agentInstalled: true,
+            rootReachable: true,
+            agentReachable: true
+        )
+
+        // No record at all (legacy state): routing decides.
+        try fixture.stateStore.save(CoreStatus(state: .running, pid: 999))
+        XCTAssertEqual(fixture.controller.tierInstallState().coreOwner, .userAgent)
+
+        // A future tier name decodes as `.unknown` and is treated as no record.
+        try fixture.stateStore.save(CoreStatus(state: .running, pid: 999, ownerTier: .unknown))
+        XCTAssertEqual(fixture.controller.tierInstallState().coreOwner, .userAgent)
+
+        // A record on a stopped core describes nothing; routing decides.
+        try fixture.stateStore.save(CoreStatus(state: .stopped, ownerTier: .rootService))
+        XCTAssertEqual(fixture.controller.tierInstallState().coreOwner, .userAgent)
+    }
+
+    func testMigrationUsesTheRecordWhenRoutingWouldReportTheAgent() throws {
+        // The post-install deadlock state: the agent is installed and
+        // reachable, so the routing inference would claim it already owns the
+        // core; the record proves the root daemon still does.
+        let fixture = makeFixture(
+            rootInstalled: true,
+            agentInstalled: true,
+            rootReachable: true,
+            agentReachable: true
+        )
+        try fixture.stateStore.save(CoreStatus(
+            state: .running,
+            pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            ownerTier: .rootService,
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
+        ))
+
+        let result = try fixture.controller.migrateCoreToUserAgent()
+
+        XCTAssertTrue(result.migrated)
+        XCTAssertEqual(result.plan.tier.coreOwner, .rootService)
+        XCTAssertEqual(fixture.recorder.calls(), [
+            TierCall(action: "stop", backend: .rootService),
+            TierCall(action: "start", backend: .userAgent)
+        ])
+        XCTAssertEqual(
+            try fixture.stateStore.load().ownerTier, .userAgent,
+            "the handoff must leave the target tier's ownership on the core"
+        )
+    }
+
     // MARK: - Migration guards
 
     func testMigrationRefusesWhileTunIsEnabled() throws {
@@ -250,6 +322,55 @@ final class KumoControllerMigrationTests: XCTestCase {
         XCTAssertTrue(fixture.recorder.calls().isEmpty)
     }
 
+    // MARK: - Install-guard deadlock remedy
+
+    /// `kumo agent install` used to refuse with "run `kumo agent migrate`
+    /// first" while migrate refused with "the agent is not installed". With
+    /// TUN off, the guard now allows the install — the first step of the
+    /// remedy — and records the root ownership it proved; the migration then
+    /// reads that record instead of the routing decision, which prefers the
+    /// just-installed agent.
+    func testInstallWithTunOffRecordsRootOwnershipSoMigrationCanHandOver() throws {
+        let fixture = makeFixture(
+            rootInstalled: true,
+            agentInstalled: false,
+            rootReachable: true,
+            agentReachable: false
+        )
+        try fixture.stateStore.save(CoreStatus(
+            state: .running,
+            pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
+        ))
+
+        let manager = KumoUserAgentManager(
+            paths: fixture.paths,
+            bundleURL: fixture.paths.applicationSupportDirectory
+                .appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: { _ in "" },
+            rootDaemonReachability: { true },
+            processOwnershipProbe: { _ in .otherUser }
+        )
+        _ = try manager.install(executable: URL(fileURLWithPath: "/tmp/KumoService"))
+
+        XCTAssertEqual(
+            try fixture.stateStore.load().ownerTier, .rootService,
+            "the install must record the root ownership the probe proved"
+        )
+
+        // Installing the agent makes it reachable; the routing inference now
+        // reports the agent while the record still names the root daemon.
+        fixture.agentReachable.value = true
+        let result = try fixture.controller.migrateCoreToUserAgent()
+
+        XCTAssertTrue(result.migrated)
+        XCTAssertEqual(result.plan.tier.coreOwner, .rootService)
+        XCTAssertEqual(fixture.recorder.calls(), [
+            TierCall(action: "stop", backend: .rootService),
+            TierCall(action: "start", backend: .userAgent)
+        ])
+    }
+
     // MARK: - Helpers
 
     private struct Fixture {
@@ -257,6 +378,7 @@ final class KumoControllerMigrationTests: XCTestCase {
         var recorder: MigrationTierRecorder
         var stateStore: CoreStateStore
         var agentReachable: ReachabilityBox
+        var paths: KumoPaths
     }
 
     private func makeFixture(
@@ -310,7 +432,8 @@ final class KumoControllerMigrationTests: XCTestCase {
             controller: controller,
             recorder: recorder,
             stateStore: stateStore,
-            agentReachable: agentProbe
+            agentReachable: agentProbe,
+            paths: paths
         )
     }
 

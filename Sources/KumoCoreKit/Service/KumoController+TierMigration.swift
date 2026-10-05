@@ -1,15 +1,17 @@
 import Foundation
 import os
 
-/// Which launchd tiers are installed, which tier the router currently selects
-/// to own the Mihomo core, and the TUN state that drives that decision.
+/// Which launchd tiers are installed, which tier currently owns the Mihomo
+/// core, and the TUN state that drives routing.
 ///
 /// This is the public reporting surface of the two-tier runtime: the GUI can
 /// show "Kumo Helper only / agent only / both installed" without duplicating
 /// the per-tier status reads, and the CLI's `kumo agent migrate --dry-run`
-/// prints it. The core owner comes from `BackendRouter` — the same routing
-/// that every lifecycle operation uses — not from a per-tier status call,
-/// because both tiers read the same shared `state.json`.
+/// prints it. The core owner comes from the running core's ownership record
+/// (`CoreStatus.ownerTier`); only legacy states without a record fall back to
+/// the `BackendRouter` decision — the same routing that every lifecycle
+/// operation uses — because reachability alone cannot tell a root-owned core
+/// apart from an agent-owned one once both tiers are installed.
 public struct TierInstallState: Codable, Equatable, Sendable {
     /// Install combination of the privileged LaunchDaemon and the user
     /// LaunchAgent.
@@ -52,6 +54,19 @@ public struct TierInstallState: Codable, Equatable, Sendable {
         self.rootService = rootService
         self.userAgent = userAgent
         self.ownerUnavailableReason = ownerUnavailableReason
+    }
+}
+
+extension TierInstallState.CoreOwner {
+    /// Maps an ownership record to the reporting enum. `unknown` has no
+    /// mapping, so callers keep the routing-inference fallback.
+    init?(ownerTier: RuntimeOwnerTier) {
+        switch ownerTier {
+        case .rootService: self = .rootService
+        case .userAgent: self = .userAgent
+        case .localSupervisor: self = .localSupervisor
+        case .unknown: return nil
+        }
     }
 }
 
@@ -112,7 +127,13 @@ public struct CoreMigrationResult: Codable, Equatable, Sendable {
 // MARK: - Dual-tier detection and migration
 
 extension KumoController {
-    /// Reports the installed tiers and the router's current core owner.
+    /// Reports the installed tiers and the current core owner.
+    ///
+    /// Ownership comes from the recorded `CoreStatus.ownerTier` of the running
+    /// core. Only when that record is missing or unknown — a state written
+    /// before ownership recording — does this fall back to the `BackendRouter`
+    /// decision, which infers an owner from reachability and can therefore
+    /// misreport a root-owned core once the agent is installed.
     ///
     /// Cheap enough for periodic UI refresh: it reads both managers' cached
     /// status (socket pings, no writes) and makes no core-lifecycle call.
@@ -123,11 +144,16 @@ extension KumoController {
         let decision = router.decideCoreBackend(tunEnabled: tunEnabled)
 
         let owner: TierInstallState.CoreOwner
-        switch decision.backend {
-        case .rootService: owner = .rootService
-        case .userAgent: owner = .userAgent
-        case .localSupervisor: owner = .localSupervisor
-        case nil: owner = .unavailable
+        if let recordedOwner = recordedCoreOwnerTier(),
+           let recorded = TierInstallState.CoreOwner(ownerTier: recordedOwner) {
+            owner = recorded
+        } else {
+            switch decision.backend {
+            case .rootService: owner = .rootService
+            case .userAgent: owner = .userAgent
+            case .localSupervisor: owner = .localSupervisor
+            case nil: owner = .unavailable
+            }
         }
 
         let installState: TierInstallState.InstallState
@@ -144,7 +170,7 @@ extension KumoController {
             tunEnabled: tunEnabled,
             rootService: root,
             userAgent: agent,
-            ownerUnavailableReason: decision.unavailableReason
+            ownerUnavailableReason: owner == .unavailable ? decision.unavailableReason : nil
         )
     }
 
@@ -162,11 +188,12 @@ extension KumoController {
     /// - TUN enabled: the core must stay root-owned; disable TUN first.
     /// - User agent not installed: install it first; this call never installs.
     ///
-    /// When the router selects the root daemon for a running core, the core is
-    /// stopped on the root daemon, started on the user agent, and the root
-    /// daemon restores it when the agent start fails
-    /// (`transferCoreOwnership`). When no core is running — or the agent
-    /// already owns it — this is a no-op success that only reports state.
+    /// When the ownership record (or, for legacy states, the routing
+    /// inference) proves the running core is root-owned, the core is stopped
+    /// on the root daemon, started on the user agent, and the root daemon
+    /// restores it when the agent start fails (`transferCoreOwnership`). When
+    /// no core is running — or the agent already owns it — this is a no-op
+    /// success that only reports state.
     /// Running it again after a successful migration is therefore a no-op.
     @discardableResult
     public func migrateCoreToUserAgent() throws -> CoreMigrationResult {

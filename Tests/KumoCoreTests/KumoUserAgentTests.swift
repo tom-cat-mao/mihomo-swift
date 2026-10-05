@@ -578,11 +578,15 @@ final class KumoUserAgentTests: XCTestCase {
 
     // MARK: - Root-owned running core install guard
 
-    func testInstallRefusesWhenRootDaemonOwnsARunningCore() throws {
+    func testInstallRefusesWhileTunPinsARootOwnedCoreToKumoHelper() throws {
         let root = temporaryDirectory()
         let paths = hermeticPaths(root: root)
         let executable = try makeExecutableFile(named: "KumoService", in: root)
-        try CoreStateStore(paths: paths).save(CoreStatus(state: .running, pid: 4242))
+        try CoreStateStore(paths: paths).save(CoreStatus(
+            state: .running,
+            pid: 4242,
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: true))
+        ))
 
         let recorder = LaunchctlRecorder()
         let manager = KumoUserAgentManager(
@@ -598,10 +602,11 @@ final class KumoUserAgentTests: XCTestCase {
                   case .serviceUnavailable(let message) = kumoError else {
                 return XCTFail("expected serviceUnavailable, got \(error)")
             }
-            XCTAssertTrue(
-                message.contains("kumo agent migrate"),
-                "the refusal must name the remedy: \(message)"
-            )
+            // The deadlock message must name the working order: install first
+            // once TUN is off, then migrate — never "run migrate first".
+            XCTAssertTrue(message.contains("Disable TUN"), "unexpected message: \(message)")
+            XCTAssertTrue(message.contains("retry installing the agent"), "unexpected message: \(message)")
+            XCTAssertTrue(message.contains("kumo agent migrate"), "unexpected message: \(message)")
         }
 
         XCTAssertTrue(recorder.invocations().isEmpty, "a refused install must not touch launchd")
@@ -610,6 +615,123 @@ final class KumoUserAgentTests: XCTestCase {
             FileManager.default.fileExists(atPath: paths.serviceCredentialsFile.path),
             "a refused install must not write shared credentials"
         )
+    }
+
+    func testInstallRefusesWhileTunIsOnEvenWhenTheRecordProvesRootOwnership() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        try CoreStateStore(paths: paths).save(CoreStatus(
+            state: .running,
+            pid: 4242,
+            ownerTier: .rootService,
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: true))
+        ))
+
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner(),
+            rootDaemonReachability: { true },
+            // The probe would report a signalable process; the record wins.
+            processOwnershipProbe: { _ in .sameUser }
+        )
+
+        XCTAssertThrowsError(try manager.install(executable: executable)) { error in
+            guard case .serviceUnavailable(let message) = error as? KumoError else {
+                return XCTFail("expected serviceUnavailable, got \(error)")
+            }
+            XCTAssertTrue(message.contains("Disable TUN"), "unexpected message: \(message)")
+            XCTAssertTrue(message.contains("kumo agent migrate"), "unexpected message: \(message)")
+        }
+        XCTAssertTrue(recorder.invocations().isEmpty)
+    }
+
+    /// The deadlock fix: with TUN off, the install is allowed and records the
+    /// root ownership the probe proved, so the follow-up migration can find it.
+    func testInstallWithTunOffRecordsProvenRootOwnershipInsteadOfRefusing() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let stateStore = CoreStateStore(paths: paths)
+        try stateStore.save(CoreStatus(
+            state: .running,
+            pid: 4242,
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
+        ))
+
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner(),
+            rootDaemonReachability: { true },
+            processOwnershipProbe: { _ in .otherUser }
+        )
+
+        let status = try manager.install(executable: executable)
+
+        XCTAssertTrue(status.isInstalled)
+        XCTAssertEqual(recorder.invocations().count, 2, "the install must bootstrap the agent")
+        XCTAssertEqual(
+            try stateStore.load().ownerTier, .rootService,
+            "the guard must record the ownership it proved so migrate can read it"
+        )
+    }
+
+    func testInstallAllowsRecordedRootOwnershipWhenTunIsOff() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        try CoreStateStore(paths: paths).save(CoreStatus(
+            state: .running,
+            pid: 4242,
+            ownerTier: .rootService,
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
+        ))
+
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner(),
+            rootDaemonReachability: { true },
+            processOwnershipProbe: { _ in .otherUser }
+        )
+
+        let status = try manager.install(executable: executable)
+
+        XCTAssertTrue(status.isInstalled)
+        XCTAssertEqual(recorder.invocations().count, 2)
+    }
+
+    /// The record is authoritative even when it proves a non-root owner: no
+    /// TUN gate applies, and the probe is not consulted.
+    func testInstallTrustsARecordedNonRootOwnerOverTheProcessProbe() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        try CoreStateStore(paths: paths).save(CoreStatus(
+            state: .running,
+            pid: 4242,
+            ownerTier: .userAgent,
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: true))
+        ))
+
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner(),
+            rootDaemonReachability: { true },
+            processOwnershipProbe: { _ in .otherUser }
+        )
+
+        let status = try manager.install(executable: executable)
+
+        XCTAssertTrue(status.isInstalled)
+        XCTAssertEqual(recorder.invocations().count, 2)
     }
 
     func testInstallAllowsWhenRootOwnershipIsNotProvable() throws {

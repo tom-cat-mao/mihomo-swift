@@ -156,6 +156,34 @@ owner:
 - The existing guard is unchanged: TUN enable without a reachable privileged
   tier fails and rolls the stored setting back.
 
+### Core ownership record
+
+`CoreStatus.ownerTier` records which tier owns the running core
+(`rootService`, `userAgent`, or `localSupervisor`), so ownership transitions
+are observable state instead of an inference from `BackendRouter`
+reachability — which cannot tell a root-owned core from an agent-owned one
+once both tiers are installed. Every successful start stamps the tier that
+launched the core: the local supervisor stamps itself, the root daemon and the
+user agent stamp their own tier through their internal controllers, and
+`transferCoreOwnership` leaves the target tier's record on the core. A
+successful stop (including `shutdownActiveRuntime`) clears the record; a
+failed stop keeps it, because the core is still running. The field is additive
+on the wire: a state written before the record loads with `ownerTier == nil`,
+a nil record is omitted from the JSON, and a tier string from a newer build
+decodes as `.unknown` instead of failing the whole read.
+
+Read paths prefer the record and fall back to routing inference only when it
+is missing or unknown (legacy states): `tierInstallState()` reports the
+recorded owner, so `kumo agent migrate --dry-run` and
+`migrateCoreToUserAgent()` still see a root-owned core after a just-installed
+agent makes routing prefer itself, and the agent install guard consults the
+record before its process probe. The guard only refuses while TUN pins the
+core to Kumo Helper, and names the working remedy: disable TUN, retry the
+install, then run `kumo agent migrate`. With TUN off the install is the first
+step of that recovery; the guard records the root ownership it proved
+(best-effort when the state file is not writable) so the migration reads the
+record instead of the routing decision.
+
 The GUI manages the user agent from Settings → General → Background
 (`KumoUserAgentManager` via `KumoAppStore`) and picks the termination policy on
 quit through `UserPreferences.keepCoreRunningOnQuit`; the CLI exposes the same

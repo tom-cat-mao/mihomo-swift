@@ -29,6 +29,10 @@ final class KumoControllerHandoffTests: XCTestCase {
         let persisted = try stateStore.load()
         XCTAssertTrue(persisted.runtimeSettings?.tun?.isEnabled ?? false)
         XCTAssertEqual(persisted.serviceModeStatus?.isRunning, true)
+        XCTAssertEqual(
+            persisted.ownerTier, .rootService,
+            "the handoff must record the target tier as the owner"
+        )
     }
 
     func testEnablingTunRollsBackToAgentWhenRootStartFails() async throws {
@@ -68,6 +72,10 @@ final class KumoControllerHandoffTests: XCTestCase {
             persisted.runtimeSettings?.tun?.isEnabled ?? true,
             "the TUN setting must be rolled back when the handoff fails"
         )
+        XCTAssertEqual(
+            persisted.ownerTier, .userAgent,
+            "the rollback must restore the source tier's ownership record"
+        )
     }
 
     func testDisablingTunHandsRunningCoreFromRootDaemonBackToAgent() async throws {
@@ -95,6 +103,10 @@ final class KumoControllerHandoffTests: XCTestCase {
         ])
         let persisted = try stateStore.load()
         XCTAssertFalse(persisted.runtimeSettings?.tun?.isEnabled ?? true)
+        XCTAssertEqual(
+            persisted.ownerTier, .userAgent,
+            "the handoff must record the target tier as the owner"
+        )
     }
 
     func testDisablingTunKeepsRootCoreWhenAgentStartFails() async throws {

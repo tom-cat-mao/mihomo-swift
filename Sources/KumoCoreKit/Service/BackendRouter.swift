@@ -23,6 +23,15 @@ enum RuntimeBackend: String, CaseIterable, Sendable {
         case .localSupervisor: "this process"
         }
     }
+
+    /// The ownership-record value for a core this tier successfully starts.
+    var ownerTier: RuntimeOwnerTier {
+        switch self {
+        case .rootService: .rootService
+        case .userAgent: .userAgent
+        case .localSupervisor: .localSupervisor
+        }
+    }
 }
 
 /// Outcome of one routing decision.

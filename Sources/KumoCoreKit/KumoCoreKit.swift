@@ -60,11 +60,13 @@ public struct KumoController: Sendable {
     public init(
         paths: KumoPaths = KumoPaths(),
         useServiceBackend: Bool = true,
+        ownerTier: RuntimeOwnerTier = .localSupervisor,
         systemProxyCommandRunner: SystemProxyCommandRunner = .live
     ) {
         self.init(
             paths: paths,
             useServiceBackend: useServiceBackend,
+            ownerTier: ownerTier,
             systemProxyCommandRunner: systemProxyCommandRunner,
             reachability: nil,
             serviceModeStatusProvider: nil,
@@ -76,6 +78,7 @@ public struct KumoController: Sendable {
     init(
         paths: KumoPaths,
         useServiceBackend: Bool,
+        ownerTier: RuntimeOwnerTier = .localSupervisor,
         systemProxyCommandRunner: SystemProxyCommandRunner,
         reachability: BackendReachability?,
         serviceModeStatusProvider: (@Sendable () -> ServiceModeStatus)?,
@@ -86,7 +89,7 @@ public struct KumoController: Sendable {
         self.profileRepository = ProfileRepository(paths: paths)
         self.profileParseCache = ProfileParseCache(profiles: ProfileRepository(paths: paths))
         self.overrideRepository = OverrideRepository(paths: paths)
-        self.supervisor = CoreSupervisor(paths: paths)
+        self.supervisor = CoreSupervisor(paths: paths, ownerTier: ownerTier)
         self.stateStore = CoreStateStore(paths: paths)
         self.systemProxyController = SystemProxyController(paths: paths, commandRunner: systemProxyCommandRunner)
         self.coreInstaller = CoreInstaller(paths: paths)
@@ -172,20 +175,7 @@ public struct KumoController: Sendable {
     @discardableResult
     public func start(corePath: String? = nil) throws -> CoreStatus {
         if corePath == nil {
-            switch try requiredCoreBackend() {
-            case .rootService:
-                guard let client = rootServiceClient() else {
-                    throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
-                }
-                return try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
-            case .userAgent:
-                guard let client = userAgentClient() else {
-                    throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
-                }
-                return try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
-            case .localSupervisor:
-                return try startLocalCore(corePath: nil)
-            }
+            return try performTierStart(try requiredCoreBackend())
         }
         return try startLocalCore(corePath: corePath)
     }
@@ -212,20 +202,7 @@ public struct KumoController: Sendable {
 
     @discardableResult
     public func stop() throws -> CoreStatus {
-        switch try requiredCoreBackend() {
-        case .rootService:
-            guard let client = rootServiceClient() else {
-                throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
-            }
-            return try client.sendDecodable(client.stopCoreRequest(), as: CoreStatus.self)
-        case .userAgent:
-            guard let client = userAgentClient() else {
-                throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
-            }
-            return try client.sendDecodable(client.stopCoreRequest(), as: CoreStatus.self)
-        case .localSupervisor:
-            return try supervisor.stop()
-        }
+        try performTierStop(try requiredCoreBackend())
     }
 
     /// Best-effort shutdown of whichever runtime is active (routed through the
@@ -278,6 +255,14 @@ public struct KumoController: Sendable {
         }
 
         latestStatus = (try? status()) ?? latestStatus
+        if latestStatus.state == .stopped {
+            // A successful stop ends ownership. The stopping tier clears the
+            // record in its own write; this best-effort clear also covers a
+            // tier that predates ownership recording, so a stale record can
+            // never outlive the core it described.
+            latestStatus.ownerTier = nil
+            recordCoreOwnership(nil)
+        }
         return ShutdownResult(status: latestStatus, diagnostics: diagnostics)
     }
 
