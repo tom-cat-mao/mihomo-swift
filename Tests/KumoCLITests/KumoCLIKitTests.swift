@@ -120,6 +120,58 @@ final class KumoCLIKitTests: XCTestCase {
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["agent", "status", "--json"]))
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["agent", "install", "--dry-run", "--json"]))
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["agent", "uninstall", "--dry-run"]))
+        XCTAssertNoThrow(try KumoCommand.parseAsRoot(["agent", "migrate"]))
+        XCTAssertNoThrow(try KumoCommand.parseAsRoot(["agent", "migrate", "--dry-run", "--json"]))
+    }
+
+    func testAgentMigrateCarriesDryRunFlag() throws {
+        let command = try KumoCommand.parseAsRoot(["agent", "migrate", "--dry-run", "--json"])
+        let migrate = try XCTUnwrap(command as? KumoCommand.Agent.Migrate)
+        XCTAssertTrue(migrate.dryRun)
+        XCTAssertTrue(migrate.options.json)
+    }
+
+    func testMigrationPayloadsEncodeStableKeys() throws {
+        let status = ServiceModeStatus(
+            isInstalled: true,
+            isRunning: true,
+            isAvailable: true,
+            isCurrentProcessPrivileged: false,
+            socketPath: "/tmp/kumo-agent.sock",
+            message: nil
+        )
+        let tier = TierInstallState(
+            installState: .dual,
+            coreOwner: .rootService,
+            tunEnabled: false,
+            rootService: status,
+            userAgent: status
+        )
+        let plan = CoreMigrationPlan(
+            action: .handoff,
+            tier: tier,
+            coreRunning: true,
+            blockers: [],
+            reason: nil
+        )
+
+        let planData = try JSONEncoder().encode(plan)
+        let planObject = try XCTUnwrap(JSONSerialization.jsonObject(with: planData) as? [String: Any])
+        XCTAssertEqual(planObject["action"] as? String, "handoff")
+        XCTAssertEqual(planObject["coreRunning"] as? Bool, true)
+        let tierObject = try XCTUnwrap(planObject["tier"] as? [String: Any])
+        XCTAssertEqual(tierObject["installState"] as? String, "dual")
+        XCTAssertEqual(tierObject["coreOwner"] as? String, "rootService")
+        XCTAssertNotNil(tierObject["rootService"] as? [String: Any])
+        XCTAssertNotNil(tierObject["userAgent"] as? [String: Any])
+
+        let result = CoreMigrationResult(migrated: true, plan: plan, coreState: .running, corePID: 4242)
+        let resultData = try JSONEncoder().encode(result)
+        let resultObject = try XCTUnwrap(JSONSerialization.jsonObject(with: resultData) as? [String: Any])
+        XCTAssertEqual(resultObject["migrated"] as? Bool, true)
+        XCTAssertEqual(resultObject["coreState"] as? String, "running")
+        XCTAssertEqual(resultObject["corePID"] as? Int, 4242)
+        XCTAssertNotNil(resultObject["plan"] as? [String: Any])
     }
 
     func testNewCommandsRejectMissingOrConflictingArguments() {
@@ -209,6 +261,8 @@ final class KumoCLIKitTests: XCTestCase {
         XCTAssertTrue(HelpText.topic(["logs"]).contains("--follow"))
         XCTAssertTrue(HelpText.topic(["traffic"]).contains("--watch"))
         XCTAssertTrue(HelpText.topic(["agent"]).contains("io.kumo.KumoAgent"))
+        XCTAssertTrue(HelpText.topic(["agent"]).contains("kumo agent migrate [--dry-run] [--json]"))
+        XCTAssertTrue(HelpText.long.contains("kumo agent migrate [--dry-run] [--json]"))
 
         for command in ["rules", "test", "traffic", "dns", "sniffer", "agent"] {
             XCTAssertTrue(CompletionScripts.commandNames.contains(command))

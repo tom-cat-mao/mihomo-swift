@@ -151,6 +151,27 @@ asks for `.keepCoreAlive` instead: the proxy state and the agent- or
 daemon-owned core are deliberately left running so traffic continues without the
 GUI.
 
+## Runtime Tier Migration
+
+The two-tier runtime can hand a running core from the privileged
+`io.kumo.KumoService` LaunchDaemon to the unprivileged `io.kumo.KumoAgent`
+LaunchAgent so the core keeps serving without the privileged daemon owning it.
+
+- Migration refuses while TUN is enabled: TUN requires a root-owned core, so
+  disable TUN first (`kumo tun disable`). It also refuses until the agent is
+  installed; the caller installs it (`kumo agent install`) and retries. Both
+  refusals name the reason.
+- When the root daemon owns a running core, the core is stopped there and
+  started by the agent, with the root daemon restored if the agent start fails.
+  With no running core — or when the agent already owns it — migration is a
+  no-op that only reports state.
+- `kumo agent migrate [--dry-run] [--json]` exposes this; `--dry-run` reports
+  the installed tiers, the router's current core owner, and any guard refusals
+  without touching launchd, sockets, or the core.
+- The pre-update core stop stays tier-aware: the app calls
+  `KumoController.stop()`, which routes to whichever tier owns the core, so an
+  agent-owned core is stopped before the bundle is replaced.
+
 ## Permissions
 
 Kumo now has the model and command surface for service mode, including signed

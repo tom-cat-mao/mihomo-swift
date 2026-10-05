@@ -45,6 +45,8 @@
 - `userPreferences()` / `updateUserPreferences(_:)`
 - `installCLILink()` / `uninstallCLILink()`
 - `prepareForAppTermination(policy:)` — best-effort shutdown entry point (see below)
+- `tierInstallState()` — installed tiers + current core owner (see below)
+- `coreMigrationPlan()` / `migrateCoreToUserAgent()` — tier migration (see below)
 
 This API is intentionally close to the CLI command vocabulary and the future service API.
 
@@ -78,8 +80,37 @@ signatures stay stable; routing is not part of the public API.
 The GUI installs and manages the user agent from Settings → General →
 Background and adopts `prepareForAppTermination(policy:)` on quit through
 `UserPreferences.keepCoreRunningOnQuit`; the CLI exposes the same
-`KumoUserAgentManager` through `kumo agent status|install|uninstall`. This
-layer provides the routing rule, the handoff, and the termination policy API.
+`KumoUserAgentManager` through `kumo agent status|install|uninstall|migrate`.
+This layer provides the routing rule, the handoff, the migration API, and the
+termination policy API.
+
+## Tier Detection and Migration
+
+`tierInstallState()` reports `none | rootOnly | userOnly | dual` from the two
+managers' status plus the tier the router currently selects for the core
+(`rootService | userAgent | localSupervisor | unavailable`) and the TUN state
+driving that selection. It performs no core-lifecycle call and is safe for
+periodic UI refresh.
+
+`migrateCoreToUserAgent()` moves a running, root-owned core to the user agent
+so it can keep serving without the privileged daemon owning it:
+
+- Refuses while TUN is enabled — the core must stay root-owned while TUN is
+  active — and refuses until the agent is installed; both errors name the
+  reason and the caller installs the agent first.
+- When the router selects the root daemon for a running core, the handoff goes
+  through `transferCoreOwnership(from: .rootService, to: .userAgent)`; a failed
+  agent start restores the root-owned core and reports every rollback outcome.
+- With no running core, or when the agent already owns it, the call is a no-op
+  success that only reports the tier state, so it is idempotent.
+- `coreMigrationPlan()` is the non-mutating assessment behind
+  `kumo agent migrate --dry-run`: guard refusals are collected in
+  `blockers` instead of thrown.
+
+The pre-update core stop in the app already routes through the tier-aware
+`stop()` (`KumoAppStore.stopCore` → `CoreRuntimeRunner.stop` →
+`KumoController.stop`), so an agent-owned core is stopped on the agent before
+the bundle is replaced.
 
 ## App Termination Policy
 

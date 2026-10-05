@@ -94,6 +94,7 @@ enum HelpText {
                     kumo agent status [--json]
                     kumo agent install [--dry-run] [--json]
                     kumo agent uninstall [--dry-run] [--json]
+                    kumo agent migrate [--dry-run] [--json]
 
                     Run "kumo help agent" for more info
 
@@ -299,10 +300,17 @@ enum HelpText {
             kumo agent status [--json]
             kumo agent install [--dry-run] [--json]
             kumo agent uninstall [--dry-run] [--json]
+            kumo agent migrate [--dry-run] [--json]
 
             The user agent (io.kumo.KumoAgent) owns the Mihomo core so it keeps
             running when the Kumo app quits. It starts on demand and exits after
             an idle timeout. `agent status` uses the same shape as `service status`.
+
+            `agent migrate` hands a running root-owned core to the user agent so
+            the privileged daemon no longer owns it. It refuses while TUN is
+            enabled (the core must stay root-owned) and until the agent is
+            installed. --dry-run reports the installed tiers, the current core
+            owner, and the planned handoff without stopping or starting anything.
             """
         case "skills", "skills install":
             return """

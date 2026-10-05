@@ -48,6 +48,7 @@ kumo service status --json
 kumo service install
 kumo agent status --json
 kumo agent install --dry-run --json
+kumo agent migrate --dry-run --json
 kumo tun enable --json
 kumo substore status --json
 kumo skills status --json
@@ -247,12 +248,22 @@ again after an idle timeout.
 kumo agent status [--json]
 kumo agent install [--dry-run] [--json]
 kumo agent uninstall [--dry-run] [--json]
+kumo agent migrate [--dry-run] [--json]
 ```
 
 `kumo agent status` uses the same text and JSON shape as
 `kumo service status` (`ServiceModeStatus`). `--dry-run` prints the planned
 plist/socket paths and current state without touching launchd, the
 LaunchAgents plist, or the socket.
+
+`kumo agent migrate` hands a running, root-owned core to the user agent. It
+refuses while TUN is enabled (the core must stay root-owned) and until the
+agent is installed, with the refusal reason in the error envelope. With no
+running core, or when the agent already owns it, it is a no-op success, so
+re-running it is safe. `--dry-run` prints the installed tiers
+(`none|rootOnly|userOnly|dual`), the router's current core owner
+(`rootService|userAgent|localSupervisor|unavailable`), the TUN state, and any
+guard refusals without stopping or starting anything.
 
 ## App Intents (GUI surface)
 
@@ -291,6 +302,9 @@ command names and JSON schemas compatible:
   tier through `KumoUserAgentManager`; it uses a generated plist in
   `~/Library/LaunchAgents` for source-tree runs and `SMAppService.agent` in
   bundled builds.
+- `kumo agent migrate` routes through `KumoController.migrateCoreToUserAgent()`
+  (guards + `transferCoreOwnership`), so the CLI and the GUI share the same
+  tier handoff behavior.
 - `kumo substore status|prepare|start|stop|restart` manages bundled Sub-Store
   resources and the same local lifecycle used by the SwiftUI app.
 

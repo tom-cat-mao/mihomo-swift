@@ -52,6 +52,42 @@ final class KumoControllerTierSocketTests: XCTestCase {
         XCTAssertEqual(agent.receivedPaths(), ["/core/start"])
     }
 
+    func testStopRoutesToUserAgentWhenTunIsOff() throws {
+        // The app-update path (KumoAppStore.stopCore -> CoreRuntimeRunner.stop)
+        // must stop a TUN-off core through the owning socket tier; this pins
+        // that `KumoController.stop()` never falls back to a local supervisor
+        // call that would miss an agent-owned core.
+        let paths = hermeticPaths()
+        _ = try KumoServiceManager(paths: paths).ensureCredentials()
+        try CoreStateStore(paths: paths).save(CoreStatus(
+            state: .running,
+            pid: 999,
+            runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
+        ))
+
+        let agent = try FakeServiceSocket(socketPath: paths.userAgentSocketFile.path) { _ in
+            KumoServiceTransportResponse(
+                status: 200,
+                body: try JSONEncoder().encode(CoreStatus(state: .stopped))
+            )
+        }
+        defer { agent.stop() }
+        let root = try FakeServiceSocket(socketPath: paths.serviceSocketFile.path) { _ in
+            KumoServiceTransportResponse(
+                status: 200,
+                body: try JSONEncoder().encode(CoreStatus(state: .running, pid: 999))
+            )
+        }
+        defer { root.stop() }
+        let controller = makeController(paths: paths, rootReachable: true, agentReachable: true)
+
+        let status = try controller.stop()
+
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertEqual(agent.receivedPaths(), ["/core/stop"])
+        XCTAssertTrue(root.receivedPaths().isEmpty, "a TUN-off stop must not consult the root daemon")
+    }
+
     func testTunOnRoutesStopToRootDaemonAndNotTheAgent() throws {
         let paths = hermeticPaths()
         _ = try KumoServiceManager(paths: paths).ensureCredentials()
