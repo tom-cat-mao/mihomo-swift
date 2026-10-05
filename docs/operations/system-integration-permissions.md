@@ -81,10 +81,10 @@ current `Kumo.app`.
 ## LaunchAgent (Open at Login)
 
 `KumoAppDelegate` keeps `SMAppService.mainApp` in sync with
-`UserPreferences.launchAtLogin` whenever the app launches. The Settings
-"Preferences" tab toggles the same preference and registers/unregisters
-through `SMAppService`. Registration only succeeds when `Kumo.app` lives in
-`/Applications` (macOS launch services requirement).
+`UserPreferences.launchAtLogin` whenever the app launches. The **Open at
+Login** toggle in Settings → General toggles the same preference and
+registers/unregisters through `SMAppService`. Registration only succeeds when
+`Kumo.app` lives in `/Applications` (macOS launch services requirement).
 
 ## Bundled User Agent (kumod)
 

@@ -43,7 +43,7 @@ make release-dmg-amd64 VERSION=0.0.10  # amd64
 git tag -a "0.0.10" -m "Kumo 0.0.10"
 git push origin "0.0.10"
 
-gh release create "0.0.10" --title "Kumo 0.0.10" --notes "..." \
+gh release create "0.0.10" --title "Kumo 0.0.10" --notes-file /tmp/release-notes.md \
   build/release/Kumo-macos-0.0.10-arm64.dmg \
   build/release/Kumo-macos-0.0.10-amd64.dmg
 
@@ -88,22 +88,32 @@ curl -sI "https://github.com/tom-cat-mao/mihomo-swift/releases/latest/download/l
 ```
 Sources/
   KumoCoreKit/   Shared domain, runtime, controller, system integration
-  KumoCLI/       Command-line frontend
+  KumoCLIKit/    Shared CLI command implementations, help, output, and logging
+  KumoCLI/       Command-line frontend executable
   KumoApp/       SwiftUI macOS frontend
+  KumoService/   Privileged daemon and user-agent helper binary
 Tests/
   KumoCoreTests/ Unit tests for the shared control layer
+  KumoCLITests/  CLI parsing, JSON envelope, and rendering tests
 ```
 
 ## Common Commands
 
 ```bash
+make generate         # Regenerate Kumo.xcodeproj (required before make test)
 make app              # Debug build
 make dev              # Quit, clean debug, build, and open
-make test             # Run unit tests
+make test             # Run unit tests via xcodebuild
 make clean            # Remove all build artifacts
 make release-dmg VERSION=x.y.z          # arm64 release
 make release-dmg-amd64 VERSION=x.y.z    # amd64 release
 ```
+
+`make test` runs `xcodebuild -scheme Kumo-Package`, which needs the generated
+`Kumo.xcodeproj`; run `make generate` (XcodeGen) first. On a Command Line
+Tools-only machine (no Xcode), build through the CLT gate with
+`KUMO_CLT_BUILD=1 swift build`. CLT installs do not ship `XCTest.framework`,
+so `swift test` cannot run there.
 
 ## Decision Records
 

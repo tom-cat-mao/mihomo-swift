@@ -10,6 +10,7 @@ Kumo is a native macOS client for Mihomo. The first version focuses on a calm da
 - [Operations](operations/README.md) — app bundle integration, permissions, persistence, logging, and release management.
 - [Quality](quality/README.md) — testing strategy, verification commands, and manual QA checklist.
 - [Roadmap](roadmap/README.md) — service-mode direction and Sparkle parity tracking.
+- [Decisions](decisions/) — accepted architecture decision records (ADR-001 through ADR-005).
 - [Implementation Standards](standards/README.md) — focused implementation standards that cut across domains.
 
 ## Current Source Layout

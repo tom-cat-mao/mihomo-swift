@@ -286,7 +286,7 @@ public places without review.
 
 ## Overrides
 
-Overrides are planned under:
+`OverrideRepository` stores overrides under:
 
 ```text
 overrides/
@@ -294,10 +294,13 @@ overrides/
   files/
     <id>.yaml
     <id>.js
-    <id>.log
 ```
 
-YAML overrides are applied before Kumo-controlled runtime settings. JavaScript overrides require a reviewed sandbox before they are enabled.
+`overrides.json` holds item metadata (name, kind, format, global/profile
+scope, remote URL, fingerprint) and `files/` holds each override body. YAML
+overrides are applied before Kumo-controlled runtime settings. JavaScript
+overrides can be stored and edited, but they are not applied until a reviewed
+sandbox exists.
 
 ## Future Work
 

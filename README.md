@@ -81,11 +81,11 @@ is documented in [docs/interfaces/macos-swiftui-interface.md](docs/interfaces/ma
 git clone https://github.com/tom-cat-mao/mihomo-swift.git
 cd mihomo-swift
 
-# Build app, CLI, library, and tests
+# Build the Swift package (library and CLI)
 make swift-build
 
-# Launch the SwiftUI app
-make run-app
+# Build the app bundle, then open it
+make dev
 
 # Or run the CLI
 make run-cli ARGS="status --json"
@@ -219,7 +219,8 @@ live in [AGENTS.md](AGENTS.md).
 make help                   # List every available target
 make swift-build            # swift build (debug)
 make build-release          # swift build -c release
-make run-app                # Launch the SwiftUI app
+make app                    # Build the debug .app bundle
+make dev                    # Quit, clean, build, and open the app bundle
 make run-cli ARGS="..."     # Run the CLI with arbitrary arguments
 make cli-status             # kumo status --json
 make cli-sysproxy-dry-run   # kumo sysproxy on --dry-run --json
@@ -269,22 +270,17 @@ make xcode-test
 ## Roadmap
 
 Service mode ships as a privileged helper plus a user-level agent tier; the
-broader plan is tracked in
-[docs/roadmap/service-mode-roadmap.md](docs/roadmap/service-mode-roadmap.md):
+staged plans live in [docs/roadmap/](docs/roadmap/README.md). Remaining work:
 
-- Runtime settings parity for ports, LAN access, log level, controller secret,
-  and Geo data.
-- Provider and rules management for refresh actions and rule hit details.
-- Ordered YAML overrides, followed by a reviewed JavaScript transform sandbox.
-- Sub-Store lifecycle, update flow, custom backend support, and WebView or
-  external browser access.
 - Service-mode hardening: notarized helper distribution, automatic repair,
   and proxy-guard events.
-- Core lifecycle event streams (`GET /core/events`); log and traffic streams
-  already ship.
-- Structural YAML merge for profile and runtime config.
-- Network service detection for system proxy.
-- JSON schemas for automation consumers.
+- A reviewed JavaScript transform sandbox for overrides.
+- Core lifecycle event streams (`GET /core/events`); recent logs and live
+  log/traffic streams already ship.
+- Provider initialization progress, service-side log streaming, and
+  helper-hosted PAC hosting.
+- JSON schemas for automation consumers and root-daemon route parity for
+  GUI-closed agent control.
 
 ## Contributing
 

@@ -183,14 +183,27 @@ or mutate a memoized entry.
 
 ## Sparkle-Parity Growth Areas
 
-The next alignment pass expands the facade in these areas:
+Shipped: runtime settings (ports, LAN, log level, controller secret, IPv6, Geo
+data), provider listing/update plus Geo upgrade, rule metadata and
+enable/disable, structured recent logs and a live log stream, ordered YAML
+overrides, and the Sub-Store lifecycle with custom backend support. DNS,
+Sniffer, and TUN changes restart the core per
+[ADR-004](../decisions/ADR-004-restart-vs-patch-for-dns-sniffer.md); simple
+scalar runtime settings still PATCH `/configs`.
 
-- Runtime settings: controlled ports, LAN, log level, controller secret, IPv6, and Geo data settings.
-- Providers: proxy provider and rule provider listing, refresh, and safe content preview.
-- Rules: richer rule metadata and rule enable/disable operations.
-- Logs: structured recent logs plus a live log event stream.
-- Overrides: ordered YAML overrides first, followed by reviewed JavaScript transform support.
-- Sub-Store: local service lifecycle and optional custom backend support.
+Still open:
+
+- Provider initialization progress reporting.
+- Reviewed JavaScript override transforms (sandbox design first).
+- Service-side log streaming and helper-hosted PAC hosting; PAC hosting runs in
+  the app process today.
+- Root-daemon route parity: the daemon's signed-socket surface stays scoped to
+  privileged routes (service/core/sysproxy/TUN), and the rest of the write
+  surface plus agent management run in-process until a daemon-brokered
+  equivalent lands.
+- Routing App Intents through service endpoints so they keep working while the
+  GUI is closed.
+- JSON schemas for automation consumers.
 
 ## Service Compatibility
 

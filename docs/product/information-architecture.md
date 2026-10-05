@@ -29,10 +29,11 @@ The following features belong in `Configure` or `Settings`:
 - Sniffer configuration
 - Service mode setup
 - Background Agent setup (user-level agent that keeps the core running after quit)
+- Agent Skills installation (bundled `kumo-cli` skill for supported coding agents)
 - Core path overrides
 - External resources and provider management
 - Ordered YAML overrides and future JavaScript transforms
-- Future Sub-Store integration
+- Sub-Store management (subscriptions, collections, files, modules, artifacts, archives, tokens, settings, and logs)
 
 Inspect-only features such as connection tables, full logs, and rules live in `Inspect`, because they answer what the core is doing rather than how it should be configured.
 
@@ -40,7 +41,9 @@ Settings is reserved for app-level preferences such as launch, window, quit
 behavior, background-agent setup, language, and update choices. Runtime status
 summaries belong in `Daily` surfaces and the menu bar status item, not in the
 Settings window; setup rows may show the install state needed to drive their own
-actions (Command Line Tool, Background Agent).
+actions (Command Line Tool, Background Agent). First-run onboarding walks
+through the optional Command Line Tool and Agent Skill installs, and
+Settings → General keeps a `Run Setup Again` entry point.
 
 ## Empty and Error States
 

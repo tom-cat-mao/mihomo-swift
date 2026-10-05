@@ -283,11 +283,13 @@ identical to triggering the same flow from the GUI. They require the
 
 ## Shared Control Layer
 
-The CLI must not bypass `KumoCoreKit`. When `KumoService` is installed and
-reachable, the same commands switch to service-backed calls while keeping
-command names and JSON schemas compatible:
+The CLI must not bypass `KumoCoreKit`. Commands run against whichever tier
+`BackendRouter` selects — the user agent whenever TUN is off and the agent is
+reachable, the root daemon for TUN and privileged operations — while keeping
+command names and JSON schemas compatible whether the GUI is open or closed:
 
-- `kumo start|stop|restart` delegates Mihomo lifecycle to the helper.
+- `kumo start|stop|restart` delegates Mihomo lifecycle to the owning tier
+  (user agent or root daemon).
 - `kumo start` waits for the controller endpoint to answer `GET /version` after
   the core is spawned, matching the app and the daemon. When the controller
   never becomes ready the command fails with the underlying reason and the

@@ -159,7 +159,8 @@ owner:
 The GUI manages the user agent from Settings → General → Background
 (`KumoUserAgentManager` via `KumoAppStore`) and picks the termination policy on
 quit through `UserPreferences.keepCoreRunningOnQuit`; the CLI exposes the same
-manager through `kumo agent status|install|uninstall`.
+manager through `kumo agent status|install|uninstall|migrate`, where
+`kumo agent migrate` performs the root-to-agent ownership handoff.
 
 The old shutdown path is now expressed through
 `prepareForAppTermination(policy:)`, which never throws and collects failures

@@ -224,7 +224,7 @@ Validation runs on Apply, not on every keystroke.
 | `Networking/MihomoControllerClient.swift` | Parsing `dns` and `hosts` from controller responses |
 | `KumoCoreKit.swift` | `dnsPatch(for:)`, `snifferPatch(for:)`, `normalizedDnsSettings()`, `normalizedSnifferSettings()` |
 | `Support/DNSValidator.swift` | Validation helpers for DNS fields |
-| `Views/ConfigureViews.swift` | `DNSView`, `SnifferView`, and shared UI components |
+| `Views/ConfigureViews/` | `DNSView.swift`, `SnifferView.swift`, and shared UI components |
 | `Stores/KumoAppStore.swift` | `applyDnsSettings()`, `applySnifferSettings()`, `setDnsEnabled()`, `setSnifferEnabled()` |
 
 ## Future Work

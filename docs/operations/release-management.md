@@ -262,9 +262,12 @@ test -x "build/Build/Products/Release/Kumo.app/Contents/MacOS/KumoService"
 ```
 
 launchd requires absolute paths, so the rendered plist embeds the build
-machine's home directory and the built bundle path. On end-user machines those
-paths do not exist; the app installs the agent through the runtime-generated
-`~/Library/LaunchAgents` plist instead. See
+machine's home directory and the built bundle path. At install time the app
+validates the bundled plist against the current machine (the configured helper
+must exist and be executable, and the `--app-support` path must match this
+user); when it does not match — the app was built or installed elsewhere —
+registration falls back to a generated per-user `~/Library/LaunchAgents`
+plist plus `launchctl bootstrap`. See
 [System Integration and Permissions](system-integration-permissions.md) for the
 registration flow.
 

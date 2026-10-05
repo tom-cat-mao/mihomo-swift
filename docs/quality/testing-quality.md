@@ -43,6 +43,10 @@ On a Command Line Tools-only machine (no Xcode) build through the CLT gate:
 `KUMO_CLT_BUILD=1 swift build`. XCTest is CI-only — CLT installs do not ship
 `XCTest.framework`, so `swift test` cannot run locally there.
 
+`make test` wraps `xcodebuild -scheme Kumo-Package` and requires the generated
+`Kumo.xcodeproj`, so run `make generate` first; `make swift-test` is the
+SwiftPM path.
+
 ### L1 — Dev instance on this host
 
 `Scripts/dev/agent-instance.sh` manages a fully isolated instance of the
