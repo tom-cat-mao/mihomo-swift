@@ -106,16 +106,18 @@ owns `kumo-agent.sock` with mode `0600` and starts the agent on the first
 client connection. `RunAtLoad` and `KeepAlive` stay false, so the agent is not
 resident at login and exits again after its idle timeout.
 
-`KumoUserAgentManager.install()` prefers `SMAppService.agent` when the app runs
-from a bundle and falls back to writing the generated plist to
-`~/Library/LaunchAgents` plus `launchctl bootstrap` when ServiceManagement
-declines. Registration follows the same `/Applications` rule as
-`SMAppService.mainApp`, and the bundled plist is rendered with the build
-machine's home directory and the built bundle path. A `Kumo.app` installed
-elsewhere therefore cannot use the bundled plist as-is; it installs the agent
-through the launchctl fallback, which resolves the current machine's paths at
-install time. Rendering the bundled plist per user at install time (instead of
-build time) is follow-up work in `Sources/`.
+`KumoUserAgentManager.install()` only uses `SMAppService.agent` when the
+bundled plist is valid for the current machine. Because the plist is rendered
+at build time with the build machine's absolute paths, `install()` parses it
+first and requires `ProgramArguments[0]` to exist and be executable and the
+`--app-support` value to equal the current user's app-support directory. When
+either check fails — the app was built or installed elsewhere — registration
+is skipped entirely and the generated plist is written to
+`~/Library/LaunchAgents` plus `launchctl bootstrap`, which resolves the
+current machine's paths at install time. Registration follows the same
+`/Applications` rule as `SMAppService.mainApp`. Rendering the bundled plist
+per user at install time (instead of build time) remains follow-up work in
+`Sources/`.
 
 The rendered plist and the helper are in place before Xcode signs the bundle,
 so both stay covered by the app's code signature; the helper is copied and

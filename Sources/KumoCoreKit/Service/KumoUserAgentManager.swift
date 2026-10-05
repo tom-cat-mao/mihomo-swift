@@ -26,13 +26,37 @@ public struct KumoUserAgentManager: Sendable {
     /// Idle window the generated plist passes to `service run --idle-timeout`.
     public let idleTimeoutSeconds: Int
     private let paths: KumoPaths
+    /// Bundle whose embedded LaunchAgent decides the install path. `nil`
+    /// means `Bundle.main`.
+    private let bundleURL: URL?
+    /// launchctl execution seam for tests. `nil` runs `/bin/launchctl`.
+    private let launchctlRunner: (@Sendable ([String]) throws -> String)?
 
     public init(
         paths: KumoPaths = KumoPaths(),
         idleTimeoutSeconds: Int = ServiceIdlePolicy.defaultTimeoutSeconds
     ) {
+        self.init(
+            paths: paths,
+            idleTimeoutSeconds: idleTimeoutSeconds,
+            bundleURL: nil,
+            launchctlRunner: nil
+        )
+    }
+
+    /// Test seam: injects the app bundle and the launchctl runner so the
+    /// bundled-plist decision and the generated-plist fallback can be
+    /// exercised without the real bundle or a real launchd domain.
+    init(
+        paths: KumoPaths,
+        idleTimeoutSeconds: Int = ServiceIdlePolicy.defaultTimeoutSeconds,
+        bundleURL: URL?,
+        launchctlRunner: (@Sendable ([String]) throws -> String)? = nil
+    ) {
         self.paths = paths
         self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.bundleURL = bundleURL
+        self.launchctlRunner = launchctlRunner
     }
 
     /// Effective launchd label, honored by plist generation and launchctl.
@@ -62,8 +86,11 @@ public struct KumoUserAgentManager: Sendable {
 
     /// Installs (or repairs) the user agent, reusing the shared credentials
     /// file the root tier uses. Inside a bundled app the agent is registered
-    /// through `SMAppService.agent`; otherwise — source-tree and dev runs —
-    /// a generated plist is bootstrapped into the caller's `gui` domain.
+    /// through `SMAppService.agent`, but only when the bundled plist's
+    /// absolute paths are valid for this machine. Otherwise — the bundle was
+    /// built or moved on another machine — a generated plist with
+    /// machine-correct paths is bootstrapped into the caller's `gui` domain,
+    /// as it always is for source-tree and dev runs.
     @discardableResult
     public func install() throws -> ServiceModeStatus {
         try install(executable: nil)
@@ -74,7 +101,9 @@ public struct KumoUserAgentManager: Sendable {
         _ = try ensureCredentials()
         try paths.prepare()
 
-        if isBundledApp, registerBundledAgentIfPossible() {
+        if isBundledApp,
+           Self.bundledPlistIsValidForCurrentMachine(bundleURL: resolvedBundleURL, paths: paths),
+           registerBundledAgentIfPossible() {
             return status()
         }
 
@@ -197,6 +226,38 @@ public struct KumoUserAgentManager: Sendable {
         // way the idle timeout bounds how long that run stays resident.
     }
 
+    /// True when the bundled agent plist can serve this machine, so
+    /// `install()` may use `SMAppService.agent`. Otherwise the generated
+    /// plist fallback writes machine-correct paths.
+    ///
+    /// The plist at `Contents/Library/LaunchAgents` is rendered at build time
+    /// with absolute paths, and `SMAppService` registration does not verify
+    /// them. A `Kumo.app` built or moved on another machine would otherwise
+    /// register a job whose helper or `--app-support` path belongs to
+    /// someone else — and registration would succeed, so the fallback would
+    /// never run. The check therefore requires the recorded executable to
+    /// exist and be executable, and the `--app-support` value to be the
+    /// current user's app-support directory.
+    static func bundledPlistIsValidForCurrentMachine(bundleURL: URL, paths: KumoPaths) -> Bool {
+        let plistURL = bundleURL
+            .appendingPathComponent("Contents/Library/LaunchAgents", isDirectory: true)
+            .appendingPathComponent("\(paths.userAgentLabel).plist")
+        guard let data = try? Data(contentsOf: plistURL),
+              let object = try? PropertyListSerialization.propertyList(
+                  from: data, options: [], format: nil
+              ) as? [String: Any],
+              let arguments = object["ProgramArguments"] as? [String],
+              let executablePath = arguments.first,
+              FileManager.default.isExecutableFile(atPath: executablePath),
+              let appSupportIndex = arguments.firstIndex(of: "--app-support"),
+              arguments.indices.contains(arguments.index(after: appSupportIndex))
+        else {
+            return false
+        }
+        return arguments[arguments.index(after: appSupportIndex)]
+            == paths.applicationSupportDirectory.path
+    }
+
     /// Returns true when the registered agent service was enabled. A missing
     /// embedded plist (packaging not final yet) or a ServiceManagement refusal
     /// falls through to the launchctl fallback.
@@ -218,8 +279,12 @@ public struct KumoUserAgentManager: Sendable {
         return SMAppService.agent(plistName: launchAgentPlistName).status == .enabled
     }
 
+    private var resolvedBundleURL: URL {
+        bundleURL ?? Bundle.main.bundleURL
+    }
+
     private var isBundledApp: Bool {
-        Bundle.main.bundleURL.pathExtension == "app"
+        resolvedBundleURL.pathExtension == "app"
     }
 
     private var launchdDomain: String {
@@ -255,6 +320,9 @@ public struct KumoUserAgentManager: Sendable {
 
     @discardableResult
     private func runLaunchctl(_ arguments: [String]) throws -> String {
+        if let launchctlRunner {
+            return try launchctlRunner(arguments)
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = arguments

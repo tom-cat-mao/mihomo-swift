@@ -299,6 +299,155 @@ final class KumoUserAgentTests: XCTestCase {
         XCTAssertFalse(plist.contains("--mode"))
     }
 
+    // MARK: - Bundled agent plist validation and install decision
+
+    func testBundledLaunchAgentTemplateMatchesGeneratedPlistShape() throws {
+        let appSupport = URL(fileURLWithPath: "/tmp/kumo-template-sync/app-support", isDirectory: true)
+        let paths = KumoPaths(
+            applicationSupportDirectory: appSupport,
+            launchAgentsDirectory: URL(fileURLWithPath: "/tmp/kumo-template-sync/LaunchAgents", isDirectory: true),
+            environment: [:]
+        )
+        let helperPath = "/Applications/Kumo.app/Contents/MacOS/KumoService"
+        let templateURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // KumoCoreTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // repository root
+            .appendingPathComponent("Resources/KumoApp/LaunchAgents/io.kumo.KumoAgent.plist")
+
+        let rendered = try String(contentsOf: templateURL, encoding: .utf8)
+            .replacingOccurrences(of: "__KUMO_HELPER_PATH__", with: helperPath)
+            .replacingOccurrences(of: "__KUMO_APP_SUPPORT_DIR__", with: appSupport.path)
+            .replacingOccurrences(
+                of: "__KUMO_AGENT_SOCKET_PATH__",
+                with: appSupport.appendingPathComponent("kumo-agent.sock").path
+            )
+            .replacingOccurrences(
+                of: "__KUMO_AGENT_LOG_PATH__",
+                with: appSupport.appendingPathComponent("logs/agent.log").path
+            )
+            .replacingOccurrences(of: "__KUMO_IDLE_TIMEOUT__", with: "300")
+
+        let generated = KumoUserAgentManager.launchAgentPlist(
+            executable: URL(fileURLWithPath: helperPath),
+            paths: paths
+        )
+
+        XCTAssertTrue(
+            NSDictionary(dictionary: try plistObject(rendered))
+                .isEqual(to: try plistObject(generated))
+        )
+    }
+
+    func testBundledPlistValidationAcceptsCurrentMachinePaths() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let bundleURL = try makeBundledAgentFixture(in: root, programArguments: agentProgramArguments(
+            executable: executable.path,
+            appSupport: paths.applicationSupportDirectory.path
+        ))
+
+        XCTAssertTrue(
+            KumoUserAgentManager.bundledPlistIsValidForCurrentMachine(bundleURL: bundleURL, paths: paths)
+        )
+    }
+
+    func testBundledPlistValidationRejectsForeignAppSupportPath() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let bundleURL = try makeBundledAgentFixture(in: root, programArguments: agentProgramArguments(
+            executable: executable.path,
+            appSupport: "/Users/someone-else/Library/Application Support/Kumo"
+        ))
+
+        XCTAssertFalse(
+            KumoUserAgentManager.bundledPlistIsValidForCurrentMachine(bundleURL: bundleURL, paths: paths)
+        )
+    }
+
+    func testBundledPlistValidationRejectsMissingOrNonExecutableHelper() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+
+        // Recorded helper path does not exist.
+        let missingBundle = try makeBundledAgentFixture(
+            in: root.appendingPathComponent("missing-bundle", isDirectory: true),
+            programArguments: agentProgramArguments(
+                executable: root.appendingPathComponent("missing/KumoService").path,
+                appSupport: paths.applicationSupportDirectory.path
+            )
+        )
+        XCTAssertFalse(
+            KumoUserAgentManager.bundledPlistIsValidForCurrentMachine(
+                bundleURL: missingBundle,
+                paths: paths
+            )
+        )
+
+        // Recorded helper path exists but is not executable.
+        let plainHelper = root.appendingPathComponent("KumoService.plain")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("not executable".utf8).write(to: plainHelper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: plainHelper.path
+        )
+        let nonExecutableBundle = try makeBundledAgentFixture(
+            in: root.appendingPathComponent("plain-bundle", isDirectory: true),
+            programArguments: agentProgramArguments(
+                executable: plainHelper.path,
+                appSupport: paths.applicationSupportDirectory.path
+            )
+        )
+        XCTAssertFalse(
+            KumoUserAgentManager.bundledPlistIsValidForCurrentMachine(
+                bundleURL: nonExecutableBundle,
+                paths: paths
+            )
+        )
+    }
+
+    func testInstallFallsBackToGeneratedPlistWhenBundledPlistIsInvalid() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let bundleURL = try makeBundledAgentFixture(in: root, programArguments: agentProgramArguments(
+            executable: executable.path,
+            appSupport: "/Users/someone-else/Library/Application Support/Kumo"
+        ))
+
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: bundleURL,
+            launchctlRunner: recorder.runner()
+        )
+
+        let status = try manager.install(executable: executable)
+
+        XCTAssertTrue(status.isInstalled)
+        XCTAssertEqual(recorder.invocations(), [
+            ["bootout", "gui/\(getuid())/io.kumo.KumoAgent"],
+            ["bootstrap", "gui/\(getuid())", paths.userAgentPlistFile.path],
+        ])
+
+        let generated = try String(contentsOf: paths.userAgentPlistFile, encoding: .utf8)
+        let object = try plistObject(generated)
+        XCTAssertEqual(object["ProgramArguments"] as? [String], [
+            executable.path,
+            "service",
+            "run",
+            "--mode",
+            "user",
+            "--app-support",
+            paths.applicationSupportDirectory.path,
+            "--idle-timeout",
+            "300",
+        ])
+    }
+
     // MARK: - Idle-exit policy
 
     func testIdlePolicyExitsOnlyAfterTimeoutWithNoCoreAndNoRequest() {
@@ -389,16 +538,88 @@ final class KumoUserAgentTests: XCTestCase {
     }
 
     private func hermeticPaths() -> KumoPaths {
-        let root = temporaryDirectory()
-        return KumoPaths(
+        hermeticPaths(root: temporaryDirectory())
+    }
+
+    private func hermeticPaths(root: URL) -> KumoPaths {
+        KumoPaths(
             applicationSupportDirectory: root.appendingPathComponent("app-support", isDirectory: true),
             launchAgentsDirectory: root.appendingPathComponent("LaunchAgents", isDirectory: true),
             environment: [:]
         )
     }
 
+    private func agentProgramArguments(executable: String, appSupport: String) -> [String] {
+        [
+            executable,
+            "service",
+            "run",
+            "--mode",
+            "user",
+            "--app-support",
+            appSupport,
+            "--idle-timeout",
+            "300",
+        ]
+    }
+
+    private func makeExecutableFile(named name: String, in directory: URL) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(name)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    /// Builds a minimal `Kumo.app` fixture whose bundled agent plist records
+    /// the supplied `ProgramArguments`, mirroring
+    /// `Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist`.
+    private func makeBundledAgentFixture(in root: URL, programArguments: [String]) throws -> URL {
+        let bundleURL = root.appendingPathComponent("Kumo.app", isDirectory: true)
+        let plistURL = bundleURL
+            .appendingPathComponent("Contents/Library/LaunchAgents", isDirectory: true)
+            .appendingPathComponent("\(KumoPaths.userAgentLabel).plist")
+        try FileManager.default.createDirectory(
+            at: plistURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let object: [String: Any] = [
+            "Label": KumoPaths.userAgentLabel,
+            "ProgramArguments": programArguments,
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: object,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: plistURL)
+        return bundleURL
+    }
+
     private func temporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+}
+
+/// Records launchctl invocations so the install fallback can be asserted
+/// without touching the real launchd domain.
+private final class LaunchctlRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [[String]] = []
+
+    func runner() -> @Sendable ([String]) throws -> String {
+        { [self] arguments in
+            lock.lock()
+            recorded.append(arguments)
+            lock.unlock()
+            return ""
+        }
+    }
+
+    func invocations() -> [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
     }
 }
