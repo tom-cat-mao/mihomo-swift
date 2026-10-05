@@ -102,7 +102,7 @@ targets:
       base:
         PRODUCT_NAME: Kumo
         PRODUCT_BUNDLE_IDENTIFIER: io.kumo.KumoApp
-        MARKETING_VERSION: "0.0.15"
+        MARKETING_VERSION: "0.0.17"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic

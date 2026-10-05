@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-10-06
+
 ### Added
 - `Keep Mihomo running after quit` (Settings → General → Background): the GUI
   can quit while Mihomo keeps serving under the user agent or root daemon.
@@ -18,9 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - User-level agent tier: `kumod` runs as the logged-in user behind launchd
   socket activation (`kumo-agent.sock`), owns the core when TUN is off, and
   idle-exits after 5 minutes with no core running.
-- TUN ownership handoff: enabling or disabling TUN moves the core between the
-  user agent and the root daemon with rollback, so TUN always runs privileged
-  and TUN-off cores can outlive the GUI.
+- TUN ownership handoff: enabling or disabling TUN transfers core ownership
+  between the user agent and the root daemon through `transferCoreOwnership`,
+  which stops the core on the source tier and starts it on the target tier; if
+  the target start fails, rollback restores the core on the source tier. TUN
+  always runs privileged, and TUN-off cores can outlive the GUI.
 - `kumo agent status|install|uninstall|migrate` plus `tierInstallState()`,
   `coreMigrationPlan()`, and `migrateCoreToUserAgent()` for dual-tier
   detection and root-to-agent migration.

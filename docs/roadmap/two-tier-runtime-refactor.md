@@ -90,6 +90,10 @@ credentials file, distinct sockets).
     daemon-owned core stays visible and controllable.
 - **S3** — DONE: docs sync (`docs/`, AGENTS.md requirement), ADR-005,
   CHANGELOG, de-marking stale "in progress" notes.
+- **S4 — Release readiness for 0.0.17** — DONE (2026-10-06): version cut to
+  0.0.17 (`MARKETING_VERSION`, `kumo --version`), CHANGELOG cut, and the
+  Makefile post-build re-embed step made idempotent. Intel/amd64 releases
+  are discontinued (owner decision); 0.0.17 and later ship arm64 only.
 
 ## Remaining Work
 
