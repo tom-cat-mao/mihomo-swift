@@ -448,6 +448,134 @@ final class KumoUserAgentTests: XCTestCase {
         ])
     }
 
+    // MARK: - App-update version stamp
+
+    func testInstallRecordsAppVersionStamp() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner()
+        )
+
+        _ = try manager.install(executable: executable, appVersion: "0.0.17")
+
+        XCTAssertEqual(manager.recordedInstallVersion(), "0.0.17")
+    }
+
+    func testRepairReinstallsAgentWhenAppVersionChanged() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner()
+        )
+        _ = try manager.install(executable: executable, appVersion: "0.0.16")
+        XCTAssertEqual(recorder.invocations().count, 2)
+
+        let repaired = try manager.repairInstallIfVersionChanged(
+            currentVersion: "0.0.17",
+            executable: executable
+        )
+
+        XCTAssertNotNil(repaired, "a version change must re-run the idempotent install")
+        XCTAssertEqual(manager.recordedInstallVersion(), "0.0.17")
+        XCTAssertEqual(recorder.invocations().count, 4, "the repair must reload the LaunchAgent job")
+    }
+
+    func testRepairSkipsWhenRecordedVersionMatches() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner()
+        )
+        _ = try manager.install(executable: executable, appVersion: "0.0.17")
+
+        let repaired = try manager.repairInstallIfVersionChanged(
+            currentVersion: "0.0.17",
+            executable: executable
+        )
+
+        XCTAssertNil(repaired)
+        XCTAssertEqual(recorder.invocations().count, 2, "a current agent must not be reloaded")
+    }
+
+    func testRepairRepairsOnceWhenStampIsMissing() throws {
+        // An agent installed before version stamping existed has no marker;
+        // the first launch after the feature ships repairs once.
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        try FileManager.default.createDirectory(
+            at: paths.launchAgentsDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("installed".utf8).write(to: paths.userAgentPlistFile)
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner()
+        )
+
+        let repaired = try manager.repairInstallIfVersionChanged(
+            currentVersion: "0.0.17",
+            executable: executable
+        )
+
+        XCTAssertNotNil(repaired, "a missing stamp must trigger the one-time repair")
+        XCTAssertEqual(manager.recordedInstallVersion(), "0.0.17")
+        XCTAssertEqual(recorder.invocations().count, 2)
+    }
+
+    func testRepairSkipsWhenAgentIsNotInstalled() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner()
+        )
+
+        let repaired = try manager.repairInstallIfVersionChanged(
+            currentVersion: "0.0.17",
+            executable: executable
+        )
+
+        XCTAssertNil(repaired, "launch must never install an agent the user did not opt into")
+        XCTAssertTrue(recorder.invocations().isEmpty)
+        XCTAssertNil(manager.recordedInstallVersion())
+    }
+
+    func testUninstallRemovesAppVersionStamp() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner()
+        )
+        _ = try manager.install(executable: executable, appVersion: "0.0.17")
+
+        _ = try manager.uninstall()
+
+        XCTAssertNil(manager.recordedInstallVersion())
+    }
+
     // MARK: - Root-owned running core install guard
 
     func testInstallRefusesWhenRootDaemonOwnsARunningCore() throws {

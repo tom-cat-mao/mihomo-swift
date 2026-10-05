@@ -103,6 +103,19 @@ public struct KumoUserAgentManager: Sendable {
             || isBundledAgentRegistered
     }
 
+    /// Version marker written after a successful agent install; compared with
+    /// the running app version on launch to decide whether the LaunchAgent
+    /// job (plist paths and shape) needs to be rewritten.
+    var installVersionStampFile: URL {
+        paths.applicationSupportDirectory.appendingPathComponent("agent-version.json")
+    }
+
+    /// App version recorded when the agent was last installed; `nil` when it
+    /// was never stamped (an install from before version tracking).
+    func recordedInstallVersion() -> String? {
+        KumoInstallVersionStamp.read(from: installVersionStampFile)
+    }
+
     public func status() -> ServiceModeStatus {
         let installed = isInstalled
         let running = client()?.ping() == true
@@ -129,8 +142,12 @@ public struct KumoUserAgentManager: Sendable {
         try install(executable: nil)
     }
 
+    /// Installs (or repairs) the agent and records `appVersion` in the
+    /// install-time stamp. `nil` falls back to the running bundle's version,
+    /// and when neither is available (bare-executable callers) the stamp is
+    /// left untouched.
     @discardableResult
-    public func install(executable: URL?) throws -> ServiceModeStatus {
+    public func install(executable: URL?, appVersion: String? = nil) throws -> ServiceModeStatus {
         if let refusal = rootOwnedCoreInstallRefusal() {
             throw refusal
         }
@@ -138,16 +155,40 @@ public struct KumoUserAgentManager: Sendable {
         _ = try ensureCredentials()
         try paths.prepare()
 
+        let installed: ServiceModeStatus
         if isBundledApp,
            Self.bundledPlistIsValidForCurrentMachine(bundleURL: resolvedBundleURL, paths: paths),
            registerBundledAgentIfPossible() {
-            return status()
+            installed = status()
+        } else {
+            let executableURL = try executable ?? serviceExecutableCandidate()
+            try writeLaunchAgentPlist(executable: executableURL)
+            try reloadAgent()
+            installed = status()
         }
 
-        let executableURL = try executable ?? serviceExecutableCandidate()
-        try writeLaunchAgentPlist(executable: executableURL)
-        try reloadAgent()
-        return status()
+        // Best effort: a failed stamp write only means the next launch
+        // repairs once more, which is safe because install() is idempotent.
+        if let version = appVersion ?? KumoInstallVersionStamp.currentAppVersion() {
+            try? KumoInstallVersionStamp.write(version: version, to: installVersionStampFile)
+        }
+        return installed
+    }
+
+    /// Re-runs the idempotent install when the version recorded at install
+    /// time differs from `currentVersion`. A missing stamp counts as
+    /// different: installs from before version stamping cannot be verified,
+    /// so the first launch repairs once and records the running version.
+    /// Returns the refreshed status when a repair ran, `nil` when no agent is
+    /// installed or it is already current.
+    @discardableResult
+    public func repairInstallIfVersionChanged(
+        currentVersion: String,
+        executable: URL? = nil
+    ) throws -> ServiceModeStatus? {
+        guard isInstalled else { return nil }
+        guard recordedInstallVersion() != currentVersion else { return nil }
+        return try install(executable: executable, appVersion: currentVersion)
     }
 
     @discardableResult
@@ -161,6 +202,8 @@ public struct KumoUserAgentManager: Sendable {
         // a SockPathName socket on bootout (and a self-bound dev run leaves
         // its own file behind), so remove the endpoint explicitly.
         try? FileManager.default.removeItem(at: paths.userAgentSocketFile)
+        // Drop the install-time marker with the job it describes.
+        try? FileManager.default.removeItem(at: installVersionStampFile)
         return status()
     }
 

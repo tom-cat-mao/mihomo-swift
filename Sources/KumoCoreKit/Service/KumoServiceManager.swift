@@ -1,6 +1,65 @@
 import Darwin
 import Foundation
 
+/// Version marker both tiers write at install time, so the app can tell
+/// whether the helper or agent on disk was installed by the version now
+/// running. After an in-app update the installed copies still belong to the
+/// previous bundle, and nothing else would re-validate them.
+struct KumoInstallVersionStamp: Codable, Equatable, Sendable {
+    var version: String
+
+    static func read(from url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let stamp = try? JSONDecoder().decode(KumoInstallVersionStamp.self, from: data),
+              !stamp.version.isEmpty else {
+            return nil
+        }
+        return stamp.version
+    }
+
+    static func write(version: String, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(KumoInstallVersionStamp(version: version)).write(to: url, options: .atomic)
+    }
+
+    /// The running bundle's `CFBundleShortVersionString` — the same version
+    /// the update check and About window report. `nil` for bare executables
+    /// (CLI and helpers outside an app bundle); callers then skip stamping and
+    /// the app treats the install as unverifiable.
+    static func currentAppVersion() -> String? {
+        guard let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+              !version.isEmpty else {
+            return nil
+        }
+        return version
+    }
+}
+
+/// Version relationship between the running app and the privileged helper
+/// copy at `/Library/PrivilegedHelperTools/io.kumo.KumoService`.
+public enum HelperVersionVerdict: Equatable, Sendable {
+    /// No helper install markers were found; nothing to refresh.
+    case notInstalled
+    /// The version recorded at install time matches the running app.
+    case current
+    /// A helper is installed, but its recorded version differs — or was never
+    /// recorded, for installs that predate version stamping. Detection only:
+    /// the user triggers the repair through Install / Repair Service, which
+    /// performs the administrator authorization. Nothing elevates on launch.
+    case stale(installedVersion: String?)
+
+    /// Prompt surfaced through the service-mode status message.
+    public var repairMessage: String? {
+        guard case .stale = self else { return nil }
+        return "Kumo Helper may be out of date. Use Install / Repair Service to update it."
+    }
+}
+
 public struct KumoServiceManager: Sendable {
     public static let launchDaemonLabel = "io.kumo.KumoService"
 
@@ -10,6 +69,11 @@ public struct KumoServiceManager: Sendable {
     /// without osascript authorization or an installed helper. `nil` runs the
     /// real command.
     private let serviceCommandRunner: (@Sendable ([String], String) throws -> Void)?
+    /// Test seam for the install-state probe: the LaunchDaemon path and helper
+    /// are fixed `/Library` locations, so a test on a machine with a real
+    /// helper needs to pin the verdict instead of reading production state.
+    /// `nil` probes the live locations.
+    private let isInstalledOverride: Bool?
 
     public init(paths: KumoPaths = KumoPaths()) {
         self.init(paths: paths, serviceCommandRunner: nil)
@@ -17,19 +81,57 @@ public struct KumoServiceManager: Sendable {
 
     init(
         paths: KumoPaths,
-        serviceCommandRunner: (@Sendable ([String], String) throws -> Void)? = nil
+        serviceCommandRunner: (@Sendable ([String], String) throws -> Void)? = nil,
+        isInstalledOverride: Bool? = nil
     ) {
         self.paths = paths
         self.serviceCommandRunner = serviceCommandRunner
+        self.isInstalledOverride = isInstalledOverride
+    }
+
+    /// Whether the privileged helper is installed: LaunchDaemon plist,
+    /// installed executable or the saved install flag. Ping-free on purpose —
+    /// callers that must not wake the service (and the launch-time version
+    /// check) only need the on-disk install state.
+    var isInstalled: Bool {
+        if let isInstalledOverride {
+            return isInstalledOverride
+        }
+        return FileManager.default.fileExists(atPath: paths.serviceLaunchDaemonPlistFile.path)
+            || FileManager.default.fileExists(atPath: paths.serviceExecutableFile.path)
+            || savedInstalledFlag()
+    }
+
+    /// Version marker written after a successful helper install. Lives next to
+    /// the shared service bookkeeping because the privileged helper location
+    /// itself is not writable by the app.
+    var helperVersionStampFile: URL {
+        paths.applicationSupportDirectory.appendingPathComponent("service-version.json")
+    }
+
+    /// App version recorded when the helper was last installed; `nil` when it
+    /// was never stamped (an install from before version tracking).
+    func recordedHelperVersion() -> String? {
+        KumoInstallVersionStamp.read(from: helperVersionStampFile)
+    }
+
+    /// Compares the version recorded at helper install time with the running
+    /// app. A missing stamp counts as stale: an install that predates
+    /// stamping cannot be verified, and re-running the existing Install /
+    /// Repair path once records one.
+    public func helperVersionVerdict(currentVersion: String) -> HelperVersionVerdict {
+        guard isInstalled else { return .notInstalled }
+        guard let recorded = recordedHelperVersion() else {
+            return .stale(installedVersion: nil)
+        }
+        return recorded == currentVersion ? .current : .stale(installedVersion: recorded)
     }
 
     public func status() -> ServiceModeStatus {
         let isPrivileged = geteuid() == 0
         let socketPath = paths.serviceSocketFile.path
         let socketExists = FileManager.default.fileExists(atPath: socketPath)
-        let installed = FileManager.default.fileExists(atPath: paths.serviceLaunchDaemonPlistFile.path)
-            || FileManager.default.fileExists(atPath: paths.serviceExecutableFile.path)
-            || savedInstalledFlag()
+        let installed = isInstalled
         let running = isPrivileged ? socketExists : serviceClient()?.ping() == true
         let available = running || isPrivileged
 
@@ -44,9 +146,14 @@ public struct KumoServiceManager: Sendable {
     }
 
     @discardableResult
-    public func installService() throws -> ServiceModeStatus {
+    public func installService(appVersion: String? = nil) throws -> ServiceModeStatus {
         let credentials = try ensureCredentials()
-        let source = try helperExecutableCandidate()
+        // With an injected runner the privileged command never runs, so the
+        // source path is bookkeeping only and executable resolution is
+        // skipped (tests have no helper binary to resolve).
+        let source = serviceCommandRunner == nil
+            ? try helperExecutableCandidate()
+            : paths.serviceExecutableFile
         let arguments = [
             "service",
             "install",
@@ -56,7 +163,20 @@ public struct KumoServiceManager: Sendable {
             "--key-id", credentials.keyID,
             "--shared-secret", credentials.sharedSecret
         ]
-        try runServiceCommandWithAuthorization(executable: source.path, arguments: arguments, prompt: "Install Kumo Helper")
+        if let serviceCommandRunner {
+            try serviceCommandRunner(arguments, "Install Kumo Helper")
+        } else {
+            try runServiceCommandWithAuthorization(
+                executable: source.path,
+                arguments: arguments,
+                prompt: "Install Kumo Helper"
+            )
+        }
+        // Best effort: if the stamp cannot be written the launch check simply
+        // prompts a repair once more, which is idempotent.
+        if let version = appVersion ?? KumoInstallVersionStamp.currentAppVersion() {
+            try? KumoInstallVersionStamp.write(version: version, to: helperVersionStampFile)
+        }
         let status = status()
         try saveInstalledFlag(status)
         return status
@@ -68,6 +188,8 @@ public struct KumoServiceManager: Sendable {
             ["service", "uninstall", "--app-support", paths.applicationSupportDirectory.path],
             prompt: "Uninstall Kumo Helper"
         )
+        // Drop the install-time marker with the helper it describes.
+        try? FileManager.default.removeItem(at: helperVersionStampFile)
         // The user agent (kumod) reuses this shared credentials file. Deleting
         // it while the agent is installed would make every agent start fail at
         // credential load, silently killing keep-core-alive. The check is
