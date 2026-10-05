@@ -134,12 +134,18 @@ private struct GeneralSettingsTab: View {
                                 Task { await uninstallCLI() }
                             }
                             .disabled(cliBusy)
-                        } else {
-                            Button(cliStatus?.state == .bundledCLIMissing ? "Unavailable" : "Install") {
+                        } else if cliStatus?.state == .bundledCLIMissing {
+                            Button(String(localized: "Unavailable")) {
                                 Task { await installCLI() }
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(cliBusy || cliStatus?.state == .bundledCLIMissing)
+                            .disabled(true)
+                        } else {
+                            Button(String(localized: "Install")) {
+                                Task { await installCLI() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(cliBusy)
                         }
                     }
                 }

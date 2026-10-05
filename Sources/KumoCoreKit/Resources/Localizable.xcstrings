@@ -19643,6 +19643,66 @@
           }
         }
       }
+    },
+    "Background": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background"
+          }
+        }
+      }
+    },
+    "Background Agent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background Agent"
+          }
+        }
+      }
+    },
+    "Keep Mihomo running after quit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep Mihomo running after quit"
+          }
+        }
+      }
+    },
+    "Running": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running"
+          }
+        }
+      }
+    },
+    "Remove Background Agent?": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove Background Agent?"
+          }
+        }
+      }
+    },
+    "Quitting Kumo will stop the core unless Kumo Helper owns it.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitting Kumo will stop the core unless Kumo Helper owns it."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
