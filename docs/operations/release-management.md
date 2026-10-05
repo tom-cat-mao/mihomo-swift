@@ -247,6 +247,27 @@ pencil-drawn small-loop arrow from `Kumo.app` toward the `/Applications` alias.
 If Finder automation cannot address the mounted volume, the script logs a
 warning and still emits a usable DMG with the default Finder layout.
 
+### Bundled user agent
+
+Release bundles also ship the user-tier ("kumod") payload: the shared
+`KumoService` binary at `Contents/MacOS/KumoService` and the LaunchAgent plist
+at `Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist`, rendered during the
+build by `Scripts/prepare_agent_launchagent.sh` from
+`Resources/KumoApp/LaunchAgents/io.kumo.KumoAgent.plist`. Verify the artifacts
+in a release bundle before shipping:
+
+```bash
+plutil -lint "build/Build/Products/Release/Kumo.app/Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist"
+test -x "build/Build/Products/Release/Kumo.app/Contents/MacOS/KumoService"
+```
+
+launchd requires absolute paths, so the rendered plist embeds the build
+machine's home directory and the built bundle path. On end-user machines those
+paths do not exist; the app installs the agent through the runtime-generated
+`~/Library/LaunchAgents` plist instead. See
+[System Integration and Permissions](system-integration-permissions.md) for the
+registration flow.
+
 Outputs are written to `build/release/` for the selected architecture:
 
 - `Kumo-macos-0.0.1-arm64.dmg` or `Kumo-macos-0.0.1-amd64.dmg`

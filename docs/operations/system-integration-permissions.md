@@ -86,6 +86,42 @@ current `Kumo.app`.
 through `SMAppService`. Registration only succeeds when `Kumo.app` lives in
 `/Applications` (macOS launch services requirement).
 
+## Bundled User Agent (kumod)
+
+For the two-tier runtime, `Kumo.app` also carries the unprivileged user-tier
+("kumod") payload:
+
+- `Contents/MacOS/KumoService` — the same helper binary the privileged tier
+  uses; launchd starts it as `KumoService service run --mode user`.
+- `Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist` — the LaunchAgent
+  registration `SMAppService.agent(plistName:)` requires at that exact path.
+  The `Copy Kumo Agent LaunchAgent` post-build phase in `project.yml` renders
+  it from `Resources/KumoApp/LaunchAgents/io.kumo.KumoAgent.plist` with
+  `Scripts/prepare_agent_launchagent.sh`, so the paths are absolute and the
+  keys match `KumoUserAgentManager.launchAgentPlist(...)`, which generates the
+  equivalent plist for source-tree and dev installs.
+
+The bundled plist keeps the on-demand contract: a launchd `Sockets` listener
+owns `kumo-agent.sock` with mode `0600` and starts the agent on the first
+client connection. `RunAtLoad` and `KeepAlive` stay false, so the agent is not
+resident at login and exits again after its idle timeout.
+
+`KumoUserAgentManager.install()` prefers `SMAppService.agent` when the app runs
+from a bundle and falls back to writing the generated plist to
+`~/Library/LaunchAgents` plus `launchctl bootstrap` when ServiceManagement
+declines. Registration follows the same `/Applications` rule as
+`SMAppService.mainApp`, and the bundled plist is rendered with the build
+machine's home directory and the built bundle path. A `Kumo.app` installed
+elsewhere therefore cannot use the bundled plist as-is; it installs the agent
+through the launchctl fallback, which resolves the current machine's paths at
+install time. Rendering the bundled plist per user at install time (instead of
+build time) is follow-up work in `Sources/`.
+
+The rendered plist and the helper are in place before Xcode signs the bundle,
+so both stay covered by the app's code signature; the helper is copied and
+chmodded exactly like the pre-existing `Contents/MacOS/KumoService` embedding,
+with no separate signing step.
+
 ## Dock Badge
 
 While the app is running, a 1 s timer in `KumoAppDelegate` writes

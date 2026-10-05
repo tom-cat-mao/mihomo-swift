@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.kumo.KumoAgent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__KUMO_HELPER_PATH__</string>
+    <string>service</string>
+    <string>run</string>
+    <string>--mode</string>
+    <string>user</string>
+    <string>--app-support</string>
+    <string>__KUMO_APP_SUPPORT_DIR__</string>
+    <string>--idle-timeout</string>
+    <string>__KUMO_IDLE_TIMEOUT__</string>
+  </array>
+  <key>Sockets</key>
+  <dict>
+    <key>Listener</key>
+    <dict>
+      <key>SockPathName</key>
+      <string>__KUMO_AGENT_SOCKET_PATH__</string>
+      <key>SockPathMode</key>
+      <integer>384</integer>
+    </dict>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>__KUMO_AGENT_LOG_PATH__</string>
+  <key>StandardErrorPath</key>
+  <string>__KUMO_AGENT_LOG_PATH__</string>
+</dict>
+</plist>

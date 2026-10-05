@@ -20,6 +20,8 @@ RELEASE_OUTPUT := $(DERIVED_DATA)/release
 DESTINATION ?= platform=macOS
 BUILD_NUMBER ?= 1
 SUBSTORE_RUNTIME_SCRIPT := Scripts/prepare_substore_runtime.sh
+AGENT_LAUNCHAGENT_SCRIPT := Scripts/prepare_agent_launchagent.sh
+AGENT_LAUNCHAGENT_REL := Contents/Library/LaunchAgents/io.kumo.KumoAgent.plist
 
 # Architecture: arm64 (Apple Silicon, default) or amd64 (Intel)
 ARCH ?= arm64
@@ -58,6 +60,9 @@ app: generate ## Build the Kumo .app bundle in Debug to build/Build/Products/Deb
 		cp "$(CLI_PATH_DEBUG)" "$(APP_PATH_DEBUG)/Contents/Helpers/kumo"; \
 		chmod 755 "$(APP_PATH_DEBUG)/Contents/Helpers/kumo"; \
 	fi
+	@KUMO_HELPER_PATH="$(abspath $(APP_PATH_DEBUG))/Contents/MacOS/KumoService" \
+		KUMO_AGENT_PLIST_OUTPUT="$(abspath $(APP_PATH_DEBUG))/$(AGENT_LAUNCHAGENT_REL)" \
+		bash $(AGENT_LAUNCHAGENT_SCRIPT)
 
 .PHONY: app-release
 app-release: generate ## Build the Kumo .app bundle in Release to build/Build/Products/Release.
@@ -73,6 +78,9 @@ app-release: generate ## Build the Kumo .app bundle in Release to build/Build/Pr
 		cp "$(CLI_PATH_RELEASE)" "$(APP_PATH_RELEASE)/Contents/Helpers/kumo"; \
 		chmod 755 "$(APP_PATH_RELEASE)/Contents/Helpers/kumo"; \
 	fi
+	@KUMO_HELPER_PATH="$(abspath $(APP_PATH_RELEASE))/Contents/MacOS/KumoService" \
+		KUMO_AGENT_PLIST_OUTPUT="$(abspath $(APP_PATH_RELEASE))/$(AGENT_LAUNCHAGENT_REL)" \
+		bash $(AGENT_LAUNCHAGENT_SCRIPT)
 
 .PHONY: require-release-version
 require-release-version:
