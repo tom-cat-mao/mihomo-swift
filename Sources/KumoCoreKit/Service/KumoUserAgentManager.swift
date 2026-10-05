@@ -23,6 +23,18 @@ public struct KumoUserAgentManager: Sendable {
     /// `SockPathMode` for the launchd-created socket: 0600.
     public static let launchdSocketMode = Int(0o600)
 
+    /// Ownership verdict for the pid recorded in the shared state, from the
+    /// install guard's `kill(pid, 0)` probe.
+    enum ProcessOwnership: Equatable, Sendable {
+        /// The pid exists and this process may signal it (same uid, or root).
+        case sameUser
+        /// The pid exists but belongs to another uid (EPERM): provably the
+        /// root daemon's core.
+        case otherUser
+        /// No such process (ESRCH) or any other inconclusive outcome.
+        case unknown
+    }
+
     /// Idle window the generated plist passes to `service run --idle-timeout`.
     public let idleTimeoutSeconds: Int
     private let paths: KumoPaths
@@ -31,6 +43,12 @@ public struct KumoUserAgentManager: Sendable {
     private let bundleURL: URL?
     /// launchctl execution seam for tests. `nil` runs `/bin/launchctl`.
     private let launchctlRunner: (@Sendable ([String]) throws -> String)?
+    /// Root-daemon reachability seam for the install guard. `nil` uses the
+    /// live signed-socket status.
+    private let rootDaemonReachability: (@Sendable () -> Bool)?
+    /// Process-ownership seam for the install guard. `nil` uses
+    /// `kill(pid, 0)`.
+    private let processOwnershipProbe: (@Sendable (Int32) -> ProcessOwnership)?
 
     public init(
         paths: KumoPaths = KumoPaths(),
@@ -40,23 +58,30 @@ public struct KumoUserAgentManager: Sendable {
             paths: paths,
             idleTimeoutSeconds: idleTimeoutSeconds,
             bundleURL: nil,
-            launchctlRunner: nil
+            launchctlRunner: nil,
+            rootDaemonReachability: nil,
+            processOwnershipProbe: nil
         )
     }
 
-    /// Test seam: injects the app bundle and the launchctl runner so the
-    /// bundled-plist decision and the generated-plist fallback can be
-    /// exercised without the real bundle or a real launchd domain.
+    /// Test seam: injects the app bundle, the launchctl runner and the
+    /// root-owned-core install-guard probes so the bundled-plist decision, the
+    /// generated-plist fallback and the refusal decision can be exercised
+    /// without the real bundle, a real launchd domain or a real root daemon.
     init(
         paths: KumoPaths,
         idleTimeoutSeconds: Int = ServiceIdlePolicy.defaultTimeoutSeconds,
         bundleURL: URL?,
-        launchctlRunner: (@Sendable ([String]) throws -> String)? = nil
+        launchctlRunner: (@Sendable ([String]) throws -> String)? = nil,
+        rootDaemonReachability: (@Sendable () -> Bool)? = nil,
+        processOwnershipProbe: (@Sendable (Int32) -> ProcessOwnership)? = nil
     ) {
         self.paths = paths
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.bundleURL = bundleURL
         self.launchctlRunner = launchctlRunner
+        self.rootDaemonReachability = rootDaemonReachability
+        self.processOwnershipProbe = processOwnershipProbe
     }
 
     /// Effective launchd label, honored by plist generation and launchctl.
@@ -69,10 +94,18 @@ public struct KumoUserAgentManager: Sendable {
         "\(paths.userAgentLabel).plist"
     }
 
+    /// Whether the agent tier is installed: a LaunchAgents plist or a
+    /// registered bundled `SMAppService` job. Unlike `status()`, this performs
+    /// no socket ping, which matters to callers that must not activate the
+    /// on-demand agent (launchd starts it on the first connection).
+    var isInstalled: Bool {
+        FileManager.default.fileExists(atPath: paths.userAgentPlistFile.path)
+            || isBundledAgentRegistered
+    }
+
     public func status() -> ServiceModeStatus {
-        let plistPresent = FileManager.default.fileExists(atPath: paths.userAgentPlistFile.path)
+        let installed = isInstalled
         let running = client()?.ping() == true
-        let installed = plistPresent || isBundledAgentRegistered
 
         return ServiceModeStatus(
             isInstalled: installed,
@@ -98,6 +131,10 @@ public struct KumoUserAgentManager: Sendable {
 
     @discardableResult
     public func install(executable: URL?) throws -> ServiceModeStatus {
+        if let refusal = rootOwnedCoreInstallRefusal() {
+            throw refusal
+        }
+
         _ = try ensureCredentials()
         try paths.prepare()
 
@@ -306,6 +343,44 @@ public struct KumoUserAgentManager: Sendable {
         throw KumoError.serviceUnavailable(
             "KumoService executable was not found. Build or bundle KumoService before installing the user agent."
         )
+    }
+
+    /// Refuses to install the agent on top of a core that the root daemon
+    /// provably owns.
+    ///
+    /// Installing the agent while the root daemon runs the core strands that
+    /// core: routing then prefers the agent, but the agent cannot signal the
+    /// root-owned pid (EPERM), so stops report failure and
+    /// `migrateCoreToUserAgent()` reads the routing decision as agent
+    /// ownership and silently no-ops.
+    ///
+    /// The refusal fires only when all three conditions are provable: the root
+    /// daemon is reachable, the shared state reports a running core with a
+    /// pid, and this process cannot signal that pid (EPERM). Every ambiguous
+    /// state — no state file, unreadable state, no running core, missing or
+    /// stale pid, unreachable daemon — allows the install.
+    private func rootOwnedCoreInstallRefusal() -> KumoError? {
+        let daemonReachable = rootDaemonReachability?()
+            ?? KumoServiceManager(paths: paths).status().isRunning
+        guard daemonReachable else { return nil }
+
+        guard let status = try? CoreStateStore(paths: paths).load(),
+              status.state == .running,
+              let pid = status.pid else {
+            return nil
+        }
+
+        let ownership = processOwnershipProbe?(pid) ?? Self.processOwnership(of: pid)
+        guard ownership == .otherUser else { return nil }
+
+        return KumoError.serviceUnavailable(
+            "Kumo Helper is running the Mihomo core as root, and the user agent cannot take over a root-owned core. Run `kumo agent migrate` first, then retry installing the agent."
+        )
+    }
+
+    private static func processOwnership(of pid: Int32) -> ProcessOwnership {
+        guard kill(pid, 0) != 0 else { return .sameUser }
+        return errno == EPERM ? .otherUser : .unknown
     }
 
     private func statusMessage(isInstalled: Bool, isRunning: Bool) -> String? {

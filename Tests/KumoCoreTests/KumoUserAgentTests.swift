@@ -448,6 +448,131 @@ final class KumoUserAgentTests: XCTestCase {
         ])
     }
 
+    // MARK: - Root-owned running core install guard
+
+    func testInstallRefusesWhenRootDaemonOwnsARunningCore() throws {
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        try CoreStateStore(paths: paths).save(CoreStatus(state: .running, pid: 4242))
+
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner(),
+            rootDaemonReachability: { true },
+            processOwnershipProbe: { _ in .otherUser }
+        )
+
+        XCTAssertThrowsError(try manager.install(executable: executable)) { error in
+            guard let kumoError = error as? KumoError,
+                  case .serviceUnavailable(let message) = kumoError else {
+                return XCTFail("expected serviceUnavailable, got \(error)")
+            }
+            XCTAssertTrue(
+                message.contains("kumo agent migrate"),
+                "the refusal must name the remedy: \(message)"
+            )
+        }
+
+        XCTAssertTrue(recorder.invocations().isEmpty, "a refused install must not touch launchd")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.userAgentPlistFile.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: paths.serviceCredentialsFile.path),
+            "a refused install must not write shared credentials"
+        )
+    }
+
+    func testInstallAllowsWhenRootOwnershipIsNotProvable() throws {
+        let cases: [
+            (
+                name: String,
+                status: CoreStatus,
+                reachable: Bool,
+                probe: KumoUserAgentManager.ProcessOwnership
+            )
+        ] = [
+            ("no core running", CoreStatus(state: .stopped), true, .otherUser),
+            ("running state without a pid", CoreStatus(state: .running, pid: nil), true, .otherUser),
+            ("stale pid", CoreStatus(state: .running, pid: 4242), true, .unknown),
+            ("root daemon unreachable", CoreStatus(state: .running, pid: 4242), false, .otherUser),
+            ("core signalable by this process", CoreStatus(state: .running, pid: 4242), true, .sameUser),
+        ]
+
+        for testCase in cases {
+            let root = temporaryDirectory()
+            let paths = hermeticPaths(root: root)
+            let executable = try makeExecutableFile(named: "KumoService", in: root)
+            try CoreStateStore(paths: paths).save(testCase.status)
+
+            let recorder = LaunchctlRecorder()
+            let manager = KumoUserAgentManager(
+                paths: paths,
+                bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+                launchctlRunner: recorder.runner(),
+                rootDaemonReachability: { testCase.reachable },
+                processOwnershipProbe: { _ in testCase.probe }
+            )
+
+            let status = try manager.install(executable: executable)
+            XCTAssertTrue(status.isInstalled, "\(testCase.name) must allow the install")
+            XCTAssertEqual(recorder.invocations().count, 2, "\(testCase.name) must reload the agent")
+        }
+    }
+
+    func testInstallAllowsWhenRunningCoreIsSignalableByThisProcess() throws {
+        // Live `kill(pid, 0)` probe: the recorded pid is this test process, so
+        // the core is locally owned, not provably root-owned.
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        try CoreStateStore(paths: paths).save(CoreStatus(
+            state: .running,
+            pid: Int32(ProcessInfo.processInfo.processIdentifier)
+        ))
+
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner(),
+            rootDaemonReachability: { true }
+        )
+
+        let status = try manager.install(executable: executable)
+        XCTAssertTrue(status.isInstalled)
+    }
+
+    func testInstallRepairsWhenAgentAlreadyInstalledAndCoreIsSignalable() throws {
+        // Agent already owns a locally runnable core: reinstall/repair must
+        // not be blocked by the root-owned-core guard.
+        let root = temporaryDirectory()
+        let paths = hermeticPaths(root: root)
+        let executable = try makeExecutableFile(named: "KumoService", in: root)
+        try FileManager.default.createDirectory(
+            at: paths.launchAgentsDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("installed".utf8).write(to: paths.userAgentPlistFile)
+        try CoreStateStore(paths: paths).save(CoreStatus(
+            state: .running,
+            pid: Int32(ProcessInfo.processInfo.processIdentifier)
+        ))
+
+        let recorder = LaunchctlRecorder()
+        let manager = KumoUserAgentManager(
+            paths: paths,
+            bundleURL: root.appendingPathComponent("not-an-app", isDirectory: true),
+            launchctlRunner: recorder.runner(),
+            rootDaemonReachability: { true }
+        )
+
+        let status = try manager.install(executable: executable)
+        XCTAssertTrue(status.isInstalled)
+        XCTAssertEqual(recorder.invocations().count, 2)
+    }
+
     // MARK: - Idle-exit policy
 
     func testIdlePolicyExitsOnlyAfterTimeoutWithNoCoreAndNoRequest() {

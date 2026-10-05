@@ -5,9 +5,22 @@ public struct KumoServiceManager: Sendable {
     public static let launchDaemonLabel = "io.kumo.KumoService"
 
     private let paths: KumoPaths
+    /// Test seam: replaces the privileged service-command execution (including
+    /// helper-executable resolution) so uninstall bookkeeping can be exercised
+    /// without osascript authorization or an installed helper. `nil` runs the
+    /// real command.
+    private let serviceCommandRunner: (@Sendable ([String], String) throws -> Void)?
 
     public init(paths: KumoPaths = KumoPaths()) {
+        self.init(paths: paths, serviceCommandRunner: nil)
+    }
+
+    init(
+        paths: KumoPaths,
+        serviceCommandRunner: (@Sendable ([String], String) throws -> Void)? = nil
+    ) {
         self.paths = paths
+        self.serviceCommandRunner = serviceCommandRunner
     }
 
     public func status() -> ServiceModeStatus {
@@ -51,15 +64,20 @@ public struct KumoServiceManager: Sendable {
 
     @discardableResult
     public func uninstallService() throws -> ServiceModeStatus {
-        let executable = FileManager.default.isExecutableFile(atPath: paths.serviceExecutableFile.path)
-            ? paths.serviceExecutableFile
-            : try helperExecutableCandidate()
-        try runServiceCommandWithAuthorization(
-            executable: executable.path,
-            arguments: ["service", "uninstall", "--app-support", paths.applicationSupportDirectory.path],
+        try runServiceCommand(
+            ["service", "uninstall", "--app-support", paths.applicationSupportDirectory.path],
             prompt: "Uninstall Kumo Helper"
         )
-        try? FileManager.default.removeItem(at: paths.serviceCredentialsFile)
+        // The user agent (kumod) reuses this shared credentials file. Deleting
+        // it while the agent is installed would make every agent start fail at
+        // credential load, silently killing keep-core-alive. The check is
+        // ping-free on purpose: `status()` pings the on-demand agent endpoint,
+        // and connecting would start the agent through launchd as a side
+        // effect. Plain plist presence alone is not enough either — a bundled
+        // agent registered through `SMAppService` has no LaunchAgents copy.
+        if !KumoUserAgentManager(paths: paths).isInstalled {
+            try? FileManager.default.removeItem(at: paths.serviceCredentialsFile)
+        }
         let next = status()
         try saveInstalledFlag(next)
         return next
@@ -173,6 +191,23 @@ public struct KumoServiceManager: Sendable {
 
         throw KumoError.serviceUnavailable(
             "KumoService executable was not found. Build or bundle KumoService before installing the helper."
+        )
+    }
+
+    /// Runs a privileged service command, resolving the helper executable
+    /// (installed helper first, then build/bundle candidates). The injected
+    /// runner short-circuits resolution for tests.
+    private func runServiceCommand(_ arguments: [String], prompt: String) throws {
+        if let serviceCommandRunner {
+            return try serviceCommandRunner(arguments, prompt)
+        }
+        let executable = FileManager.default.isExecutableFile(atPath: paths.serviceExecutableFile.path)
+            ? paths.serviceExecutableFile
+            : try helperExecutableCandidate()
+        try runServiceCommandWithAuthorization(
+            executable: executable.path,
+            arguments: arguments,
+            prompt: prompt
         )
     }
 
