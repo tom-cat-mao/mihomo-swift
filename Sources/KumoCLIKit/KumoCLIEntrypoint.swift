@@ -20,6 +20,11 @@ public enum KumoCLIEntrypoint {
             }
             try runtime.finish(success: true)
         } catch {
+            if KumoCommand.exitCode(for: error).isSuccess {
+                // ArgumentParser reports `-h`/`--help` and `--version` requests
+                // as clean exits; their text belongs on stdout with exit code 0.
+                KumoCommand.exit(withError: error)
+            }
             runtime.writeError(error)
             try? runtime.finish(success: false)
             Foundation.exit(1)

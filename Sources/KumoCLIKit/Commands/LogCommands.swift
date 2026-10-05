@@ -35,7 +35,7 @@ extension KumoCommand {
 
         struct CLI: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "cli", abstract: "Show recent Kumo CLI debug logs.")
-            @Option(name: .long, help: "Maximum number of log files.")
+            @Option(name: .long, help: "Maximum number of log entries.")
             var limit: Int = 20
             @Option(name: .long, help: "Minimum log level.")
             var level: LogLevel?

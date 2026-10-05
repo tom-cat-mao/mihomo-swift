@@ -268,4 +268,126 @@ final class KumoCLIKitTests: XCTestCase {
             XCTAssertTrue(CompletionScripts.commandNames.contains(command))
         }
     }
+
+    // MARK: - Help system completeness
+
+    func testTopLevelHelpListsEveryTopLevelCommandIncludingSelect() {
+        for entry in CommandIndex.topLevel {
+            XCTAssertTrue(HelpText.topLevel.contains(entry.name), "missing command: \(entry.name)")
+        }
+        XCTAssertTrue(HelpText.topLevel.contains("select"))
+        XCTAssertEqual(KumoCommand.configuration.version, "0.0.17")
+        XCTAssertTrue(HelpText.topLevel.contains("kumo@\(KumoCommand.configuration.version)"))
+    }
+
+    func testLongHelpEnumeratesFullCommandTree() {
+        for entry in CommandIndex.all {
+            XCTAssertTrue(HelpText.long.contains(entry.commandPath), "missing command path: \(entry.commandPath)")
+        }
+        for entry in CommandIndex.topLevel where !entry.children.isEmpty {
+            let subtree = entry.descendants.map(\.commandPath).sorted().joined(separator: ", ")
+            XCTAssertTrue(HelpText.long.contains("Commands: " + subtree), "missing subtree for: \(entry.name)")
+        }
+        XCTAssertFalse(HelpText.long.contains("kumo@0.0.1\n"))
+    }
+
+    func testEveryCommandPathResolvesToADetailedHelpTopic() {
+        for entry in CommandIndex.all {
+            let help = HelpText.topic(entry.path)
+            XCTAssertFalse(help.contains("No detailed help found"), "no topic for: \(entry.commandPath)")
+        }
+    }
+
+    func testDocumentedTopicsCarrySummaryUsageAndExample() {
+        let documented = [
+            "status", "start", "stop", "restart", "mode", "proxies", "select",
+            "rules", "profile", "dns", "sniffer", "tun", "sysproxy", "service",
+            "agent", "providers", "test", "logs", "traffic", "connections",
+            "backup", "core", "config", "doctor", "runtime-events", "substore",
+            "skills", "completion"
+        ]
+        let topLevelNames = Set(CommandIndex.topLevel.map(\.name))
+        for name in documented {
+            XCTAssertTrue(topLevelNames.contains(name), "topic is not a command: \(name)")
+            guard let topic = HelpTopics.byPath[name] else {
+                XCTFail("missing curated topic for: \(name)")
+                continue
+            }
+            XCTAssertFalse(topic.summary.isEmpty, name)
+            XCTAssertFalse(topic.usage.isEmpty, name)
+            XCTAssertFalse(topic.example.isEmpty, name)
+            let help = HelpText.topic([name])
+            XCTAssertTrue(help.contains("Usage:"), name)
+            XCTAssertTrue(help.contains("Example:"), name)
+        }
+    }
+
+    func testHelpTopicResolvesAliases() {
+        XCTAssertTrue(HelpText.topic(["st"]).contains("kumo status"))
+        XCTAssertTrue(HelpText.topic(["proxy"]).contains("kumo proxies"))
+        XCTAssertTrue(HelpText.topic(["c"]).contains("kumo config"))
+        XCTAssertTrue(HelpText.topic(["LOGS", "CLI"]).contains("kumo logs cli"))
+    }
+
+    func testUnknownHelpTopicPointsAtLongHelp() {
+        let help = HelpText.topic(["nope"])
+
+        XCTAssertTrue(help.contains("No detailed help found for nope."))
+        XCTAssertTrue(help.contains("kumo -l"))
+    }
+
+    func testCompletionCoversEveryTopLevelCommandAndAlias() {
+        let words = Set(CompletionScripts.commandNames.split(separator: " ").map(String.init))
+
+        XCTAssertEqual(words, Set(CommandIndex.completionWords))
+        for entry in CommandIndex.topLevel {
+            XCTAssertTrue(words.contains(entry.name), entry.name)
+            for alias in entry.aliases {
+                XCTAssertTrue(words.contains(alias), alias)
+            }
+        }
+        XCTAssertTrue(words.contains("st"))
+        XCTAssertTrue(words.contains("proxy"))
+        XCTAssertTrue(words.contains("c"))
+    }
+
+    // MARK: - CLI debug log entries
+
+    func testCLILogStoreLimitCountsEntriesNotFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let paths = KumoPaths(applicationSupportDirectory: root)
+        let store = DebugLogStore(paths: paths, options: RuntimeOptions(arguments: ["--logs-max", "10"]))
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+
+        let older = [
+            "2026-10-05 10:00:00 +0000 info first",
+            "2026-10-05 10:00:01 +0000 error second",
+            "2026-10-05 10:00:02 +0000 notice third"
+        ].joined(separator: "\n") + "\n"
+        let newer = [
+            "2026-10-05 11:00:00 +0000 info fourth",
+            "2026-10-05 11:00:01 +0000 error fifth"
+        ].joined(separator: "\n") + "\n"
+        try Data(older.utf8).write(to: store.directory.appendingPathComponent("2026-a-kumo-debug-0.log"))
+        try Data(newer.utf8).write(to: store.directory.appendingPathComponent("2026-b-kumo-debug-0.log"))
+
+        // 3 entries from 2 files: the old file-based limit would have returned 2 summaries.
+        let limited = store.recentEntries(limit: 3, minimumLevel: nil)
+        XCTAssertEqual(limited.map(\.summary), ["fifth", "fourth", "third"])
+        XCTAssertEqual(limited.map(\.level), [.error, .info, .notice])
+        XCTAssertEqual(limited.first?.createdAt, "2026-10-05 11:00:01 +0000")
+
+        XCTAssertEqual(
+            store.recentEntries(limit: 4, minimumLevel: nil).map(\.summary),
+            ["fifth", "fourth", "third", "second"]
+        )
+        XCTAssertEqual(
+            store.recentEntries(limit: 10, minimumLevel: .error).map(\.summary),
+            ["fifth", "second"]
+        )
+        XCTAssertTrue(store.recentEntries(limit: 0, minimumLevel: nil).isEmpty)
+    }
 }
