@@ -93,6 +93,9 @@ struct BackendReachability: Sendable {
 /// - TUN enabled → root daemon. Unreachable → `unavailable`; the operation
 ///   fails rather than falling back to a user-owned core.
 /// - TUN disabled + user agent reachable → user agent.
+/// - TUN disabled + root daemon reachable → root daemon. This preserves the
+///   pre-agent service-mode semantics: an existing daemon-owned core stays
+///   visible and controllable until it is migrated to the user agent.
 /// - Otherwise → local supervisor (the historical default).
 ///
 /// `allowsServiceBackend == false` short-circuits every decision to the local
@@ -126,6 +129,9 @@ struct BackendRouter: Sendable {
 
         if reachability.userAgent() {
             return .backend(.userAgent)
+        }
+        if reachability.rootService() {
+            return .backend(.rootService)
         }
         return .backend(.localSupervisor)
     }

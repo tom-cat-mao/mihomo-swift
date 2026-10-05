@@ -36,8 +36,15 @@ final class BackendRouterTests: XCTestCase {
         XCTAssertEqual(router.decideCoreBackend(tunEnabled: false), .backend(.userAgent))
     }
 
-    func testTunDisabledWithUnreachableAgentFallsBackToLocalSupervisor() {
+    func testTunDisabledWithUnreachableAgentFallsBackToRootDaemon() {
+        // Backward compatibility with pre-agent service mode: a daemon-owned
+        // core stays visible and controllable when the user agent is absent.
         let router = makeRouter(rootReachable: true, agentReachable: false)
+        XCTAssertEqual(router.decideCoreBackend(tunEnabled: false), .backend(.rootService))
+    }
+
+    func testTunDisabledWithNoServiceTierFallsBackToLocalSupervisor() {
+        let router = makeRouter(rootReachable: false, agentReachable: false)
         XCTAssertEqual(router.decideCoreBackend(tunEnabled: false), .backend(.localSupervisor))
     }
 
