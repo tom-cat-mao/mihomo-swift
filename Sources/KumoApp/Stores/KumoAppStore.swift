@@ -68,11 +68,15 @@ final class KumoAppStore {
     /// `KumoApp.init` reads the persisted preferences before the first frame,
     /// and `SubStoreStore` receives a controller to build its client. Every
     /// other controller call in this store goes through `runner` so the file
-    /// IO, helper IPC and Yams parsing stay off the main thread.
-    let controller = KumoController()
+    /// IO, helper IPC and Yams parsing stay off the main thread. Injectable so
+    /// tests can run the store against a hermetic app-support directory.
+    let controller: KumoController
     /// Serial executor for all controller work this store performs.
     private let runner: CoreRuntimeRunner
-    private let appNotificationCoordinator = AppNotificationCoordinator.shared
+    /// Resolved on demand rather than at store construction: constructing the
+    /// store must not touch `UserNotifications`, whose center is unavailable
+    /// in non-app processes (SwiftPM test bundles) and would throw there.
+    private var appNotificationCoordinator: AppNotificationCoordinator { .shared }
     private let proxyGeoLookup: ProxyGeoLookup
     private static let updatePollingIntervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
     private static let profileUpdatePollingIntervalNanoseconds: UInt64 = 60 * 1_000_000_000
@@ -96,7 +100,8 @@ final class KumoAppStore {
         case automatic
     }
 
-    init() {
+    init(controller: KumoController = KumoController()) {
+        self.controller = controller
         let runner = CoreRuntimeRunner(controller: controller)
         self.runner = runner
         self.proxyGeoLookup = ProxyGeoLookup(cacheURL: runner.paths.proxyGeoCacheFile)
@@ -265,8 +270,18 @@ final class KumoAppStore {
 
         // `keepCoreRunningOnQuit` leaves the core with its owning tier (user
         // agent or root daemon) so it keeps serving after the GUI exits;
-        // otherwise the historical stop-and-disable path runs.
-        let result = await runner.prepareForAppTermination(policy: preferences.appTerminationPolicy)
+        // otherwise the historical stop-and-disable path runs. The Sub-Store
+        // sidecar is always a child of this process, so quitting must stop it
+        // too — otherwise the orphaned Node process keeps writing the
+        // Sub-Store data store and the next launch spawns a second instance
+        // on a fresh port. Both legs run concurrently so the quit path waits
+        // for max(core shutdown, sidecar stop) rather than their sum; the
+        // delegate's 5 s gate still bounds the whole cleanup.
+        let policy = preferences.appTerminationPolicy
+        async let runtimeShutdown = runner.prepareForAppTermination(policy: policy)
+        async let sidecarShutdown: Void = runner.stopSubStoreService()
+        let result = await runtimeShutdown
+        await sidecarShutdown
         status = result.status
         status.systemProxyEnabled = false
         proxyGroups = []

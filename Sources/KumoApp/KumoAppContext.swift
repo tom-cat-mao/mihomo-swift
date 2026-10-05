@@ -3,10 +3,13 @@ import Foundation
 import KumoCoreKit
 
 /// Single bridge that lets `NSApplicationDelegate` reach the SwiftUI-owned
-/// `KumoAppStore`. The store is created in `KumoApp` and then attached here
-/// from a `.task` modifier on the root view, so any non-SwiftUI hook
-/// (`NSApp.servicesProvider`, dock badge timer, Spotlight handlers, App
-/// Intents) can resolve the live store via `KumoAppContext.shared.store`.
+/// `KumoAppStore`. The store is created in `KumoApp.init` and attached there
+/// during launch, so any non-SwiftUI hook (`NSApp.servicesProvider`, dock
+/// badge timer, Spotlight handlers, App Intents) can resolve the live store
+/// via `KumoAppContext.shared.store` even when no view has appeared yet — for
+/// example a Shortcuts cold launch with `openAppWhenRun = false`. The root
+/// view re-attaches the same store from its `.task`; `attach` ignores repeat
+/// attaches.
 @MainActor
 final class KumoAppContext {
     static let shared = KumoAppContext()
@@ -16,9 +19,15 @@ final class KumoAppContext {
     private var openSettingsAction: (() -> Void)?
     private var openAboutWindowAction: (() -> Void)?
 
-    private init() {}
+    /// Internal rather than private so tests can exercise attach semantics on
+    /// an isolated instance; the app itself always uses `shared`.
+    init() {}
 
+    /// Attaches the app's one live store. The first attach wins: a repeat
+    /// attach — including the view-side one — must never replace the store
+    /// the app is already using.
     func attach(store: KumoAppStore) {
+        guard self.store == nil else { return }
         self.store = store
     }
 

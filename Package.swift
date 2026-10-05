@@ -71,6 +71,16 @@ packageTargets.append(contentsOf: [
     )
 ])
 
+// The KumoApp test target links the SwiftUI executable target, which only
+// exists when the Xcode toolchain is available (see the KUMO_CLT_BUILD gate
+// above).
+if !isCLTBuild {
+    packageTargets.append(.testTarget(
+        name: "KumoAppTests",
+        dependencies: ["KumoApp", "KumoCoreKit"]
+    ))
+}
+
 let package = Package(
     name: "Kumo",
     platforms: [
