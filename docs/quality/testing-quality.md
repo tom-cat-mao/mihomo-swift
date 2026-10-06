@@ -12,6 +12,14 @@ The first test suite covers:
 - Service request signing.
 - CLI argument parsing, JSON envelope stability, color/log rendering rules, and
   npm-style help behavior.
+- CLI command behavior: profile refresh dedupe, refresh-by-id, and
+  `--use-proxy`; profile metadata update and YAML edit with pre-read backfill;
+  offline profile group/node previews; runtime config get/set/secret
+  validation; override CRUD with next-start semantics; GUI preferences; the
+  CLI link; provider `--all`; batch connection close; and the read-only
+  Sub-Store content surface.
+- Profile refresh metadata: remote-URL dedupe refreshes the matching profile
+  in place, and `refreshDueProfiles` preserves Sub-Store profile metadata.
 - Dev-instance environment overrides (`KUMO_APP_SUPPORT_DIR`,
   `KUMO_AGENT_LABEL`) and user-agent label plumbing into the generated plist.
 - Two-tier runtime: routing decisions across TUN/agent/root/local, TUN
