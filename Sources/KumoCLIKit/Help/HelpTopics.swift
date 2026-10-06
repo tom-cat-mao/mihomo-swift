@@ -304,13 +304,49 @@ enum HelpTopics {
             details: ["Installs the managed Mihomo core that `kumo start` runs."]
         ),
         "config": HelpTopic(
-            summary: "Show Kumo configuration paths.",
+            summary: "Show Kumo paths and runtime settings.",
             usage: [
                 "kumo config [path] [--json]",
-                "kumo config list [--json]"
+                "kumo config list [--json]",
+                "kumo config get [<key>] [--json]",
+                "kumo config set [<options>] [--dry-run] [--json]",
+                "kumo config secret [--set <secret>] [--json]"
             ],
-            example: "kumo config list --json",
-            details: ["`config path` prints the application support directory; `config list` prints every CLI-visible path."]
+            example: "kumo config get --json",
+            details: [
+                "`config path` prints the application support directory; `config list` prints every CLI-visible path.",
+                "`config get` prints the stored CoreRuntimeSettings object or one key. `config set` owns mixedPort, allowLan, logLevel, ipv6, and findProcessMode; DNS, sniffer, and TUN settings use `kumo dns`, `kumo sniffer`, and `kumo tun`. `config secret` reports or replaces the controller secret without printing it."
+            ]
+        ),
+        "config get": HelpTopic(
+            summary: "Print stored runtime settings.",
+            usage: [
+                "kumo config get [--json]",
+                "kumo config get <mixedPort|allowLan|logLevel|ipv6|findProcessMode|geoData> [--json]"
+            ],
+            example: "kumo config get mixedPort --json",
+            details: ["Unknown keys fail with the list of valid keys. DNS, sniffer, and TUN settings have dedicated commands."]
+        ),
+        "config set": HelpTopic(
+            summary: "Update core runtime settings.",
+            usage: [
+                "kumo config set --mixed-port <port> [--allow-lan <bool>] [--log-level <level>] [--ipv6 <bool>] [--find-process-mode <mode>] [--dry-run] [--json]",
+                "kumo config set --file <path> [--dry-run] [--json]",
+                "kumo config set --stdin [--dry-run] [--json]"
+            ],
+            example: "kumo config set --mixed-port 7897 --dry-run --json",
+            details: [
+                "`mixedPort` must be 1...65535, `logLevel` one of silent|error|warning|info|debug, and `findProcessMode` one of always|strict|off. A JSON patch rejects unknown top-level keys with the list of valid ones; dns, sniffer, and tun point at their dedicated commands. --dry-run prints the merged settings without writing."
+            ]
+        ),
+        "config secret": HelpTopic(
+            summary: "Show or replace the controller secret.",
+            usage: [
+                "kumo config secret [--json]",
+                "kumo config secret --set <secret> [--json]"
+            ],
+            example: "kumo config secret --json",
+            details: ["The stored secret is never printed; the command reports set=true|false. A new secret takes effect the next time the core starts, not on a running core."]
         ),
         "doctor": HelpTopic(
             summary: "Inspect runtime, profile, and core candidates.",

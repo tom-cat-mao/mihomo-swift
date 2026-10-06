@@ -5,8 +5,8 @@ import KumoCoreKit
 extension KumoCommand {
     struct Config: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Show Kumo configuration paths.",
-            subcommands: [Path.self, List.self],
+            abstract: "Show Kumo paths or runtime settings.",
+            subcommands: [Path.self, List.self, Get.self, Set.self, Secret.self],
             defaultSubcommand: Path.self,
             aliases: ["c"]
         )

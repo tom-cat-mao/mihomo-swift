@@ -99,6 +99,12 @@ struct ProvidersUpdateReport: Encodable, Equatable {
     var geoData: Bool
 }
 
+/// Reports whether a controller secret is stored; the secret value itself is
+/// never part of CLI output.
+struct ConfigSecretReport: Encodable, Equatable {
+    var isSet: Bool
+}
+
 struct AgentActionReport: Encodable, Equatable {
     var action: String
     var label: String

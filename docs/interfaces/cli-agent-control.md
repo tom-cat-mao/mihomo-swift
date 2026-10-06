@@ -144,6 +144,39 @@ running restarts the core, exactly like the SwiftUI settings panes.
 options and `--file`/`--stdin` are mutually exclusive. Stored settings are
 re-applied when the system proxy is currently enabled.
 
+#### Runtime settings (`kumo config get|set|secret`)
+
+```bash
+kumo config get [<key>] [--json]
+kumo config set --mixed-port <port> [--allow-lan <bool>] [--log-level <level>] [--ipv6 <bool>] [--find-process-mode <mode>] [--dry-run] [--json]
+kumo config set --file <path> [--dry-run] [--json]
+kumo config set --stdin [--dry-run] [--json]
+kumo config secret [--set <secret>] [--json]
+```
+
+`config get` prints the stored `CoreRuntimeSettings` object; with a key
+(`mixedPort`, `allowLan`, `logLevel`, `ipv6`, `findProcessMode`, `geoData`) it
+prints only that value. Unknown keys fail listing the valid ones.
+
+`config set` owns the scalar runtime fields (`mixedPort`, `allowLan`,
+`logLevel`, `ipv6`, `findProcessMode`) and accepts either explicit flags or a
+`--file`/`--stdin` JSON object patch; the two input styles are mutually
+exclusive. `mixedPort` must be `1...65535`, `logLevel` one of
+`silent|error|warning|info|debug`, and `findProcessMode` one of
+`always|strict|off`. A patch rejects unknown top-level keys with the list of
+valid ones. The `dns`, `sniffer`, and `tun` keys are rejected with a pointer
+to `kumo dns set`, `kumo sniffer set`, and `kumo tun settings`; geo data is
+read-only here (`config get geoData`). `--dry-run` prints the merged settings
+without writing state or patching the running core.
+
+`config secret` reports `set=true|false` without ever printing the stored
+value; `--set <secret>` stores a new secret. The secret is read when the core
+starts, so a new secret takes effect on the next core start, not on a running
+core.
+
+Patches for `DnsSettings`, `SnifferSettings`, and `TunSettings` also reject
+unknown top-level keys and list the valid ones.
+
 ## CLI Interaction Conventions
 
 Kumo follows the parts of npm's CLI interaction model that make command-line
