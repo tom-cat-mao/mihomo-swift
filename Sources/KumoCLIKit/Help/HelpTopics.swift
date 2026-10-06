@@ -126,6 +126,26 @@ enum HelpTopics {
             example: "kumo profile edit airport --file ./airport.yaml --dry-run --json",
             details: ["The replacement must parse as a YAML mapping. Name and subscription settings are preserved."]
         ),
+        "override": HelpTopic(
+            summary: "Manage runtime config overrides.",
+            usage: [
+                "kumo override [list] [--json]",
+                "kumo override content <id> [--json]",
+                "kumo override add --name <name> (--file <path> | --stdin) [--format yaml|js] [--global] [--dry-run] [--restart] [--json]",
+                "kumo override add --url <url> [--name <name>] [--format yaml|js] [--global] [--restart] [--json]",
+                "kumo override update <id> (--file <path> | --stdin) [--restart] [--json]",
+                "kumo override delete <id> [--dry-run] [--restart] [--json]",
+                "kumo override reorder --ids <id1,id2,...> [--restart] [--json]"
+            ],
+            example: "kumo override add --name dns-fix --file dns.yaml --json",
+            details: [
+                "Overrides merge into the runtime config on the next core start. --restart restarts a running core so a mutation takes effect immediately; with no running core it is a no-op.",
+                "Only YAML overrides are merged. --format js bodies are stored but never applied, and --global is stored without a runtime effect yet.",
+                "Remote --url overrides are fetched directly with no proxy support.",
+                "`reorder --ids` moves the listed ids to the front in the given order; unlisted ids keep their relative order after them.",
+                "Local `add --dry-run` validates that the YAML parses without writing the override."
+            ]
+        ),
         "dns": HelpTopic(
             summary: "Show or update DNS runtime settings.",
             usage: [

@@ -113,3 +113,44 @@ struct AgentActionReport: Encodable, Equatable {
     var dryRun: Bool
     var status: ServiceModeStatus
 }
+
+struct OverrideListEntry: Encodable, Equatable {
+    var index: Int
+    var id: String
+    var name: String
+    var format: String
+    var kind: String
+    var isGlobal: Bool
+    var remoteURL: String?
+}
+
+struct OverrideContentPayload: Encodable, Equatable {
+    var id: String
+    var content: String
+}
+
+struct OverrideMutationReport: Encodable, Equatable {
+    var id: String?
+    var name: String
+    var format: String
+    var kind: String
+    var isGlobal: Bool
+    var dryRun: Bool
+    var warnings: [String]
+    var restartRequested: Bool
+    var restarted: Bool
+}
+
+struct OverrideDeleteReport: Encodable, Equatable {
+    var id: String
+    var name: String
+    var dryRun: Bool
+    var restartRequested: Bool
+    var restarted: Bool
+}
+
+struct OverrideReorderReport: Encodable, Equatable {
+    var ids: [String]
+    var restartRequested: Bool
+    var restarted: Bool
+}

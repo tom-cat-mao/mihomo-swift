@@ -301,7 +301,7 @@ final class KumoCLIKitTests: XCTestCase {
     func testDocumentedTopicsCarrySummaryUsageAndExample() {
         let documented = [
             "status", "start", "stop", "restart", "mode", "proxies", "select",
-            "rules", "profile", "dns", "sniffer", "tun", "sysproxy", "service",
+            "rules", "profile", "override", "dns", "sniffer", "tun", "sysproxy", "service",
             "agent", "providers", "test", "logs", "traffic", "connections",
             "backup", "core", "config", "doctor", "runtime-events", "substore",
             "skills", "completion"

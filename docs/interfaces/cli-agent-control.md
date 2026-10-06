@@ -44,6 +44,8 @@ kumo profile refresh --id airport-1f2a3b4c --use-proxy
 kumo profile update airport-1f2a3b4c --no-auto-update
 kumo profile edit airport-1f2a3b4c --file ./airport.yaml
 kumo profile import ./local.yaml
+kumo override list --json
+kumo override add --name dns-fix --file dns.yaml --dry-run --json
 kumo dns --json
 kumo dns set --file dns.json --dry-run --json
 kumo sysproxy on --dry-run --json
@@ -143,6 +145,44 @@ running restarts the core, exactly like the SwiftUI settings panes.
 `--network-service`, `--host`, `--port`, `--mode manual|pac`); explicit
 options and `--file`/`--stdin` are mutually exclusive. Stored settings are
 re-applied when the system proxy is currently enabled.
+
+### Overrides
+
+```bash
+kumo override [list] [--json]
+kumo override content <id> [--json]
+kumo override add --name <name> (--file <path> | --stdin) [--format yaml|js] [--global] [--dry-run] [--restart] [--json]
+kumo override add --url <url> [--name <name>] [--format yaml|js] [--global] [--restart] [--json]
+kumo override update <id> (--file <path> | --stdin) [--restart] [--json]
+kumo override delete <id> [--dry-run] [--restart] [--json]
+kumo override reorder --ids <id1,id2,...> [--restart] [--json]
+```
+
+Overrides are edits merged into the runtime config; they are never applied to
+a live core in place, matching the GUI, which performs no core restart after
+an override edit.
+
+- **Next start, not now.** Active YAML overrides merge into the runtime
+  config when the core starts (`RuntimeConfigBuilder` at launch). Every
+  mutating command states `takes effect on next core start` in text output.
+  Pass `--restart` to restart a running core and apply the change
+  immediately; with no running core `--restart` is a no-op and the command
+  reports `core not running`.
+- **Only YAML is applied.** `--format js` stores the body but it is never
+  merged into the runtime config; `add` warns about this.
+- **`--global` has no runtime effect yet.** The flag is stored on the item but
+  global overrides are not applied anywhere; `add` warns about this.
+- **Remote fetches are unproxied.** `add --url` downloads the body directly
+  (no proxy support) before storing it.
+- **Ordering.** `list` prints the merge order by ascending index.
+  `reorder --ids` moves the listed ids to the front in the given order;
+  unlisted ids keep their relative order after them.
+- **Ids are pre-validated.** `content`, `update`, `delete`, and `reorder`
+  fail with `Unknown override id: <id>` instead of relying on the core API's
+  silent no-op for unknown delete ids. `reorder` also rejects duplicate ids.
+- **Dry run.** Local `add --dry-run` validates that the YAML parses (for
+  `--format yaml`) without writing; `delete --dry-run` names the item that
+  would be removed. `--dry-run` cannot be combined with `--restart`.
 
 #### Runtime settings (`kumo config get|set|secret`)
 

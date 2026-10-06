@@ -25,6 +25,7 @@ public struct KumoCommand: AsyncParsableCommand {
             Backup.self,
             Core.self,
             Profile.self,
+            Override.self,
             Dns.self,
             Sniffer.self,
             Sysproxy.self,
