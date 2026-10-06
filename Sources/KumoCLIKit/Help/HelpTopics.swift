@@ -69,10 +69,62 @@ enum HelpTopics {
                 "kumo profile delete <id> [--dry-run] [--json]",
                 "kumo profile import <path|file-url> [--json]",
                 "kumo profile content <id> [--json]",
-                "kumo profile refresh <url> [--json]"
+                "kumo profile refresh <url> [--use-proxy] [--json]",
+                "kumo profile refresh --id <id> [--use-proxy] [--json]",
+                "kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]",
+                "kumo profile edit <id> --file <path>|--stdin [--dry-run] [--json]"
             ],
             example: "kumo profile list --json",
-            details: ["`profile import` imports a local YAML file. Remote subscriptions use `profile refresh`."]
+            details: [
+                "`profile import` imports a local YAML file. Remote subscriptions use `profile refresh`.",
+                "`profile refresh <url>` refreshes the matching profile in place when its subscription URL is already stored — same id, no duplicate, current selection kept. A new URL is imported as a new current profile.",
+                "`profile update` merges only the provided flags over the stored metadata; omitted fields keep their value. `profile edit` validates the replacement YAML before writing."
+            ]
+        ),
+        "profile refresh": HelpTopic(
+            summary: "Refresh a subscription in place or import a remote profile URL.",
+            usage: [
+                "kumo profile refresh <url> [--use-proxy] [--json]",
+                "kumo profile refresh --id <id> [--use-proxy] [--json]"
+            ],
+            options: [
+                "--id <id>       Refresh this profile in place.",
+                "--use-proxy     Fetch through the local Mihomo proxy; requires a running core."
+            ],
+            example: "kumo profile refresh --id airport-1f2a3b4c --json",
+            details: [
+                "A URL already stored on a profile refreshes that profile in place without changing the current selection; the first time a URL is seen it is imported as a new current profile.",
+                "`--id` refreshes the profile in place and restarts the core when the refreshed profile is the current one and the core is running."
+            ]
+        ),
+        "profile update": HelpTopic(
+            summary: "Update a profile's name, subscription URL, or update preferences.",
+            usage: [
+                "kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]"
+            ],
+            options: [
+                "--name <name>           Rename the profile.",
+                "--url <url>             Set the subscription URL.",
+                "--auto-update           Enable automatic updates (--no-auto-update disables).",
+                "--use-proxy             Refresh through the local Mihomo proxy (--no-use-proxy disables).",
+                "--dry-run               Print the merged metadata without writing."
+            ],
+            example: "kumo profile update airport --name \"Airport A\" --no-auto-update --json",
+            details: ["Omitted fields keep their stored value; the profile YAML is not re-downloaded (use `kumo profile refresh`)."]
+        ),
+        "profile edit": HelpTopic(
+            summary: "Replace a profile's YAML from a file or stdin.",
+            usage: [
+                "kumo profile edit <id> --file <path> [--dry-run] [--json]",
+                "kumo profile edit <id> --stdin [--dry-run] [--json]"
+            ],
+            options: [
+                "--file <path>   Read the replacement YAML from a file.",
+                "--stdin         Read the replacement YAML from stdin.",
+                "--dry-run       Validate the YAML without writing."
+            ],
+            example: "kumo profile edit airport --file ./airport.yaml --dry-run --json",
+            details: ["The replacement must parse as a YAML mapping. Name and subscription settings are preserved."]
         ),
         "dns": HelpTopic(
             summary: "Show or update DNS runtime settings.",

@@ -63,6 +63,30 @@ struct ProfileContentPayload: Encodable, Equatable {
     var content: String
 }
 
+struct ProfileRefreshReport: Encodable, Equatable {
+    var profile: ProfileSummary
+    var restartedCore: Bool
+}
+
+/// Merged profile metadata a `profile update` writes. Also returned by
+/// `--dry-run`, where nothing is written but the planned values are reported.
+struct ProfileUpdateReport: Encodable, Equatable {
+    var id: String
+    var name: String
+    var kind: ProfileKind
+    var remoteURL: URL?
+    var autoUpdate: Bool
+    var useProxy: Bool
+    var dryRun: Bool
+}
+
+struct ProfileEditReport: Encodable, Equatable {
+    var id: String
+    var name: String
+    var dryRun: Bool
+    var byteCount: Int
+}
+
 struct ProxyDelayReport: Encodable, Equatable {
     var proxy: String
     var url: String?

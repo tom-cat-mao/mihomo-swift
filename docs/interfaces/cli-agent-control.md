@@ -40,6 +40,9 @@ kumo test "Proxy" --url https://example.com --json
 kumo profile list --json
 kumo profile use default
 kumo profile refresh "https://example.com/sub.yaml"
+kumo profile refresh --id airport-1f2a3b4c --use-proxy
+kumo profile update airport-1f2a3b4c --no-auto-update
+kumo profile edit airport-1f2a3b4c --file ./airport.yaml
 kumo profile import ./local.yaml
 kumo dns --json
 kumo dns set --file dns.json --dry-run --json
@@ -72,6 +75,10 @@ kumo profile use <id>
 kumo profile delete <id> [--dry-run] [--json]
 kumo profile import <path|file-url> [--json]      # local YAML; remote uses profile refresh
 kumo profile content <id> [--json]
+kumo profile refresh <url> [--use-proxy] [--json]
+kumo profile refresh --id <id> [--use-proxy] [--json]
+kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]
+kumo profile edit <id> --file <path>|--stdin [--dry-run] [--json]
 kumo dns [--json] | kumo dns enable|disable [--json]
 kumo sniffer [--json] | kumo sniffer enable|disable [--json]
 kumo tun status|enable|disable [--json]
@@ -87,6 +94,37 @@ kumo test <proxy|group> [--url <url>] [--json]
 `kumo test` treats a name that matches a proxy group as a group test (every
 member is probed); other names are tested as a single proxy. `--url` applies
 to single-proxy tests.
+
+#### Profiles
+
+`kumo profile refresh <url>` refreshes in place when a profile with the same
+subscription URL is already stored: the profile keeps its id and name, the
+current selection does not change, and the stored auto-update preference is
+preserved. Only a URL that no profile uses is imported, and a new import
+becomes the current profile with auto-update enabled. Repeating the same URL
+therefore never duplicates a profile or force-switches the current one.
+
+`kumo profile refresh --id <id>` re-downloads that profile in place (Sub-Store
+profiles refresh through Sub-Store). When the refreshed profile is the current
+one and the core is running, the core is restarted so the new YAML takes
+effect, mirroring the GUI. `--use-proxy` fetches through the local Mihomo
+proxy and fails with a clear error when no core is running.
+
+`kumo profile update <id>` merges the provided flags over the stored metadata:
+omitted fields (`--name`, `--url`, `--auto-update`, `--use-proxy`) keep their
+stored value, so an update can never demote a subscription or disable
+auto-update by omission. `--auto-update` / `--no-auto-update` and
+`--use-proxy` / `--no-use-proxy` set the stored preference explicitly.
+`--dry-run` prints the merged metadata without writing. The profile YAML is
+not re-downloaded; use `profile refresh` for that.
+
+`kumo profile edit <id>` replaces the profile YAML from `--file <path>` or
+`--stdin`. The replacement must parse as a YAML mapping; `--dry-run` validates
+it without writing. Name and subscription settings are preserved.
+
+`kumo profile content <id>` fails on an unknown id instead of falling back to
+the current profile, so scripts never print the wrong profile. The id must
+appear in `kumo profile list`.
 
 #### Settings patches
 
