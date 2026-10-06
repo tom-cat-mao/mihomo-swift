@@ -272,3 +272,81 @@ struct ProvidersUpdateAllReport: Encodable, Equatable {
     var failed: Int
     var geoData: Bool
 }
+
+// MARK: - Sub-Store content
+
+/// One `kumo substore files` entry.
+struct SubStoreFileListEntry: Encodable, Equatable {
+    var name: String
+    var displayName: String?
+    var type: String?
+    var source: String?
+    var url: String?
+}
+
+/// One `kumo substore modules` entry. Module bodies stay out of the listing.
+struct SubStoreModuleListEntry: Encodable, Equatable {
+    var name: String
+    var description: String?
+    var icon: String?
+}
+
+/// `kumo substore content` payload. `entry` carries the full client model so
+/// the shape follows whatever the backend returned.
+struct SubStoreContentPayload: Encodable, Equatable {
+    var kind: String
+    var name: String
+    var entry: JSONValue
+}
+
+/// `kumo substore preview` payload. `original` and `processed` are the parsed
+/// node arrays exactly as the backend returns them for `target=JSON` — never
+/// rendered Clash YAML.
+struct SubStorePreviewPayload: Encodable, Equatable {
+    var kind: String
+    var name: String
+    var originalCount: Int
+    var processedCount: Int
+    var original: [JSONValue]
+    var processed: [JSONValue]
+}
+
+/// `kumo substore import` payload: the resolved download target plus the
+/// resulting Kumo profile.
+struct SubStoreImportReport: Encodable, Equatable {
+    var input: String
+    var kind: String
+    var path: String
+    var useProxy: Bool
+    var profile: ProfileSummary
+}
+
+/// `kumo substore settings` payload: the local backend configuration, plus a
+/// best-effort read of the backend's own settings.
+struct SubStoreSettingsReport: Encodable, Equatable {
+    var backendURL: String?
+    var backendMode: String
+    var customBackendURL: String?
+    var isEnabled: Bool
+    var isBackendRunning: Bool
+    var host: String
+    var port: Int?
+    var allowsLAN: Bool
+    var usesProxy: Bool
+    var syncCron: String
+    var downloadCron: String
+    var uploadCron: String
+    var resourceVersion: String?
+    var settings: SubStoreSettings?
+    var settingsError: String?
+}
+
+/// `kumo substore logs` payload. `source` is `backend` when the Sub-Store
+/// backend served its own log buffer, or `file` when the command fell back to
+/// the supervisor-captured `substore.log`.
+struct SubStoreLogPayload: Encodable, Equatable {
+    var source: String
+    var path: String?
+    var backendError: String?
+    var entries: [SubStoreLogEntry]
+}

@@ -76,6 +76,11 @@ kumo agent install --dry-run --json
 kumo agent migrate --dry-run --json
 kumo tun enable --json
 kumo substore status --json
+kumo substore subscriptions --json
+kumo substore content airport --json
+kumo substore preview airport --json
+kumo substore import airport --name "Airport A" --json
+kumo substore logs --limit 50
 kumo skills status --json
 kumo skills install --agent codex --dry-run --json
 kumo completion zsh
@@ -316,6 +321,62 @@ core.
 Patches for `DnsSettings`, `SnifferSettings`, and `TunSettings` also reject
 unknown top-level keys and list the valid ones.
 
+### Sub-Store
+
+```bash
+kumo substore status|prepare|start|stop|restart [--json]
+kumo substore subscriptions|collections [--json]
+kumo substore files|modules [--json]
+kumo substore content <name> [--kind subscription|collection|file] [--json]
+kumo substore preview <name> [--kind subscription|collection|file] [--json]
+kumo substore import <name-or-path> [--name <profile-name>] [--use-proxy] [--json]
+kumo substore settings [--json]
+kumo substore logs [--limit <count>] [--json]
+```
+
+**Read + import only.** The content commands read through `SubStoreClient`
+(the same data plane the GUI uses) and never create, update, or delete
+Sub-Store entries. `import` is the only write: it stores one new Kumo profile.
+Sub-Store mutations (create/update/delete, artifacts, share tokens, archives)
+stay in the GUI.
+
+`subscriptions`/`collections` list `name`, `displayName`, `icon`, and tags;
+`files`/`modules` list the read-only fields the client exposes (files: name,
+display name, type, source, URL; modules: name, description, icon).
+
+`content <name>` prints one entry's detail. `--kind` restricts the search;
+without it the name is resolved against subscriptions, then collections, then
+files. Names match the canonical name first, then the display name; a display
+name matching more than one entry fails as ambiguous. Unknown names fail with
+the list command to run.
+
+`preview <name>` uses the backend's JSON target, so it prints the parsed node
+arrays (`original`/`processed` in `--json`) exactly as the GUI's preview shows
+them. Preview output is never rendered Clash YAML.
+
+`import <name-or-path>` resolves a bare name the same way `content` does and
+imports the result as a Sub-Store-managed Kumo profile (`--name` sets the
+profile name, otherwise the entry display name is used; `--use-proxy`
+downloads through the local Mihomo proxy and requires a running core).
+Subscriptions resolve to `/download/<name>` and collections to
+`/download/collection/<name>` — the same path shapes the GUI builds from
+`SubStoreEntry.downloadPath`. A `/...` path or a URL with a scheme is passed
+through unchanged, mirroring `KumoController.subStoreProfileDownloadURL`.
+Files are not Clash profiles: a name that resolves to a Sub-Store file fails
+with a pointer to `kumo substore content <name> --kind file`, and names that
+resolve to nothing fail before any download is attempted.
+
+`settings` prints the backend URL and mode (`bundled`/`custom`) from local
+state, plus host/port/cron flags. When the backend answers it also prints the
+backend's own settings; otherwise `settingsError` carries the reason and the
+command still succeeds, so it doubles as a diagnostic when the backend is
+down.
+
+`logs` reads the backend's log buffer and, when the backend cannot be reached
+or its log payload does not match the typed client, falls back to the
+supervisor-captured `logs/substore.log`. The payload's `source` (`backend` or
+`file`) and `path` say which one answered.
+
 ## CLI Interaction Conventions
 
 Kumo follows the parts of npm's CLI interaction model that make command-line
@@ -522,6 +583,9 @@ command names and JSON schemas compatible whether the GUI is open or closed:
   tier handoff behavior.
 - `kumo substore status|prepare|start|stop|restart` manages bundled Sub-Store
   resources and the same local lifecycle used by the SwiftUI app.
+- `kumo substore subscriptions|collections|files|modules|content|preview|settings|logs`
+  read the Sub-Store data plane through `SubStoreClient`; `kumo substore import`
+  stores one Sub-Store-managed profile through `KumoController.importSubStoreProfile`.
 
 App Intents still call `KumoAppStore` directly. Routing them through service
 endpoints so they keep working when the GUI is closed remains follow-up work

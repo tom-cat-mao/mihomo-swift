@@ -740,8 +740,12 @@ extension KumoCommand {
     struct Substore: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "substore",
-            abstract: "Manage bundled Sub-Store resources and runtime.",
-            subcommands: [Status.self, Prepare.self, Start.self, Stop.self, Restart.self]
+            abstract: "Manage bundled Sub-Store resources and browse its content.",
+            subcommands: [
+                Status.self, Prepare.self, Start.self, Stop.self, Restart.self,
+                Subscriptions.self, Collections.self, Files.self, Modules.self,
+                Content.self, Preview.self, Import.self, Settings.self, Logs.self
+            ]
         )
 
         struct Status: AsyncParsableCommand {

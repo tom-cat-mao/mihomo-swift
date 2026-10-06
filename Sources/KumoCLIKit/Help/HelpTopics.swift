@@ -488,14 +488,48 @@ enum HelpTopics {
             example: "kumo runtime-events --limit 20 --json"
         ),
         "substore": HelpTopic(
-            summary: "Manage bundled Sub-Store resources and runtime.",
+            summary: "Manage bundled Sub-Store resources and browse its content.",
             usage: [
                 "kumo substore status [--json]",
                 "kumo substore prepare [--json]",
-                "kumo substore start|stop|restart [--json]"
+                "kumo substore start|stop|restart [--json]",
+                "kumo substore subscriptions|collections [--json]",
+                "kumo substore files|modules [--json]",
+                "kumo substore content <name> [--kind subscription|collection|file] [--json]",
+                "kumo substore preview <name> [--kind subscription|collection|file] [--json]",
+                "kumo substore import <name-or-path> [--name <profile-name>] [--use-proxy] [--json]",
+                "kumo substore settings [--json]",
+                "kumo substore logs [--limit <count>] [--json]"
             ],
-            example: "kumo substore status --json",
-            details: ["`prepare` installs or refreshes the bundled Sub-Store resources before the backend is started."]
+            example: "kumo substore import airport --json",
+            details: [
+                "`prepare` installs or refreshes the bundled Sub-Store resources before the backend is started.",
+                "Content commands are read-only; `import` is the only write and stores one new Kumo profile. Sub-Store mutations (create/update/delete, tokens, artifacts) stay in the GUI.",
+                "`import` takes a bare name, resolved against subscriptions first then collections (canonical name, then display name), or an explicit /download path or URL. Files are not Clash profiles and cannot be imported.",
+                "`preview` prints the backend's parsed node arrays (`original`/`processed`); preview output is never rendered Clash YAML."
+            ]
+        ),
+        "substore import": HelpTopic(
+            summary: "Import a Sub-Store subscription or collection as a Kumo profile.",
+            usage: ["kumo substore import <name-or-path> [--name <profile-name>] [--use-proxy] [--json]"],
+            options: [
+                "--name <profile-name>   Store the profile under this name.",
+                "--use-proxy             Download through the local Mihomo proxy; requires a running core."
+            ],
+            example: "kumo substore import airport --name \"Airport A\" --json",
+            details: [
+                "A bare name resolves against subscriptions first, then collections; a /download path or a URL with a scheme is used unchanged. Unknown names fail with the list commands to run.",
+                "The imported profile is Sub-Store-managed and refreshes through `kumo profile refresh --id <id>`."
+            ]
+        ),
+        "substore preview": HelpTopic(
+            summary: "Preview a Sub-Store entry's parsed nodes.",
+            usage: ["kumo substore preview <name> [--kind subscription|collection|file] [--json]"],
+            options: ["--kind <kind>   Entry kind: subscription, collection, or file (default: auto)."],
+            example: "kumo substore preview airport --json",
+            details: [
+                "The backend previews through its JSON target, so the command prints parsed node arrays — the same `original`/`processed` data the GUI shows — not rendered Clash YAML."
+            ]
         ),
         "skills": HelpTopic(
             summary: "Manage bundled Kumo agent skills.",
