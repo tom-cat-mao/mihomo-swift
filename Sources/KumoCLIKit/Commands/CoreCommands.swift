@@ -147,25 +147,47 @@ extension KumoCommand {
         }
 
         struct Update: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(abstract: "Update a proxy provider, rule provider, or GeoIP data.")
+            static let configuration = CommandConfiguration(
+                abstract: "Update a proxy provider, rule provider, GeoIP data, or all providers.",
+                discussion: "Use --proxy/--rule to update one provider, --geo to upgrade the GeoIP/GeoSite data files, or --all to update every proxy and rule provider. --all collects per-provider outcomes and never stops at the first failure."
+            )
 
             @Option(name: .long, help: "Proxy provider name to update.")
             var proxy: String?
             @Option(name: .long, help: "Rule provider name to update.")
             var rule: String?
+            @Flag(name: .long, help: "Update every proxy and rule provider, reporting each outcome.")
+            var all = false
             @Flag(name: .long, help: "Upgrade the GeoIP / GeoSite data files.")
             var geo = false
             @OptionGroup var options: CLIOptions
 
             mutating func validate() throws {
-                if proxy == nil && rule == nil && !geo {
-                    throw ValidationError("Provide at least one of --proxy <name>, --rule <name>, or --geo.")
+                if all, proxy != nil || rule != nil {
+                    throw ValidationError("Use either --all or --proxy/--rule, not both.")
+                }
+                if proxy == nil && rule == nil && !geo && !all {
+                    throw ValidationError("Provide at least one of --proxy <name>, --rule <name>, --geo, or --all.")
                 }
             }
 
             mutating func run() async throws {
                 try options.install()
                 let controller = CLIRuntime.current.controller
+                if all {
+                    var report = try await Self.updateAll(
+                        listProxyProviders: { try await controller.proxyProviders() },
+                        listRuleProviders: { try await controller.ruleProviders() },
+                        updateProxyProvider: { try await controller.updateProxyProvider(name: $0) },
+                        updateRuleProvider: { try await controller.updateRuleProvider(name: $0) }
+                    )
+                    if geo {
+                        try await controller.upgradeGeoData()
+                        report.geoData = true
+                    }
+                    CLIRuntime.current.write(report) { Self.text(for: $0) }
+                    return
+                }
                 var actions: [String] = []
                 if let proxy {
                     try await controller.updateProxyProvider(name: proxy)
@@ -181,6 +203,71 @@ extension KumoCommand {
                 }
                 let report = ProvidersUpdateReport(proxyProvider: proxy, ruleProvider: rule, geoData: geo)
                 CLIRuntime.current.write(report) { _ in actions.joined(separator: "\n") }
+            }
+
+            /// Updates every listed proxy and rule provider, recording each
+            /// outcome. Failures are collected instead of thrown so one broken
+            /// subscription cannot hide the remaining providers; only the two
+            /// provider listings themselves are allowed to fail the command.
+            static func updateAll(
+                listProxyProviders: () async throws -> [ProxyProviderEntry],
+                listRuleProviders: () async throws -> [RuleProviderEntry],
+                updateProxyProvider: (String) async throws -> Void,
+                updateRuleProvider: (String) async throws -> Void
+            ) async throws -> ProvidersUpdateAllReport {
+                var results: [ProviderUpdateResult] = []
+                for provider in try await listProxyProviders() {
+                    results.append(await outcome(kind: "proxy", name: provider.name) {
+                        try await updateProxyProvider(provider.name)
+                    })
+                }
+                for provider in try await listRuleProviders() {
+                    results.append(await outcome(kind: "rule", name: provider.name) {
+                        try await updateRuleProvider(provider.name)
+                    })
+                }
+                return ProvidersUpdateAllReport(
+                    results: results,
+                    updated: results.filter(\.updated).count,
+                    failed: results.filter { !$0.updated }.count,
+                    geoData: false
+                )
+            }
+
+            static func text(for report: ProvidersUpdateAllReport) -> String {
+                var lines = ["updated \(report.updated) of \(report.results.count) providers"]
+                if report.geoData {
+                    lines.append("requested GeoIP data upgrade")
+                }
+                for result in report.results where !result.updated {
+                    lines.append("failed \(result.kind) provider \(result.name): \(result.error ?? "unknown error")")
+                }
+                return lines.joined(separator: "\n")
+            }
+
+            private static func outcome(
+                kind: String,
+                name: String,
+                update: () async throws -> Void
+            ) async -> ProviderUpdateResult {
+                do {
+                    try await update()
+                    return ProviderUpdateResult(kind: kind, name: name, updated: true, error: nil)
+                } catch {
+                    return ProviderUpdateResult(
+                        kind: kind,
+                        name: name,
+                        updated: false,
+                        error: providerUpdateErrorMessage(error)
+                    )
+                }
+            }
+
+            private static func providerUpdateErrorMessage(_ error: Error) -> String {
+                if let localized = error as? LocalizedError, let description = localized.errorDescription {
+                    return description
+                }
+                return String(describing: error)
             }
         }
     }

@@ -13,8 +13,22 @@ onboarding sheet (also reachable via Settings > General > Command Line Tool),
 which symlinks the bundled binary to `/usr/local/bin/kumo` after a one-time
 macOS administrator authorization prompt. The same flow is wrapped by
 `KumoController.cliLinkStatus()` / `installCLILink()` / `uninstallCLILink()`
-for programmatic use. Manual `ln -s` is supported but no longer required for
-new installs.
+for programmatic use, and exposed on the command line:
+
+```bash
+kumo cli-link [status] [--json]
+kumo cli-link install [--dry-run] [--json]
+kumo cli-link uninstall [--dry-run] [--json]
+```
+
+`status` reports the symlink state (`installed`, `notInstalled`,
+`differentSymlink`, `occupiedByOther`, or `bundledCLIMissing`), the target
+path, and the bundled binary path. `install` / `uninstall` need the one-time
+macOS administrator authorization because `/usr/local/bin` is not
+user-writable; `--dry-run` never prompts, it prints the current link state and
+the intended action as a `CLILinkActionReport`. `uninstall` refuses to remove a
+symlink or file that Kumo does not manage. Manual `ln -s` is supported but no
+longer required for new installs.
 
 `swift run kumo` is only a source-tree development smoke test. User-facing
 installs must be validated through the bundled helper binary and, when
@@ -49,6 +63,9 @@ kumo override add --name dns-fix --file dns.yaml --dry-run --json
 kumo dns --json
 kumo dns set --file dns.json --dry-run --json
 kumo sysproxy on --dry-run --json
+kumo prefs get --json
+kumo prefs set keepCoreRunningOnQuit true --json
+kumo cli-link status --json
 kumo service status --json
 kumo service install
 kumo agent status --json
@@ -86,16 +103,26 @@ kumo sniffer [--json] | kumo sniffer enable|disable [--json]
 kumo tun status|enable|disable [--json]
 kumo tun settings [--json]
 kumo sysproxy on|off [--dry-run] [--json]
+kumo sysproxy set --add-defaults [--dry-run] [--json]
 kumo providers [--json]                           # proxy/rule provider counts
 kumo providers update --proxy <name> [--json]
 kumo providers update --rule <name> [--json]
 kumo providers update --geo [--json]
+kumo providers update --all [--json]              # every proxy and rule provider
 kumo test <proxy|group> [--url <url>] [--json]
 ```
 
 `kumo test` treats a name that matches a proxy group as a group test (every
 member is probed); other names are tested as a single proxy. `--url` applies
 to single-proxy tests.
+
+`kumo providers update --all` updates every provider returned by the running
+core's proxy and rule provider listings. Each provider's outcome is collected
+into one `ProvidersUpdateAllReport`; a failing provider never stops the run,
+so the report names every failure instead of only the first one. `--all`
+cannot be combined with `--proxy`/`--rule`; `--geo` may be added to upgrade
+the GeoIP/GeoSite data files after the loop. The command still exits `0` when
+only some providers failed — the report's `failed` count is the signal.
 
 #### Profiles
 
@@ -142,9 +169,51 @@ restarting the core. Applying DNS or sniffer settings while the core is
 running restarts the core, exactly like the SwiftUI settings panes.
 
 `kumo sysproxy set` also supports explicit options (`--bypass <comma-list>`,
-`--network-service`, `--host`, `--port`, `--mode manual|pac`); explicit
-options and `--file`/`--stdin` are mutually exclusive. Stored settings are
-re-applied when the system proxy is currently enabled.
+`--network-service`, `--host`, `--port`, `--mode manual|pac`,
+`--add-defaults`); explicit options and `--file`/`--stdin` are mutually
+exclusive. Stored settings are re-applied when the system proxy is currently
+enabled. `--add-defaults` unions the resulting bypass list with
+`SystemProxySettings.defaultBypassList` — the same list the GUI's "Add
+Defaults" button uses, shared through `KumoCoreKit` — dropping duplicates and
+sorting the result, so it is idempotent and works together with `--bypass` or
+a patch.
+
+#### GUI preferences (`kumo prefs`)
+
+```bash
+kumo prefs [get] [<key>] [--json]
+kumo prefs set <key> <value> [--dry-run] [--json]
+```
+
+`kumo prefs` owns the stored `UserPreferences` (`preferences.json`) that the
+SwiftUI app reads on launch and in Settings. Exposed keys:
+`launchAtLogin`, `hideMenuBarIcon`, `quitOnLastWindowClose`,
+`keepCoreRunningOnQuit`, `updateChannel`, `appLanguage`, and
+`hasCompletedOnboarding`.
+
+`prefs get` prints the whole set or one key; unknown keys fail with the list
+of valid ones. In JSON output `appLanguage` is `null` when the app follows the
+system language.
+
+`prefs set` reads the stored preferences, changes only the given key, and
+writes the whole set back, so unrelated keys — including
+`updateManifestURL`, which the CLI does not expose — keep their stored values.
+Values are type-checked: booleans are strict `true`/`false` (`yes`/`1` are
+rejected), `updateChannel` is `stable|beta`, and `appLanguage` is a BCP-47 tag
+such as `en` or `zh-Hans`, or `system` to store `nil` (follow the system
+language). `--dry-run` prints the merged preferences without writing.
+
+Two keys only take effect inside the GUI:
+
+- `launchAtLogin` is honoured on the next GUI launch, which calls
+  `SMAppService.mainApp.register()`/`unregister()`; the CLI never registers
+  the login item itself.
+- `keepCoreRunningOnQuit` takes effect on the next GUI quit
+  (`prepareForAppTermination(policy:)`).
+
+`hideMenuBarIcon` is a GUI-only preference, and `hasCompletedOnboarding` is
+settable for recovery scenarios (the GUI re-opens onboarding when it is
+`false`). Mutating `prefs set` commands print these notes in text output.
 
 ### Overrides
 

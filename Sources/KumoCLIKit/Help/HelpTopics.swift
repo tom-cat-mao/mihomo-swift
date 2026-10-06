@@ -1,3 +1,5 @@
+import KumoCoreKit
+
 /// Curated `kumo help <term>` topics.
 ///
 /// `CommandIndex` decides which commands exist; this registry only supplies
@@ -45,6 +47,40 @@ enum HelpTopics {
             summary: "List proxy groups and their selected proxies.",
             usage: ["kumo proxies [--json]"],
             example: "kumo proxies --json"
+        ),
+        "prefs": HelpTopic(
+            summary: "Show or update Kumo GUI preferences.",
+            usage: [
+                "kumo prefs [get] [<key>] [--json]",
+                "kumo prefs set <key> <value> [--dry-run] [--json]"
+            ],
+            options: [
+                "--dry-run       Print the merged preferences without writing."
+            ],
+            example: "kumo prefs set keepCoreRunningOnQuit true --json",
+            details: [
+                "`prefs get` prints the whole preference set or one key: \(KumoCommand.Prefs.Key.validKeysList).",
+                "`prefs set` reads the stored preferences, changes only the given key, and writes the set back, so other keys are never clobbered. Booleans are strict true|false, updateChannel is stable|beta, and appLanguage is a BCP-47 tag such as en or zh-Hans, or system to follow the system language.",
+                "launchAtLogin applies on the next GUI launch (the CLI does not register the login item), keepCoreRunningOnQuit takes effect on the next GUI quit, and hideMenuBarIcon is a GUI-only preference."
+            ]
+        ),
+        "prefs get": HelpTopic(
+            summary: "Print stored GUI preferences.",
+            usage: [
+                "kumo prefs get [--json]",
+                "kumo prefs get <\(KumoCommand.Prefs.Key.validKeysList.replacingOccurrences(of: ", ", with: "|"))> [--json]"
+            ],
+            example: "kumo prefs get launchAtLogin --json",
+            details: ["With no key this prints the whole preference set; unknown keys fail with the list of valid ones."]
+        ),
+        "prefs set": HelpTopic(
+            summary: "Update one GUI preference.",
+            usage: ["kumo prefs set <key> <value> [--dry-run] [--json]"],
+            options: ["--dry-run       Print the merged preferences without writing."],
+            example: "kumo prefs set appLanguage zh-Hans --json",
+            details: [
+                "The stored preferences are read first and the whole set is written back, so a set never clears other keys. --dry-run prints the merged preferences without writing."
+            ]
         ),
         "select": HelpTopic(
             summary: "Select a proxy for a group.",
@@ -210,11 +246,15 @@ enum HelpTopics {
                 "kumo sysproxy on [--dry-run] [--json]",
                 "kumo sysproxy off [--dry-run] [--json]",
                 "kumo sysproxy set --bypass <comma-list> [--network-service <name>] [--host <host>] [--port <port>] [--mode manual|pac] [--dry-run] [--json]",
+                "kumo sysproxy set --add-defaults [--dry-run] [--json]",
                 "kumo sysproxy set --file <path> [--dry-run] [--json]",
                 "kumo sysproxy set --stdin [--dry-run] [--json]"
             ],
-            example: "kumo sysproxy on --dry-run --json",
-            details: ["`sysproxy set` updates stored settings and re-applies them when the system proxy is currently enabled."]
+            example: "kumo sysproxy set --add-defaults --dry-run --json",
+            details: [
+                "`sysproxy set` updates stored settings and re-applies them when the system proxy is currently enabled.",
+                "`--add-defaults` unions the resulting bypass list with the default list shared with the GUI's \"Add Defaults\" button, dropping duplicates and sorting the result."
+            ]
         ),
         "service": HelpTopic(
             summary: "Manage Kumo service mode.",
@@ -225,6 +265,28 @@ enum HelpTopics {
             ],
             example: "kumo service status --json",
             details: ["Service mode installs the privileged helper used for TUN and system proxy control. Use `kumo agent` for the user-level agent tier."]
+        ),
+        "cli-link": HelpTopic(
+            summary: "Manage the `kumo` command-line tool link on PATH.",
+            usage: [
+                "kumo cli-link [status] [--json]",
+                "kumo cli-link install [--dry-run] [--json]",
+                "kumo cli-link uninstall [--dry-run] [--json]"
+            ],
+            options: ["--dry-run       Report the current link state and intended action without prompting or writing."],
+            example: "kumo cli-link status --json",
+            details: [
+                "`status` reports the symlink state, the target path, and the bundled kumo binary path.",
+                "`install` links \(CLILinkInstaller.defaultTargetPath) to the bundled CLI and `uninstall` removes it. The target directory is not user-writable, so macOS shows a one-time administrator authorization prompt (osascript); --dry-run never prompts.",
+                "`uninstall` refuses to remove a symlink or file that Kumo does not manage."
+            ]
+        ),
+        "cli-link install": HelpTopic(
+            summary: "Create the `kumo` symlink.",
+            usage: ["kumo cli-link install [--dry-run] [--json]"],
+            options: ["--dry-run       Report the current link state and intended action without prompting or writing."],
+            example: "kumo cli-link install --dry-run --json",
+            details: ["AppleScript asks macOS for administrator authorization once because \(CLILinkInstaller.defaultTargetPath) lives outside the user's writable directories."]
         ),
         "agent": HelpTopic(
             summary: "Manage the user-level Kumo agent (kumod).",
@@ -253,9 +315,13 @@ enum HelpTopics {
                 "kumo providers [--json]",
                 "kumo providers update --proxy <name> [--json]",
                 "kumo providers update --rule <name> [--json]",
-                "kumo providers update --geo [--json]"
+                "kumo providers update --geo [--json]",
+                "kumo providers update --all [--geo] [--json]"
             ],
-            example: "kumo providers update --geo --json"
+            example: "kumo providers update --all --json",
+            details: [
+                "`--all` updates every proxy and rule provider and reports each outcome; a failing provider does not stop the remaining ones. `--all` cannot be combined with --proxy/--rule."
+            ]
         ),
         "test": HelpTopic(
             summary: "Test proxy or group latency.",

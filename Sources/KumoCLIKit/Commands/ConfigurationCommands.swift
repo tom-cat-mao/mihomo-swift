@@ -496,6 +496,8 @@ extension KumoCommand {
             var port: Int?
             @Option(name: .long, help: "Proxy mode: manual or pac.")
             var mode: SystemProxyMode?
+            @Flag(name: .long, help: "Union the bypass list with the default bypass list.")
+            var addDefaults = false
             @Option(name: .long, help: "Read a JSON settings patch from a file.")
             var file: String?
             @Flag(name: .long, help: "Read a JSON settings patch from stdin.")
@@ -505,7 +507,7 @@ extension KumoCommand {
             @OptionGroup var options: CLIOptions
 
             mutating func validate() throws {
-                let hasOptions = bypass != nil || networkService != nil || host != nil || port != nil || mode != nil
+                let hasOptions = bypass != nil || networkService != nil || host != nil || port != nil || mode != nil || addDefaults
                 if file != nil || stdin {
                     if hasOptions {
                         throw ValidationError("Use either --file/--stdin or explicit options, not both.")
@@ -535,6 +537,9 @@ extension KumoCommand {
                     if let host { settings.host = host }
                     if let port { settings.port = port }
                     if let mode { settings.mode = mode }
+                }
+                if addDefaults {
+                    settings.bypassList = mergingSystemProxyBypassDefaults(settings.bypassList)
                 }
 
                 if dryRun {
@@ -780,6 +785,15 @@ private func writeSystemProxyCommands(_ commands: [ShellCommand], state: String,
         let text = commands.map { ([$0.executable] + $0.arguments).joined(separator: " ") }.joined(separator: "\n")
         return dryRun ? text : "system proxy \(state)"
     }
+}
+
+/// Unions a bypass list with the default bypass list, dropping duplicates and
+/// sorting the result — the same merge the GUI's "Add Defaults" button
+/// performs. The defaults live in `SystemProxySettings.defaultBypassList`
+/// (`KumoCoreKit`), which `SystemProxyView` and the CLI share, so there is no
+/// second copy to keep in sync.
+func mergingSystemProxyBypassDefaults(_ bypassList: [String]) -> [String] {
+    Array(Set(bypassList + SystemProxySettings.defaultBypassList)).sorted()
 }
 
 private func tunSettingsSummary(_ settings: TunSettings) -> String {
