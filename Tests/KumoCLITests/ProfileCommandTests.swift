@@ -328,6 +328,105 @@ final class ProfileCommandTests: XCTestCase {
         }
     }
 
+    // MARK: - Groups and nodes
+
+    func testProfileGroupsAndNodesParse() throws {
+        let groups = try KumoCommand.parseAsRoot(["profile", "groups", "abc"])
+        let groupsCommand = try XCTUnwrap(groups as? KumoCommand.Profile.Groups)
+        XCTAssertEqual(groupsCommand.id, "abc")
+
+        let nodes = try KumoCommand.parseAsRoot(["profile", "nodes", "abc", "--json"])
+        let nodesCommand = try XCTUnwrap(nodes as? KumoCommand.Profile.Nodes)
+        XCTAssertEqual(nodesCommand.id, "abc")
+        XCTAssertTrue(nodesCommand.options.json)
+
+        XCTAssertThrowsError(try KumoCommand.parseAsRoot(["profile", "groups"]))
+        XCTAssertThrowsError(try KumoCommand.parseAsRoot(["profile", "nodes"]))
+    }
+
+    func testProfileGroupsParsesYAMLWithoutARunningCore() async throws {
+        let controller = try makeController()
+        try seedProfile(
+            controller,
+            id: "airport",
+            name: "Airport",
+            remoteURL: nil,
+            rawYAML: """
+            proxies:
+              - name: HK-01
+                server: hk.example.com
+                port: 443
+              - name: US-01
+                server: us.example.com
+                port: 8443
+            proxy-groups:
+              - name: Proxy
+                type: select
+                proxies: [HK-01, US-01]
+              - name: Empty
+                type: select
+                proxies: []
+            """
+        )
+
+        XCTAssertEqual(try controller.status().state, .stopped)
+        let payload = try await KumoCommand.Profile.Groups.perform(controller: controller, id: "airport")
+
+        XCTAssertEqual(payload.id, "airport")
+        XCTAssertEqual(payload.groups.map(\.name), ["Proxy"], "groups without members are dropped")
+        XCTAssertEqual(payload.groups.first?.proxies.map(\.name), ["HK-01", "US-01"])
+        XCTAssertNil(payload.groups.first?.selectedProxyName, "selection is only known while the core runs")
+    }
+
+    func testProfileNodesListsServersSortedByName() async throws {
+        let controller = try makeController()
+        try seedProfile(
+            controller,
+            id: "airport",
+            name: "Airport",
+            remoteURL: nil,
+            rawYAML: """
+            proxies:
+              - name: US-01
+                server: us.example.com
+                port: 8443
+              - name: HK-01
+                server: hk.example.com
+                port: 443
+              - name: No-Port
+                server: no-port.example.com
+            """
+        )
+
+        let payload = try await KumoCommand.Profile.Nodes.perform(controller: controller, id: "airport")
+
+        XCTAssertEqual(payload.id, "airport")
+        XCTAssertEqual(payload.nodes.map(\.name), ["HK-01", "No-Port", "US-01"])
+        XCTAssertEqual(payload.nodes.first, ProfileNodeEntry(name: "HK-01", server: "hk.example.com", port: 443))
+        XCTAssertEqual(payload.nodes.last, ProfileNodeEntry(name: "US-01", server: "us.example.com", port: 8443))
+        XCTAssertNil(payload.nodes[1].port)
+    }
+
+    func testProfileGroupsAndNodesRejectUnknownID() async throws {
+        let controller = try makeController()
+        try seedProfile(controller, id: "airport", name: "Airport", remoteURL: nil)
+
+        // The parse cache falls back to the current profile for an unknown
+        // id; both commands must fail instead of previewing the wrong profile.
+        do {
+            _ = try await KumoCommand.Profile.Groups.perform(controller: controller, id: "nope")
+            XCTFail("expected an unknown-profile error")
+        } catch {
+            XCTAssertEqual(String(describing: error), "Unknown profile id: nope")
+        }
+        do {
+            _ = try await KumoCommand.Profile.Nodes.perform(controller: controller, id: "nope")
+            XCTFail("expected an unknown-profile error")
+        } catch {
+            XCTAssertEqual(String(describing: error), "Unknown profile id: nope")
+        }
+    }
+
     // MARK: - Refresh
 
     func testProfileRefreshByIDRefreshesInPlace() async throws {

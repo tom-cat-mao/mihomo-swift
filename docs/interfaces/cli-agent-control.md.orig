@@ -51,11 +51,8 @@ kumo select "Proxy" "HK-01"
 kumo rules --json
 kumo rules enable 12
 kumo test "Proxy" --url https://example.com --json
-kumo connections close --ids 3f2a,9b1c
 kumo profile list --json
 kumo profile use default
-kumo profile groups airport-1f2a3b4c --json
-kumo profile nodes airport-1f2a3b4c --json
 kumo profile refresh "https://example.com/sub.yaml"
 kumo profile refresh --id airport-1f2a3b4c --use-proxy
 kumo profile update airport-1f2a3b4c --no-auto-update
@@ -92,15 +89,11 @@ Read-only inspection and tuning commands that map directly onto the shared
 ```bash
 kumo rules [--json]
 kumo rules enable <index> | kumo rules disable <index>
-kumo proxies [--geo] [--json]                       # --geo sends node hostnames to ipwho.is
-kumo connections close --ids <id1,id2,...> [--json]
 kumo profile list [--json]
 kumo profile use <id>
 kumo profile delete <id> [--dry-run] [--json]
 kumo profile import <path|file-url> [--json]      # local YAML; remote uses profile refresh
 kumo profile content <id> [--json]
-kumo profile groups <id> [--json]                 # offline preview of proxy-groups
-kumo profile nodes <id> [--json]                  # offline node/server map
 kumo profile refresh <url> [--use-proxy] [--json]
 kumo profile refresh --id <id> [--use-proxy] [--json]
 kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]
@@ -130,23 +123,6 @@ so the report names every failure instead of only the first one. `--all`
 cannot be combined with `--proxy`/`--rule`; `--geo` may be added to upgrade
 the GeoIP/GeoSite data files after the loop. The command still exits `0` when
 only some providers failed — the report's `failed` count is the signal.
-
-#### Proxies and connections (`--geo`, batch close)
-
-`kumo proxies` lists proxy groups from the running core. `--geo` additionally
-resolves a country code per node by sending each upstream hostname from the
-current profile to the public [ipwho.is](https://ipwho.is) GeoIP service
-(answers are cached under the app support directory, like the GUI). Because
-that discloses node hostnames to a third party, the lookup is opt-in and off
-by default: without `--geo` no hostname leaves the machine and both text and
-JSON output are unchanged. Nodes whose server is not in the profile (for
-example built-ins like `DIRECT`) stay unresolved.
-
-`kumo connections close --ids <id1,id2,...>` closes each id independently.
-Per-id failures are reported (`failed` in JSON, `failed <id>: <message>` lines
-in text) and never abort the remaining ids; the command exits 0 once the batch
-was attempted. `kumo connections --close <id>` and `--close-all` keep their
-single-target behavior.
 
 #### Profiles
 
@@ -178,12 +154,6 @@ it without writing. Name and subscription settings are preserved.
 `kumo profile content <id>` fails on an unknown id instead of falling back to
 the current profile, so scripts never print the wrong profile. The id must
 appear in `kumo profile list`.
-
-`kumo profile groups <id>` previews a profile's `proxy-groups:` (group name
-plus member names) and `kumo profile nodes <id>` lists its `proxies:` entries
-with their `server`/`port`. Both parse the profile YAML on disk, so they work
-while the core is stopped, and both pre-validate the id the same way as
-`profile content`. JSON echoes the requested `id` next to the parsed payload.
 
 #### Settings patches
 

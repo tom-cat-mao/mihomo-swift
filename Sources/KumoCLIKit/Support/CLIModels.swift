@@ -63,6 +63,38 @@ struct ProfileContentPayload: Encodable, Equatable {
     var content: String
 }
 
+/// Offline preview of a profile's `proxy-groups:` section. `id` is echoed so
+/// script consumers can prove which profile was parsed.
+struct ProfileGroupsPayload: Encodable, Equatable {
+    var id: String
+    var groups: [ProxyGroup]
+}
+
+/// One outbound entry of a profile's `proxies:` section.
+struct ProfileNodeEntry: Encodable, Equatable {
+    var name: String
+    var server: String
+    var port: Int?
+}
+
+/// Offline map of a profile's outbound nodes, ordered by name.
+struct ProfileNodesPayload: Encodable, Equatable {
+    var id: String
+    var nodes: [ProfileNodeEntry]
+}
+
+/// Per-id outcome of `kumo connections close --ids`; the batch reports
+/// failures instead of aborting on the first one.
+struct ConnectionCloseFailure: Encodable, Equatable {
+    var id: String
+    var error: String
+}
+
+struct ConnectionCloseReport: Encodable, Equatable {
+    var closed: [String]
+    var failed: [ConnectionCloseFailure]
+}
+
 struct ProfileRefreshReport: Encodable, Equatable {
     var profile: ProfileSummary
     var restartedCore: Bool

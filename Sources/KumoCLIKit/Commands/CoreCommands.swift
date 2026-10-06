@@ -93,16 +93,76 @@ extension KumoCommand {
     struct Proxies: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "List proxy groups and selected proxies.",
+            discussion: "With --geo, the upstream hostname of each node in the current profile is sent to the public ipwho.is GeoIP service to show a country code. The lookup is opt-in; without --geo no hostname leaves the machine and the output is unchanged.",
             aliases: ["proxy"]
         )
 
+        @Flag(name: .long, help: "Resolve and show a country code per node (sends proxy hostnames to ipwho.is).")
+        var geo = false
         @OptionGroup var options: CLIOptions
 
         mutating func run() async throws {
             try options.install()
-            let groups = try await CLIRuntime.current.controller.proxyGroups()
-            CLIRuntime.current.write(groups) { groups in
-                groups.map { "\($0.name): \($0.selectedProxyName ?? "-")" }.joined(separator: "\n")
+            let controller = CLIRuntime.current.controller
+            let groups = try await controller.proxyGroups()
+            let resolved = try await Self.resolve(
+                groups: groups,
+                geo: geo,
+                nodes: { try await controller.profileNodes(id: try controller.currentProfile().id) },
+                lookup: { ProxyGeoLookup(cacheURL: controller.paths.proxyGeoCacheFile) }
+            )
+            CLIRuntime.current.write(resolved) { groups in
+                geo ? Self.geoText(groups) : Self.text(groups)
+            }
+        }
+
+        /// The default text shape, unchanged by the `--geo` flag.
+        static func text(_ groups: [ProxyGroup]) -> String {
+            groups.map { "\($0.name): \($0.selectedProxyName ?? "-")" }.joined(separator: "\n")
+        }
+
+        /// With `--geo` each group is expanded into its nodes so the resolved
+        /// country code is visible in text mode; nodes with no resolved code
+        /// keep the plain name.
+        static func geoText(_ groups: [ProxyGroup]) -> String {
+            groups.map { group in
+                let header = "\(group.name): \(group.selectedProxyName ?? "-")"
+                let nodes = group.proxies.map { proxy in
+                    "  \(proxy.name)\(proxy.detectedCountry.map { " [\($0)]" } ?? "")"
+                }
+                return ([header] + nodes).joined(separator: "\n")
+            }.joined(separator: "\n")
+        }
+
+        /// Gate and enrichment seam for `--geo`, mirroring the GUI batch
+        /// (`KumoAppStore.scheduleCountryDetection`): proxy names map to
+        /// upstream servers through the current profile's `proxies:` section,
+        /// the unique hosts are resolved with bounded concurrency, and each
+        /// match is stamped onto `detectedCountry`.
+        ///
+        /// With `geo == false` neither `nodes` nor `lookup` is touched and the
+        /// groups are returned unchanged, so the default output stays
+        /// byte-identical and no hostname leaves the machine.
+        static func resolve(
+            groups: [ProxyGroup],
+            geo: Bool,
+            nodes: @Sendable () async throws -> [String: ProfileNodeInfo],
+            lookup: @Sendable () -> ProxyGeoLookup
+        ) async throws -> [ProxyGroup] {
+            guard geo else { return groups }
+            let serversByName = try await nodes().mapValues(\.server)
+            guard !serversByName.isEmpty else { return groups }
+            let countries = await lookup().countries(for: Array(Set(serversByName.values)))
+            guard !countries.isEmpty else { return groups }
+            return groups.map { group in
+                var group = group
+                for index in group.proxies.indices {
+                    guard let server = serversByName[group.proxies[index].name],
+                          let code = countries[server.lowercased()] ?? countries[server]
+                    else { continue }
+                    group.proxies[index].detectedCountry = code
+                }
+                return group
             }
         }
     }

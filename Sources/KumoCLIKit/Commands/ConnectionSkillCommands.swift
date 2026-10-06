@@ -4,7 +4,10 @@ import KumoCoreKit
 
 extension KumoCommand {
     struct Connections: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "List or close active connections.")
+        static let configuration = CommandConfiguration(
+            abstract: "List or close active connections.",
+            subcommands: [Close.self]
+        )
 
         @Option(name: .long, help: "Close a specific connection id.")
         var close: String?
@@ -33,6 +36,79 @@ extension KumoCommand {
             let connections = try await CLIRuntime.current.controller.connections()
             CLIRuntime.current.write(connections) { connections in
                 connections.map { "\($0.host) \($0.chain.joined(separator: " > "))" }.joined(separator: "\n")
+            }
+        }
+
+        struct Close: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Close specific active connections by id.")
+
+            @Option(name: .long, help: "Comma-separated connection ids, for example from `kumo connections --json`.")
+            var ids: String
+            @OptionGroup var options: CLIOptions
+
+            mutating func validate() throws {
+                _ = try Self.parseIDs(ids)
+            }
+
+            mutating func run() async throws {
+                try options.install()
+                let controller = CLIRuntime.current.controller
+                let report = await Self.perform(ids: try Self.parseIDs(ids)) { id in
+                    try await controller.closeConnection(id: id)
+                }
+                CLIRuntime.current.write(report) { report in
+                    let closed = report.closed.map { "closed \($0)" }
+                    let failed = report.failed.map { "failed \($0.id): \($0.error)" }
+                    return (closed + failed).joined(separator: "\n")
+                }
+            }
+
+            /// Splits the comma-separated `--ids` value into an ordered,
+            /// de-duplicated id list; empty entries are dropped and a list
+            /// with no id left is rejected.
+            static func parseIDs(_ raw: String) throws -> [String] {
+                var seen = Set<String>()
+                let ids = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && seen.insert($0).inserted }
+                guard !ids.isEmpty else {
+                    throw ValidationError("--ids must contain at least one connection id.")
+                }
+                return ids
+            }
+
+            /// Closes each id independently: a failing id is reported in
+            /// `failed` and never aborts the remaining ids.
+            static func perform(
+                ids: [String],
+                close: (String) async throws -> Void
+            ) async -> ConnectionCloseReport {
+                var closed: [String] = []
+                var failed: [ConnectionCloseFailure] = []
+                for id in ids {
+                    do {
+                        try await close(id)
+                        closed.append(id)
+                    } catch {
+                        failed.append(ConnectionCloseFailure(id: id, error: Self.message(for: error)))
+                    }
+                }
+                return ConnectionCloseReport(closed: closed, failed: failed)
+            }
+
+            /// Mirrors `CLIRuntime`'s display formatting for one per-id error,
+            /// with a short `localizedDescription` fallback for bridged errors
+            /// (`URLError` and friends) instead of the full `NSError` dump.
+            private static func message(for error: Error) -> String {
+                if let validation = error as? ValidationError {
+                    return validation.message
+                }
+                if let localized = error as? LocalizedError, let description = localized.errorDescription {
+                    return description
+                }
+                let description = (error as NSError).localizedDescription
+                return description.isEmpty ? String(describing: error) : description
             }
         }
     }

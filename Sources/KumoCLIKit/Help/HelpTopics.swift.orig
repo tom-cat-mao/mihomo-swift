@@ -45,18 +45,8 @@ enum HelpTopics {
         ),
         "proxies": HelpTopic(
             summary: "List proxy groups and their selected proxies.",
-            usage: [
-                "kumo proxies [--json]",
-                "kumo proxies --geo [--json]"
-            ],
-            options: [
-                "--geo           Resolve a country code per node (sends proxy hostnames to ipwho.is)."
-            ],
-            example: "kumo proxies --json",
-            details: [
-                "`--geo` is opt-in because it sends the upstream hostnames of the current profile's nodes to the public ipwho.is GeoIP service. Without it, no hostname leaves the machine and the output is unchanged.",
-                "`--geo` expands each group into its nodes with the resolved country code; nodes with no server in the profile (for example built-ins like DIRECT) stay unresolved."
-            ]
+            usage: ["kumo proxies [--json]"],
+            example: "kumo proxies --json"
         ),
         "prefs": HelpTopic(
             summary: "Show or update Kumo GUI preferences.",
@@ -115,8 +105,6 @@ enum HelpTopics {
                 "kumo profile delete <id> [--dry-run] [--json]",
                 "kumo profile import <path|file-url> [--json]",
                 "kumo profile content <id> [--json]",
-                "kumo profile groups <id> [--json]",
-                "kumo profile nodes <id> [--json]",
                 "kumo profile refresh <url> [--use-proxy] [--json]",
                 "kumo profile refresh --id <id> [--use-proxy] [--json]",
                 "kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]",
@@ -126,26 +114,7 @@ enum HelpTopics {
             details: [
                 "`profile import` imports a local YAML file. Remote subscriptions use `profile refresh`.",
                 "`profile refresh <url>` refreshes the matching profile in place when its subscription URL is already stored — same id, no duplicate, current selection kept. A new URL is imported as a new current profile.",
-                "`profile update` merges only the provided flags over the stored metadata; omitted fields keep their value. `profile edit` validates the replacement YAML before writing.",
-                "`profile groups` and `profile nodes` parse the profile YAML on disk, so they work while the core is stopped; both fail on an unknown id instead of previewing the current profile."
-            ]
-        ),
-        "profile groups": HelpTopic(
-            summary: "Preview a profile's proxy groups without a running core.",
-            usage: ["kumo profile groups <id> [--json]"],
-            example: "kumo profile groups airport-1f2a3b4c --json",
-            details: [
-                "Parses the profile's `proxy-groups:` section on disk. Selected state, latency, and node types come from the running core and are not part of this preview.",
-                "The id must appear in `kumo profile list`; an unknown id fails instead of previewing the current profile."
-            ]
-        ),
-        "profile nodes": HelpTopic(
-            summary: "List a profile's nodes and upstream servers without a running core.",
-            usage: ["kumo profile nodes <id> [--json]"],
-            example: "kumo profile nodes airport-1f2a3b4c --json",
-            details: [
-                "Parses the profile's `proxies:` section on disk. Server addresses never leave the Mihomo controller API, so they are only available from the profile YAML.",
-                "The id must appear in `kumo profile list`; an unknown id fails instead of listing the current profile."
+                "`profile update` merges only the provided flags over the stored metadata; omitted fields keep their value. `profile edit` validates the replacement YAML before writing."
             ]
         ),
         "profile refresh": HelpTopic(
@@ -398,24 +367,13 @@ enum HelpTopics {
             usage: [
                 "kumo connections [--json]",
                 "kumo connections --close <id> [--json]",
-                "kumo connections close --ids <id1,id2,...> [--json]",
                 "kumo connections --close-all [--json]"
             ],
             options: [
                 "--close <id>    Close a specific connection id.",
                 "--close-all     Close all active connections."
             ],
-            example: "kumo connections --json",
-            details: ["`connections close --ids` reports each id separately; one failing id never aborts the rest of the batch."]
-        ),
-        "connections close": HelpTopic(
-            summary: "Close specific active connections by id.",
-            usage: ["kumo connections close --ids <id1,id2,...> [--json]"],
-            options: ["--ids <id1,id2,...>   Comma-separated connection ids."],
-            example: "kumo connections close --ids 3f2a,9b1c --json",
-            details: [
-                "Each id is closed independently: per-id failures are reported (a `failed` list in JSON, `failed <id>: <message>` lines in text) and do not stop the batch. Duplicate and empty ids are dropped."
-            ]
+            example: "kumo connections --json"
         ),
         "backup": HelpTopic(
             summary: "Export or import Kumo backup data.",

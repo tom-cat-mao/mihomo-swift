@@ -92,7 +92,7 @@ extension KumoCommand {
     struct Profile: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Manage profiles.",
-            subcommands: [List.self, Use.self, Delete.self, Import.self, Content.self, Refresh.self, Update.self, Edit.self],
+            subcommands: [List.self, Use.self, Delete.self, Import.self, Content.self, Groups.self, Nodes.self, Refresh.self, Update.self, Edit.self],
             defaultSubcommand: List.self
         )
 
@@ -186,6 +186,73 @@ extension KumoCommand {
                     throw ValidationError("Unknown profile id: \(id)")
                 }
                 return ProfileContentPayload(id: id, content: try controller.profileContent(id: id))
+            }
+        }
+
+        struct Groups: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Preview a profile's proxy groups without a running core.",
+                discussion: "Parses the profile YAML on disk. Selected state, latency, and node types are only available through `kumo proxies` while the core is running."
+            )
+            @Argument(help: "Profile id shown by `kumo profile list`.")
+            var id: String
+            @OptionGroup var options: CLIOptions
+
+            mutating func run() async throws {
+                try options.install()
+                let payload = try await Self.perform(controller: CLIRuntime.current.controller, id: id)
+                CLIRuntime.current.write(payload) { payload in
+                    payload.groups.map { group in
+                        let members = group.proxies.map(\.name).joined(separator: ", ")
+                        return "\(group.name): \(members.isEmpty ? "-" : members)"
+                    }.joined(separator: "\n")
+                }
+            }
+
+            /// Pre-validates the id: `profileProxyGroups(id:)` reads whatever
+            /// profile the repository falls back to for an unknown id, which
+            /// would preview the wrong profile instead of failing.
+            static func perform(controller: KumoController, id: String) async throws -> ProfileGroupsPayload {
+                guard try controller.profiles().contains(where: { $0.id == id }) else {
+                    throw ValidationError("Unknown profile id: \(id)")
+                }
+                return ProfileGroupsPayload(id: id, groups: try await controller.profileProxyGroups(id: id))
+            }
+        }
+
+        struct Nodes: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "List a profile's nodes and upstream servers without a running core.",
+                discussion: "Parses the profile YAML on disk; the Mihomo controller never exposes server addresses."
+            )
+            @Argument(help: "Profile id shown by `kumo profile list`.")
+            var id: String
+            @OptionGroup var options: CLIOptions
+
+            mutating func run() async throws {
+                try options.install()
+                let payload = try await Self.perform(controller: CLIRuntime.current.controller, id: id)
+                CLIRuntime.current.write(payload) { payload in
+                    payload.nodes.map { node in
+                        let address = node.port.map { "\(node.server):\($0)" } ?? node.server
+                        return "\(node.name): \(address)"
+                    }.joined(separator: "\n")
+                }
+            }
+
+            /// Pre-validates the id for the same fallback reason as
+            /// `Profile.Groups.perform`.
+            static func perform(controller: KumoController, id: String) async throws -> ProfileNodesPayload {
+                guard try controller.profiles().contains(where: { $0.id == id }) else {
+                    throw ValidationError("Unknown profile id: \(id)")
+                }
+                let nodes = try await controller.profileNodes(id: id)
+                return ProfileNodesPayload(
+                    id: id,
+                    nodes: nodes.values
+                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                        .map { ProfileNodeEntry(name: $0.name, server: $0.server, port: $0.port) }
+                )
             }
         }
 
