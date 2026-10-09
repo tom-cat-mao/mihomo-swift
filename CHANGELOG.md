@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-10-09
+
 ### Changed
 - `kumo profile refresh` now deduplicates by subscription URL: a URL that
   already belongs to a stored profile refreshes that profile in place instead
