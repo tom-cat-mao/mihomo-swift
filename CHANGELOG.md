@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-10-09
+
+### Changed
+- `kumo profile refresh` now deduplicates by subscription URL: a URL that
+  already belongs to a stored profile refreshes that profile in place instead
+  of importing a duplicate and force-switching to it. Auto-update and the
+  current selection are preserved; an unknown URL still imports a new current
+  profile.
+
+### Added
+- Profile control from the CLI: `kumo profile refresh --id <id>` refreshes one
+  profile in place (restarting a running core when it is current),
+  `--use-proxy` fetches through the local Mihomo proxy, `kumo profile update`
+  edits name, subscription URL, auto-update, and proxy preferences without
+  re-downloading the YAML (omitted fields keep their stored values,
+  `--dry-run` previews the merge), and `kumo profile edit` replaces the YAML
+  from `--file`/`--stdin` with parse validation. `kumo profile content` now
+  fails on unknown ids instead of printing the current profile.
+- Offline profile previews: `kumo profile groups <id>` and
+  `kumo profile nodes <id>` parse the profile YAML on disk, so proxy groups and
+  node upstream addresses are available without a running core.
+- Core runtime settings: `kumo config get [key]`, `kumo config set` (scalar
+  flags or a `--file`/`--stdin` JSON patch, with port, log-level, and
+  process-mode validation and `--dry-run`), and `kumo config secret [--set]`
+  (reports whether a secret is set and never prints it; a new secret takes
+  effect on the next core start). DNS, sniffer, and TUN keys are rejected with
+  a pointer to their dedicated commands.
+- Runtime config overrides: `kumo override list|content|add|update|delete|
+  reorder`, matching the GUI's next-start semantics with `--restart` to apply
+  immediately and ids validated before use. `--format js`, `--global`, and
+  unproxied remote adds are reported as warnings.
+- GUI preferences: `kumo prefs get|set` over launch-at-login, menu bar icon,
+  quit-on-last-window-close, keep-core-running-on-quit, update channel, app
+  language, and onboarding state, with typed values and `--dry-run`.
+- `kumo cli-link status|install|uninstall` manages the `/usr/local/bin/kumo`
+  symlink. Install and uninstall request a one-time administrator
+  authorization, and uninstall only removes a link Kumo manages.
+- Batch operations: `kumo providers update --all` updates every proxy and rule
+  provider with per-provider outcome reporting, `kumo connections close --ids`
+  closes a batch with per-id failure reporting, and
+  `kumo sysproxy set --add-defaults` unions the bypass list with the GUI
+  default bypass list.
+- Opt-in proxy geography: `kumo proxies --geo` resolves a country code per
+  node through the public ipwho.is GeoIP service; without the flag no hostname
+  leaves the machine and the output is unchanged.
+- Sub-Store content browsing: `kumo substore subscriptions|collections|files|
+  modules|content|preview|settings|logs` reads entries and backend state
+  (`preview` returns parsed node arrays, never rendered Clash YAML), and
+  `kumo substore import <name-or-path>` imports a subscription or collection
+  as a Kumo profile. Sub-Store content writes remain out of scope.
+
+### Fixed
+- Scheduled profile refresh (`refreshDueProfiles`) preserves Sub-Store profile
+  metadata by routing Sub-Store-managed profiles through the Sub-Store refresh
+  path instead of a plain remote refresh.
+- JSON settings patches reject unknown keys with the list of valid keys
+  instead of silently ignoring them, so a typo no longer succeeds silently
+  (system proxy patches keep their previous lenient behavior).
+
 ## [0.0.17] - 2026-10-06
 
 ### Added

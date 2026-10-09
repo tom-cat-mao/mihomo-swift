@@ -1,3 +1,5 @@
+import KumoCoreKit
+
 /// Curated `kumo help <term>` topics.
 ///
 /// `CommandIndex` decides which commands exist; this registry only supplies
@@ -43,8 +45,52 @@ enum HelpTopics {
         ),
         "proxies": HelpTopic(
             summary: "List proxy groups and their selected proxies.",
-            usage: ["kumo proxies [--json]"],
-            example: "kumo proxies --json"
+            usage: [
+                "kumo proxies [--json]",
+                "kumo proxies --geo [--json]"
+            ],
+            options: [
+                "--geo           Resolve a country code per node (sends proxy hostnames to ipwho.is)."
+            ],
+            example: "kumo proxies --json",
+            details: [
+                "`--geo` is opt-in because it sends the upstream hostnames of the current profile's nodes to the public ipwho.is GeoIP service. Without it, no hostname leaves the machine and the output is unchanged.",
+                "`--geo` expands each group into its nodes with the resolved country code; nodes with no server in the profile (for example built-ins like DIRECT) stay unresolved."
+            ]
+        ),
+        "prefs": HelpTopic(
+            summary: "Show or update Kumo GUI preferences.",
+            usage: [
+                "kumo prefs [get] [<key>] [--json]",
+                "kumo prefs set <key> <value> [--dry-run] [--json]"
+            ],
+            options: [
+                "--dry-run       Print the merged preferences without writing."
+            ],
+            example: "kumo prefs set keepCoreRunningOnQuit true --json",
+            details: [
+                "`prefs get` prints the whole preference set or one key: \(KumoCommand.Prefs.Key.validKeysList).",
+                "`prefs set` reads the stored preferences, changes only the given key, and writes the set back, so other keys are never clobbered. Booleans are strict true|false, updateChannel is stable|beta, and appLanguage is a BCP-47 tag such as en or zh-Hans, or system to follow the system language.",
+                "launchAtLogin applies on the next GUI launch (the CLI does not register the login item), keepCoreRunningOnQuit takes effect on the next GUI quit, and hideMenuBarIcon is a GUI-only preference."
+            ]
+        ),
+        "prefs get": HelpTopic(
+            summary: "Print stored GUI preferences.",
+            usage: [
+                "kumo prefs get [--json]",
+                "kumo prefs get <\(KumoCommand.Prefs.Key.validKeysList.replacingOccurrences(of: ", ", with: "|"))> [--json]"
+            ],
+            example: "kumo prefs get launchAtLogin --json",
+            details: ["With no key this prints the whole preference set; unknown keys fail with the list of valid ones."]
+        ),
+        "prefs set": HelpTopic(
+            summary: "Update one GUI preference.",
+            usage: ["kumo prefs set <key> <value> [--dry-run] [--json]"],
+            options: ["--dry-run       Print the merged preferences without writing."],
+            example: "kumo prefs set appLanguage zh-Hans --json",
+            details: [
+                "The stored preferences are read first and the whole set is written back, so a set never clears other keys. --dry-run prints the merged preferences without writing."
+            ]
         ),
         "select": HelpTopic(
             summary: "Select a proxy for a group.",
@@ -69,10 +115,103 @@ enum HelpTopics {
                 "kumo profile delete <id> [--dry-run] [--json]",
                 "kumo profile import <path|file-url> [--json]",
                 "kumo profile content <id> [--json]",
-                "kumo profile refresh <url> [--json]"
+                "kumo profile groups <id> [--json]",
+                "kumo profile nodes <id> [--json]",
+                "kumo profile refresh <url> [--use-proxy] [--json]",
+                "kumo profile refresh --id <id> [--use-proxy] [--json]",
+                "kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]",
+                "kumo profile edit <id> --file <path>|--stdin [--dry-run] [--json]"
             ],
             example: "kumo profile list --json",
-            details: ["`profile import` imports a local YAML file. Remote subscriptions use `profile refresh`."]
+            details: [
+                "`profile import` imports a local YAML file. Remote subscriptions use `profile refresh`.",
+                "`profile refresh <url>` refreshes the matching profile in place when its subscription URL is already stored — same id, no duplicate, current selection kept. A new URL is imported as a new current profile.",
+                "`profile update` merges only the provided flags over the stored metadata; omitted fields keep their value. `profile edit` validates the replacement YAML before writing.",
+                "`profile groups` and `profile nodes` parse the profile YAML on disk, so they work while the core is stopped; both fail on an unknown id instead of previewing the current profile."
+            ]
+        ),
+        "profile groups": HelpTopic(
+            summary: "Preview a profile's proxy groups without a running core.",
+            usage: ["kumo profile groups <id> [--json]"],
+            example: "kumo profile groups airport-1f2a3b4c --json",
+            details: [
+                "Parses the profile's `proxy-groups:` section on disk. Selected state, latency, and node types come from the running core and are not part of this preview.",
+                "The id must appear in `kumo profile list`; an unknown id fails instead of previewing the current profile."
+            ]
+        ),
+        "profile nodes": HelpTopic(
+            summary: "List a profile's nodes and upstream servers without a running core.",
+            usage: ["kumo profile nodes <id> [--json]"],
+            example: "kumo profile nodes airport-1f2a3b4c --json",
+            details: [
+                "Parses the profile's `proxies:` section on disk. Server addresses never leave the Mihomo controller API, so they are only available from the profile YAML.",
+                "The id must appear in `kumo profile list`; an unknown id fails instead of listing the current profile."
+            ]
+        ),
+        "profile refresh": HelpTopic(
+            summary: "Refresh a subscription in place or import a remote profile URL.",
+            usage: [
+                "kumo profile refresh <url> [--use-proxy] [--json]",
+                "kumo profile refresh --id <id> [--use-proxy] [--json]"
+            ],
+            options: [
+                "--id <id>       Refresh this profile in place.",
+                "--use-proxy     Fetch through the local Mihomo proxy; requires a running core."
+            ],
+            example: "kumo profile refresh --id airport-1f2a3b4c --json",
+            details: [
+                "A URL already stored on a profile refreshes that profile in place without changing the current selection; the first time a URL is seen it is imported as a new current profile.",
+                "`--id` refreshes the profile in place and restarts the core when the refreshed profile is the current one and the core is running."
+            ]
+        ),
+        "profile update": HelpTopic(
+            summary: "Update a profile's name, subscription URL, or update preferences.",
+            usage: [
+                "kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]"
+            ],
+            options: [
+                "--name <name>           Rename the profile.",
+                "--url <url>             Set the subscription URL.",
+                "--auto-update           Enable automatic updates (--no-auto-update disables).",
+                "--use-proxy             Refresh through the local Mihomo proxy (--no-use-proxy disables).",
+                "--dry-run               Print the merged metadata without writing."
+            ],
+            example: "kumo profile update airport --name \"Airport A\" --no-auto-update --json",
+            details: ["Omitted fields keep their stored value; the profile YAML is not re-downloaded (use `kumo profile refresh`)."]
+        ),
+        "profile edit": HelpTopic(
+            summary: "Replace a profile's YAML from a file or stdin.",
+            usage: [
+                "kumo profile edit <id> --file <path> [--dry-run] [--json]",
+                "kumo profile edit <id> --stdin [--dry-run] [--json]"
+            ],
+            options: [
+                "--file <path>   Read the replacement YAML from a file.",
+                "--stdin         Read the replacement YAML from stdin.",
+                "--dry-run       Validate the YAML without writing."
+            ],
+            example: "kumo profile edit airport --file ./airport.yaml --dry-run --json",
+            details: ["The replacement must parse as a YAML mapping. Name and subscription settings are preserved."]
+        ),
+        "override": HelpTopic(
+            summary: "Manage runtime config overrides.",
+            usage: [
+                "kumo override [list] [--json]",
+                "kumo override content <id> [--json]",
+                "kumo override add --name <name> (--file <path> | --stdin) [--format yaml|js] [--global] [--dry-run] [--restart] [--json]",
+                "kumo override add --url <url> [--name <name>] [--format yaml|js] [--global] [--restart] [--json]",
+                "kumo override update <id> (--file <path> | --stdin) [--restart] [--json]",
+                "kumo override delete <id> [--dry-run] [--restart] [--json]",
+                "kumo override reorder --ids <id1,id2,...> [--restart] [--json]"
+            ],
+            example: "kumo override add --name dns-fix --file dns.yaml --json",
+            details: [
+                "Overrides merge into the runtime config on the next core start. --restart restarts a running core so a mutation takes effect immediately; with no running core it is a no-op.",
+                "Only YAML overrides are merged. --format js bodies are stored but never applied, and --global is stored without a runtime effect yet.",
+                "Remote --url overrides are fetched directly with no proxy support.",
+                "`reorder --ids` moves the listed ids to the front in the given order; unlisted ids keep their relative order after them.",
+                "Local `add --dry-run` validates that the YAML parses without writing the override."
+            ]
         ),
         "dns": HelpTopic(
             summary: "Show or update DNS runtime settings.",
@@ -138,11 +277,15 @@ enum HelpTopics {
                 "kumo sysproxy on [--dry-run] [--json]",
                 "kumo sysproxy off [--dry-run] [--json]",
                 "kumo sysproxy set --bypass <comma-list> [--network-service <name>] [--host <host>] [--port <port>] [--mode manual|pac] [--dry-run] [--json]",
+                "kumo sysproxy set --add-defaults [--dry-run] [--json]",
                 "kumo sysproxy set --file <path> [--dry-run] [--json]",
                 "kumo sysproxy set --stdin [--dry-run] [--json]"
             ],
-            example: "kumo sysproxy on --dry-run --json",
-            details: ["`sysproxy set` updates stored settings and re-applies them when the system proxy is currently enabled."]
+            example: "kumo sysproxy set --add-defaults --dry-run --json",
+            details: [
+                "`sysproxy set` updates stored settings and re-applies them when the system proxy is currently enabled.",
+                "`--add-defaults` unions the resulting bypass list with the default list shared with the GUI's \"Add Defaults\" button, dropping duplicates and sorting the result."
+            ]
         ),
         "service": HelpTopic(
             summary: "Manage Kumo service mode.",
@@ -153,6 +296,28 @@ enum HelpTopics {
             ],
             example: "kumo service status --json",
             details: ["Service mode installs the privileged helper used for TUN and system proxy control. Use `kumo agent` for the user-level agent tier."]
+        ),
+        "cli-link": HelpTopic(
+            summary: "Manage the `kumo` command-line tool link on PATH.",
+            usage: [
+                "kumo cli-link [status] [--json]",
+                "kumo cli-link install [--dry-run] [--json]",
+                "kumo cli-link uninstall [--dry-run] [--json]"
+            ],
+            options: ["--dry-run       Report the current link state and intended action without prompting or writing."],
+            example: "kumo cli-link status --json",
+            details: [
+                "`status` reports the symlink state, the target path, and the bundled kumo binary path.",
+                "`install` links \(CLILinkInstaller.defaultTargetPath) to the bundled CLI and `uninstall` removes it. The target directory is not user-writable, so macOS shows a one-time administrator authorization prompt (osascript); --dry-run never prompts.",
+                "`uninstall` refuses to remove a symlink or file that Kumo does not manage."
+            ]
+        ),
+        "cli-link install": HelpTopic(
+            summary: "Create the `kumo` symlink.",
+            usage: ["kumo cli-link install [--dry-run] [--json]"],
+            options: ["--dry-run       Report the current link state and intended action without prompting or writing."],
+            example: "kumo cli-link install --dry-run --json",
+            details: ["AppleScript asks macOS for administrator authorization once because \(CLILinkInstaller.defaultTargetPath) lives outside the user's writable directories."]
         ),
         "agent": HelpTopic(
             summary: "Manage the user-level Kumo agent (kumod).",
@@ -181,9 +346,13 @@ enum HelpTopics {
                 "kumo providers [--json]",
                 "kumo providers update --proxy <name> [--json]",
                 "kumo providers update --rule <name> [--json]",
-                "kumo providers update --geo [--json]"
+                "kumo providers update --geo [--json]",
+                "kumo providers update --all [--geo] [--json]"
             ],
-            example: "kumo providers update --geo --json"
+            example: "kumo providers update --all --json",
+            details: [
+                "`--all` updates every proxy and rule provider and reports each outcome; a failing provider does not stop the remaining ones. `--all` cannot be combined with --proxy/--rule."
+            ]
         ),
         "test": HelpTopic(
             summary: "Test proxy or group latency.",
@@ -229,13 +398,24 @@ enum HelpTopics {
             usage: [
                 "kumo connections [--json]",
                 "kumo connections --close <id> [--json]",
+                "kumo connections close --ids <id1,id2,...> [--json]",
                 "kumo connections --close-all [--json]"
             ],
             options: [
                 "--close <id>    Close a specific connection id.",
                 "--close-all     Close all active connections."
             ],
-            example: "kumo connections --json"
+            example: "kumo connections --json",
+            details: ["`connections close --ids` reports each id separately; one failing id never aborts the rest of the batch."]
+        ),
+        "connections close": HelpTopic(
+            summary: "Close specific active connections by id.",
+            usage: ["kumo connections close --ids <id1,id2,...> [--json]"],
+            options: ["--ids <id1,id2,...>   Comma-separated connection ids."],
+            example: "kumo connections close --ids 3f2a,9b1c --json",
+            details: [
+                "Each id is closed independently: per-id failures are reported (a `failed` list in JSON, `failed <id>: <message>` lines in text) and do not stop the batch. Duplicate and empty ids are dropped."
+            ]
         ),
         "backup": HelpTopic(
             summary: "Export or import Kumo backup data.",
@@ -252,13 +432,49 @@ enum HelpTopics {
             details: ["Installs the managed Mihomo core that `kumo start` runs."]
         ),
         "config": HelpTopic(
-            summary: "Show Kumo configuration paths.",
+            summary: "Show Kumo paths and runtime settings.",
             usage: [
                 "kumo config [path] [--json]",
-                "kumo config list [--json]"
+                "kumo config list [--json]",
+                "kumo config get [<key>] [--json]",
+                "kumo config set [<options>] [--dry-run] [--json]",
+                "kumo config secret [--set <secret>] [--json]"
             ],
-            example: "kumo config list --json",
-            details: ["`config path` prints the application support directory; `config list` prints every CLI-visible path."]
+            example: "kumo config get --json",
+            details: [
+                "`config path` prints the application support directory; `config list` prints every CLI-visible path.",
+                "`config get` prints the stored CoreRuntimeSettings object or one key. `config set` owns mixedPort, allowLan, logLevel, ipv6, and findProcessMode; DNS, sniffer, and TUN settings use `kumo dns`, `kumo sniffer`, and `kumo tun`. `config secret` reports or replaces the controller secret without printing it."
+            ]
+        ),
+        "config get": HelpTopic(
+            summary: "Print stored runtime settings.",
+            usage: [
+                "kumo config get [--json]",
+                "kumo config get <mixedPort|allowLan|logLevel|ipv6|findProcessMode|geoData> [--json]"
+            ],
+            example: "kumo config get mixedPort --json",
+            details: ["Unknown keys fail with the list of valid keys. DNS, sniffer, and TUN settings have dedicated commands."]
+        ),
+        "config set": HelpTopic(
+            summary: "Update core runtime settings.",
+            usage: [
+                "kumo config set --mixed-port <port> [--allow-lan <bool>] [--log-level <level>] [--ipv6 <bool>] [--find-process-mode <mode>] [--dry-run] [--json]",
+                "kumo config set --file <path> [--dry-run] [--json]",
+                "kumo config set --stdin [--dry-run] [--json]"
+            ],
+            example: "kumo config set --mixed-port 7897 --dry-run --json",
+            details: [
+                "`mixedPort` must be 1...65535, `logLevel` one of silent|error|warning|info|debug, and `findProcessMode` one of always|strict|off. A JSON patch rejects unknown top-level keys with the list of valid ones; dns, sniffer, and tun point at their dedicated commands. --dry-run prints the merged settings without writing."
+            ]
+        ),
+        "config secret": HelpTopic(
+            summary: "Show or replace the controller secret.",
+            usage: [
+                "kumo config secret [--json]",
+                "kumo config secret --set <secret> [--json]"
+            ],
+            example: "kumo config secret --json",
+            details: ["The stored secret is never printed; the command reports set=true|false. A new secret takes effect the next time the core starts, not on a running core."]
         ),
         "doctor": HelpTopic(
             summary: "Inspect runtime, profile, and core candidates.",
@@ -272,14 +488,48 @@ enum HelpTopics {
             example: "kumo runtime-events --limit 20 --json"
         ),
         "substore": HelpTopic(
-            summary: "Manage bundled Sub-Store resources and runtime.",
+            summary: "Manage bundled Sub-Store resources and browse its content.",
             usage: [
                 "kumo substore status [--json]",
                 "kumo substore prepare [--json]",
-                "kumo substore start|stop|restart [--json]"
+                "kumo substore start|stop|restart [--json]",
+                "kumo substore subscriptions|collections [--json]",
+                "kumo substore files|modules [--json]",
+                "kumo substore content <name> [--kind subscription|collection|file] [--json]",
+                "kumo substore preview <name> [--kind subscription|collection|file] [--json]",
+                "kumo substore import <name-or-path> [--name <profile-name>] [--use-proxy] [--json]",
+                "kumo substore settings [--json]",
+                "kumo substore logs [--limit <count>] [--json]"
             ],
-            example: "kumo substore status --json",
-            details: ["`prepare` installs or refreshes the bundled Sub-Store resources before the backend is started."]
+            example: "kumo substore import airport --json",
+            details: [
+                "`prepare` installs or refreshes the bundled Sub-Store resources before the backend is started.",
+                "Content commands are read-only; `import` is the only write and stores one new Kumo profile. Sub-Store mutations (create/update/delete, tokens, artifacts) stay in the GUI.",
+                "`import` takes a bare name, resolved against subscriptions first then collections (canonical name, then display name), or an explicit /download path or URL. Files are not Clash profiles and cannot be imported.",
+                "`preview` prints the backend's parsed node arrays (`original`/`processed`); preview output is never rendered Clash YAML."
+            ]
+        ),
+        "substore import": HelpTopic(
+            summary: "Import a Sub-Store subscription or collection as a Kumo profile.",
+            usage: ["kumo substore import <name-or-path> [--name <profile-name>] [--use-proxy] [--json]"],
+            options: [
+                "--name <profile-name>   Store the profile under this name.",
+                "--use-proxy             Download through the local Mihomo proxy; requires a running core."
+            ],
+            example: "kumo substore import airport --name \"Airport A\" --json",
+            details: [
+                "A bare name resolves against subscriptions first, then collections; a /download path or a URL with a scheme is used unchanged. Unknown names fail with the list commands to run.",
+                "The imported profile is Sub-Store-managed and refreshes through `kumo profile refresh --id <id>`."
+            ]
+        ),
+        "substore preview": HelpTopic(
+            summary: "Preview a Sub-Store entry's parsed nodes.",
+            usage: ["kumo substore preview <name> [--kind subscription|collection|file] [--json]"],
+            options: ["--kind <kind>   Entry kind: subscription, collection, or file (default: auto)."],
+            example: "kumo substore preview airport --json",
+            details: [
+                "The backend previews through its JSON target, so the command prints parsed node arrays — the same `original`/`processed` data the GUI shows — not rendered Clash YAML."
+            ]
         ),
         "skills": HelpTopic(
             summary: "Manage bundled Kumo agent skills.",

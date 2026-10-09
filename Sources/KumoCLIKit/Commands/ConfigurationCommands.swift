@@ -5,8 +5,8 @@ import KumoCoreKit
 extension KumoCommand {
     struct Config: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Show Kumo configuration paths.",
-            subcommands: [Path.self, List.self],
+            abstract: "Show Kumo paths or runtime settings.",
+            subcommands: [Path.self, List.self, Get.self, Set.self, Secret.self],
             defaultSubcommand: Path.self,
             aliases: ["c"]
         )
@@ -92,7 +92,7 @@ extension KumoCommand {
     struct Profile: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Manage profiles.",
-            subcommands: [List.self, Use.self, Delete.self, Import.self, Content.self, Refresh.self],
+            subcommands: [List.self, Use.self, Delete.self, Import.self, Content.self, Groups.self, Nodes.self, Refresh.self, Update.self, Edit.self],
             defaultSubcommand: List.self
         )
 
@@ -174,24 +174,346 @@ extension KumoCommand {
             @OptionGroup var options: CLIOptions
             mutating func run() async throws {
                 try options.install()
-                let content = try CLIRuntime.current.controller.profileContent(id: id)
-                let payload = ProfileContentPayload(id: id, content: content)
+                let payload = try Self.perform(controller: CLIRuntime.current.controller, id: id)
                 CLIRuntime.current.write(payload) { $0.content }
+            }
+
+            /// Pre-validates the id: `KumoController.profileContent(id:)`
+            /// silently falls back to the current profile for an unknown id,
+            /// which would print the wrong profile instead of failing.
+            static func perform(controller: KumoController, id: String) throws -> ProfileContentPayload {
+                guard try controller.profiles().contains(where: { $0.id == id }) else {
+                    throw ValidationError("Unknown profile id: \(id)")
+                }
+                return ProfileContentPayload(id: id, content: try controller.profileContent(id: id))
+            }
+        }
+
+        struct Groups: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Preview a profile's proxy groups without a running core.",
+                discussion: "Parses the profile YAML on disk. Selected state, latency, and node types are only available through `kumo proxies` while the core is running."
+            )
+            @Argument(help: "Profile id shown by `kumo profile list`.")
+            var id: String
+            @OptionGroup var options: CLIOptions
+
+            mutating func run() async throws {
+                try options.install()
+                let payload = try await Self.perform(controller: CLIRuntime.current.controller, id: id)
+                CLIRuntime.current.write(payload) { payload in
+                    payload.groups.map { group in
+                        let members = group.proxies.map(\.name).joined(separator: ", ")
+                        return "\(group.name): \(members.isEmpty ? "-" : members)"
+                    }.joined(separator: "\n")
+                }
+            }
+
+            /// Pre-validates the id: `profileProxyGroups(id:)` reads whatever
+            /// profile the repository falls back to for an unknown id, which
+            /// would preview the wrong profile instead of failing.
+            static func perform(controller: KumoController, id: String) async throws -> ProfileGroupsPayload {
+                guard try controller.profiles().contains(where: { $0.id == id }) else {
+                    throw ValidationError("Unknown profile id: \(id)")
+                }
+                return ProfileGroupsPayload(id: id, groups: try await controller.profileProxyGroups(id: id))
+            }
+        }
+
+        struct Nodes: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "List a profile's nodes and upstream servers without a running core.",
+                discussion: "Parses the profile YAML on disk; the Mihomo controller never exposes server addresses."
+            )
+            @Argument(help: "Profile id shown by `kumo profile list`.")
+            var id: String
+            @OptionGroup var options: CLIOptions
+
+            mutating func run() async throws {
+                try options.install()
+                let payload = try await Self.perform(controller: CLIRuntime.current.controller, id: id)
+                CLIRuntime.current.write(payload) { payload in
+                    payload.nodes.map { node in
+                        let address = node.port.map { "\(node.server):\($0)" } ?? node.server
+                        return "\(node.name): \(address)"
+                    }.joined(separator: "\n")
+                }
+            }
+
+            /// Pre-validates the id for the same fallback reason as
+            /// `Profile.Groups.perform`.
+            static func perform(controller: KumoController, id: String) async throws -> ProfileNodesPayload {
+                guard try controller.profiles().contains(where: { $0.id == id }) else {
+                    throw ValidationError("Unknown profile id: \(id)")
+                }
+                let nodes = try await controller.profileNodes(id: id)
+                return ProfileNodesPayload(
+                    id: id,
+                    nodes: nodes.values
+                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                        .map { ProfileNodeEntry(name: $0.name, server: $0.server, port: $0.port) }
+                )
             }
         }
 
         struct Refresh: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(abstract: "Refresh or import a remote profile URL.")
-            @Argument(help: "Remote subscription URL.")
-            var url: String
+            static let configuration = CommandConfiguration(
+                abstract: "Refresh a subscription in place or import a remote profile URL."
+            )
+            @Argument(help: "Remote subscription URL. Refreshes the matching profile in place when the URL is already known; otherwise imports a new current profile.")
+            var url: String?
+            @Option(name: .long, help: "Profile id shown by `kumo profile list`; refreshes it in place.")
+            var id: String?
+            @Flag(name: .long, help: "Fetch through the local Mihomo proxy. Requires a running core.")
+            var useProxy = false
             @OptionGroup var options: CLIOptions
+
+            mutating func validate() throws {
+                if url != nil && id != nil {
+                    throw ValidationError("Use either a subscription URL or --id <id>, not both.")
+                }
+                if url == nil && id == nil {
+                    throw ValidationError("Provide a remote subscription URL or --id <id>.")
+                }
+                if let url {
+                    _ = try Self.subscriptionURL(from: url)
+                }
+            }
+
             mutating func run() async throws {
                 try options.install()
-                guard let parsedURL = URL(string: url), parsedURL.scheme != nil else {
-                    throw ValidationError("Invalid profile URL: \(url)")
+                let controller = CLIRuntime.current.controller
+                if let id {
+                    let report = try await Self.refreshByID(controller: controller, id: id, useProxy: useProxy)
+                    CLIRuntime.current.write(report) { report in
+                        let base = "refreshed \(report.profile.name) (\(report.profile.id))"
+                        return report.restartedCore ? "\(base) and restarted the core" : base
+                    }
+                    return
                 }
-                let profile = try await CLIRuntime.current.controller.refreshProfile(from: parsedURL)
+                let parsedURL = try Self.subscriptionURL(from: url ?? "")
+                let profile = try await controller.refreshProfile(from: parsedURL, useProxy: useProxy)
                 CLIRuntime.current.write(profile) { "refreshed \($0.name)" }
+            }
+
+            /// Refreshes `id` in place. When the refreshed profile is current
+            /// and the core is running, the core is restarted so the new YAML
+            /// takes effect, mirroring the GUI's refresh flow.
+            static func refreshByID(controller: KumoController, id: String, useProxy: Bool) async throws -> ProfileRefreshReport {
+                guard let existing = try controller.profiles().first(where: { $0.id == id }) else {
+                    throw ValidationError("Unknown profile id: \(id)")
+                }
+                let summary = try await controller.refreshProfile(id: id, useProxy: useProxy ? true : nil)
+                var restartedCore = false
+                if existing.isCurrent, try controller.status().state == .running {
+                    _ = try controller.restart()
+                    try await controller.waitForControllerReady()
+                    restartedCore = true
+                }
+                return ProfileRefreshReport(profile: summary, restartedCore: restartedCore)
+            }
+
+            static func subscriptionURL(from value: String) throws -> URL {
+                guard let parsed = URL(string: value), parsed.scheme != nil else {
+                    throw ValidationError("Invalid profile URL: \(value)")
+                }
+                return parsed
+            }
+        }
+
+        struct Update: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Update a profile's name, subscription URL, or update preferences.",
+                discussion: "Omitted fields keep their stored value. The profile YAML is not re-downloaded; use `kumo profile refresh` for that."
+            )
+            @Argument(help: "Profile id shown by `kumo profile list`.")
+            var id: String
+            @Option(name: .long, help: "Rename the profile.")
+            var name: String?
+            @Option(name: .long, help: "Set the subscription URL.")
+            var url: String?
+            @Flag(name: .long, inversion: .prefixedNo, help: "Enable or disable automatic updates.")
+            var autoUpdate: Bool?
+            @Flag(name: .long, inversion: .prefixedNo, help: "Fetch through the local Mihomo proxy on refresh.")
+            var useProxy: Bool?
+            @Flag(name: .long, help: "Preview the merged metadata without writing.")
+            var dryRun = false
+            @OptionGroup var options: CLIOptions
+
+            mutating func validate() throws {
+                if name == nil && url == nil && autoUpdate == nil && useProxy == nil {
+                    throw ValidationError("Provide at least one of --name, --url, --auto-update, or --use-proxy.")
+                }
+                if let name, name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw ValidationError("--name cannot be empty.")
+                }
+                if let url {
+                    _ = try Self.subscriptionURL(from: url)
+                }
+            }
+
+            mutating func run() async throws {
+                try options.install()
+                let report = try await Self.perform(
+                    controller: CLIRuntime.current.controller,
+                    id: id,
+                    name: name,
+                    urlString: url,
+                    autoUpdate: autoUpdate,
+                    useProxy: useProxy,
+                    dryRun: dryRun
+                )
+                CLIRuntime.current.write(report) { report in
+                    report.dryRun
+                        ? "[dry-run] would update \(report.id): name=\(report.name) kind=\(report.kind.rawValue) url=\(report.remoteURL?.absoluteString ?? "-") autoUpdate=\(report.autoUpdate) useProxy=\(report.useProxy)"
+                        : "updated \(report.name) (\(report.id))"
+                }
+            }
+
+            /// Merges the provided flags over the stored profile metadata.
+            ///
+            /// Every omitted field is backfilled from the pre-read profile:
+            /// `KumoController.updateProfile` takes non-optional `autoUpdate` /
+            /// `useProxy` and treats a `nil` `remoteURL` as "demote to local",
+            /// so a passthrough of the raw flags would silently reset stored
+            /// subscription settings.
+            static func perform(
+                controller: KumoController,
+                id: String,
+                name: String?,
+                urlString: String?,
+                autoUpdate: Bool?,
+                useProxy: Bool?,
+                dryRun: Bool
+            ) async throws -> ProfileUpdateReport {
+                guard let existing = try controller.profiles().first(where: { $0.id == id }) else {
+                    throw ValidationError("Unknown profile id: \(id)")
+                }
+
+                let mergedURL: URL?
+                if let urlString {
+                    guard !existing.isSubStoreManaged else {
+                        throw ValidationError("Profile \(id) is managed by Sub-Store; use `kumo profile refresh --id \(id)` instead.")
+                    }
+                    mergedURL = try subscriptionURL(from: urlString)
+                } else {
+                    mergedURL = existing.remoteURL
+                }
+
+                let mergedName = name ?? existing.name
+                let mergedAutoUpdate = autoUpdate ?? existing.autoUpdate
+                let mergedUseProxy = useProxy ?? existing.useProxy
+                let mergedKind: ProfileKind = mergedURL == nil
+                    ? (existing.kind == .remote ? .local : existing.kind)
+                    : .remote
+
+                guard !dryRun else {
+                    return ProfileUpdateReport(
+                        id: id,
+                        name: mergedName,
+                        kind: mergedKind,
+                        remoteURL: mergedURL,
+                        autoUpdate: mergedAutoUpdate,
+                        useProxy: mergedUseProxy,
+                        dryRun: true
+                    )
+                }
+
+                let summary = try controller.updateProfile(
+                    id: id,
+                    name: mergedName,
+                    remoteURL: mergedURL,
+                    autoUpdate: mergedAutoUpdate,
+                    useProxy: mergedUseProxy,
+                    rawYAML: try controller.profileContent(id: id)
+                )
+                return ProfileUpdateReport(
+                    id: summary.id,
+                    name: summary.name,
+                    kind: summary.kind,
+                    remoteURL: summary.remoteURL,
+                    autoUpdate: summary.autoUpdate,
+                    useProxy: summary.useProxy,
+                    dryRun: false
+                )
+            }
+
+            static func subscriptionURL(from value: String) throws -> URL {
+                guard let parsed = URL(string: value), parsed.scheme != nil else {
+                    throw ValidationError("Invalid profile URL: \(value)")
+                }
+                return parsed
+            }
+        }
+
+        struct Edit: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Replace a profile's YAML from a file or stdin.",
+                discussion: "The replacement YAML must parse as a YAML mapping; the profile's name and subscription settings are preserved."
+            )
+            @Argument(help: "Profile id shown by `kumo profile list`.")
+            var id: String
+            @Option(name: .long, help: "Read the replacement YAML from a file.")
+            var file: String?
+            @Flag(name: .long, help: "Read the replacement YAML from stdin.")
+            var stdin = false
+            @Flag(name: .long, help: "Validate the YAML without writing.")
+            var dryRun = false
+            @OptionGroup var options: CLIOptions
+
+            mutating func validate() throws {
+                if file != nil && stdin {
+                    throw ValidationError("Use either --file <path> or --stdin, not both.")
+                }
+                if file == nil && !stdin {
+                    throw ValidationError("Provide --file <path> or --stdin with the replacement profile YAML.")
+                }
+            }
+
+            mutating func run() async throws {
+                try options.install()
+                let rawYAML = try readProfileYAML(file: file, stdin: stdin)
+                let report = try Self.perform(
+                    controller: CLIRuntime.current.controller,
+                    id: id,
+                    rawYAML: rawYAML,
+                    dryRun: dryRun
+                )
+                CLIRuntime.current.write(report) { report in
+                    report.dryRun
+                        ? "[dry-run] \(report.id) YAML is valid (\(report.byteCount) bytes)"
+                        : "updated \(report.name) (\(report.id))"
+                }
+            }
+
+            /// Validates the replacement YAML before writing. The write path
+            /// backfills name, subscription URL, auto-update and proxy
+            /// preferences from the stored profile so an edit never demotes a
+            /// subscription.
+            static func perform(
+                controller: KumoController,
+                id: String,
+                rawYAML: String,
+                dryRun: Bool
+            ) throws -> ProfileEditReport {
+                guard let existing = try controller.profiles().first(where: { $0.id == id }) else {
+                    throw ValidationError("Unknown profile id: \(id)")
+                }
+                try controller.validateProfileYAML(rawYAML)
+
+                guard !dryRun else {
+                    return ProfileEditReport(id: id, name: existing.name, dryRun: true, byteCount: rawYAML.utf8.count)
+                }
+
+                let summary = try controller.updateProfile(
+                    id: id,
+                    name: existing.name,
+                    remoteURL: existing.remoteURL,
+                    autoUpdate: existing.autoUpdate,
+                    useProxy: existing.useProxy,
+                    rawYAML: rawYAML
+                )
+                return ProfileEditReport(id: summary.id, name: summary.name, dryRun: false, byteCount: rawYAML.utf8.count)
             }
         }
     }
@@ -241,6 +563,8 @@ extension KumoCommand {
             var port: Int?
             @Option(name: .long, help: "Proxy mode: manual or pac.")
             var mode: SystemProxyMode?
+            @Flag(name: .long, help: "Union the bypass list with the default bypass list.")
+            var addDefaults = false
             @Option(name: .long, help: "Read a JSON settings patch from a file.")
             var file: String?
             @Flag(name: .long, help: "Read a JSON settings patch from stdin.")
@@ -250,7 +574,7 @@ extension KumoCommand {
             @OptionGroup var options: CLIOptions
 
             mutating func validate() throws {
-                let hasOptions = bypass != nil || networkService != nil || host != nil || port != nil || mode != nil
+                let hasOptions = bypass != nil || networkService != nil || host != nil || port != nil || mode != nil || addDefaults
                 if file != nil || stdin {
                     if hasOptions {
                         throw ValidationError("Use either --file/--stdin or explicit options, not both.")
@@ -280,6 +604,9 @@ extension KumoCommand {
                     if let host { settings.host = host }
                     if let port { settings.port = port }
                     if let mode { settings.mode = mode }
+                }
+                if addDefaults {
+                    settings.bypassList = mergingSystemProxyBypassDefaults(settings.bypassList)
                 }
 
                 if dryRun {
@@ -413,8 +740,12 @@ extension KumoCommand {
     struct Substore: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "substore",
-            abstract: "Manage bundled Sub-Store resources and runtime.",
-            subcommands: [Status.self, Prepare.self, Start.self, Stop.self, Restart.self]
+            abstract: "Manage bundled Sub-Store resources and browse its content.",
+            subcommands: [
+                Status.self, Prepare.self, Start.self, Stop.self, Restart.self,
+                Subscriptions.self, Collections.self, Files.self, Modules.self,
+                Content.self, Preview.self, Import.self, Settings.self, Logs.self
+            ]
         )
 
         struct Status: AsyncParsableCommand {
@@ -495,11 +826,45 @@ private func profileFileURL(from value: String) throws -> URL {
     return URL(fileURLWithPath: path)
 }
 
+/// Reads replacement profile YAML from `--file <path>` or stdin.
+///
+/// Callers validate that exactly one source was provided before calling this.
+private func readProfileYAML(file: String?, stdin: Bool) throws -> String {
+    let data: Data
+    if let file {
+        let path = (file as NSString).expandingTildeInPath
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch {
+            throw ValidationError("Could not read profile file \(path): \(error.localizedDescription)")
+        }
+    } else if stdin {
+        data = FileHandle.standardInput.readDataToEndOfFile()
+    } else {
+        throw ValidationError("Provide --file <path> or --stdin with the replacement profile YAML.")
+    }
+
+    let text = String(data: data, encoding: .utf8) ?? ""
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw ValidationError("The profile YAML is empty.")
+    }
+    return text
+}
+
 private func writeSystemProxyCommands(_ commands: [ShellCommand], state: String, dryRun: Bool) {
     CLIRuntime.current.write(commands) { commands in
         let text = commands.map { ([$0.executable] + $0.arguments).joined(separator: " ") }.joined(separator: "\n")
         return dryRun ? text : "system proxy \(state)"
     }
+}
+
+/// Unions a bypass list with the default bypass list, dropping duplicates and
+/// sorting the result — the same merge the GUI's "Add Defaults" button
+/// performs. The defaults live in `SystemProxySettings.defaultBypassList`
+/// (`KumoCoreKit`), which `SystemProxyView` and the CLI share, so there is no
+/// second copy to keep in sync.
+func mergingSystemProxyBypassDefaults(_ bypassList: [String]) -> [String] {
+    Array(Set(bypassList + SystemProxySettings.defaultBypassList)).sorted()
 }
 
 private func tunSettingsSummary(_ settings: TunSettings) -> String {

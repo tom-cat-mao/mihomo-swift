@@ -4,7 +4,7 @@ public struct KumoCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "kumo",
         abstract: "Control Kumo from the command line.",
-        version: "0.0.17",
+        version: "0.0.18",
         subcommands: [
             Status.self,
             Start.self,
@@ -25,9 +25,12 @@ public struct KumoCommand: AsyncParsableCommand {
             Backup.self,
             Core.self,
             Profile.self,
+            Override.self,
+            Prefs.self,
             Dns.self,
             Sniffer.self,
             Sysproxy.self,
+            CLILink.self,
             Service.self,
             Tun.self,
             Agent.self,

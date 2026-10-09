@@ -450,7 +450,21 @@ public struct KumoController: Sendable {
         return try await MihomoControllerClient(endpoint: status.endpoint).groupDelay(group: group)
     }
 
+    /// Downloads the subscription at `url` and returns the profile content.
+    ///
+    /// Dedupe semantics: when a profile with the same remote URL already
+    /// exists, it is refreshed in place through the id path — same id, no
+    /// duplicate profile, and neither the current selection nor the stored
+    /// auto-update preference is changed. Only when no profile matches is a
+    /// new profile imported, made current and seeded with auto-update enabled
+    /// (the historical behavior). `useProxy` forces the fetch through the
+    /// local Mihomo proxy and requires a running core; an existing profile's
+    /// stored proxy preference applies otherwise.
     public func refreshProfile(from url: URL, useProxy: Bool = false) async throws -> Profile {
+        if let existing = try profileRepository.findProfile(byRemoteURL: url) {
+            let summary = try await refreshProfile(id: existing.id, useProxy: useProxy ? true : nil)
+            return try profileRepository.loadProfile(id: summary.id)
+        }
         let status = try supervisor.status()
         let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
         let summary = try await profileRepository.saveRemoteProfile(
@@ -468,6 +482,13 @@ public struct KumoController: Sendable {
 
     public func profileContent(id: String) throws -> String {
         try profileRepository.profileContent(id: id)
+    }
+
+    /// Parses profile YAML to prove it is a well-formed mapping before an
+    /// edit writes it. Throws `KumoError.invalidArguments` with the parser
+    /// message otherwise.
+    public func validateProfileYAML(_ rawYAML: String) throws {
+        try profileRepository.validateProfileYAML(rawYAML)
     }
 
     /// Proxy groups parsed from the profile's `proxy-groups:` section, memoized
@@ -536,22 +557,41 @@ public struct KumoController: Sendable {
         try profileRepository.deleteProfile(id: id)
     }
 
+    /// Refreshes one profile in place, preserving its id, name, auto-update
+    /// and proxy preferences. Sub-Store-managed profiles re-download through
+    /// Sub-Store so their Sub-Store metadata survives; everything else
+    /// re-downloads from its stored subscription URL.
+    ///
+    /// Pass `useProxy` to force the fetch through the local Mihomo proxy for
+    /// this refresh (requires a running core); `nil` keeps the profile's
+    /// stored proxy preference. A profile without a stored subscription URL
+    /// fails with `KumoError.invalidArguments`.
     @discardableResult
-    public func refreshProfile(id: String) async throws -> ProfileSummary {
+    public func refreshProfile(id: String, useProxy: Bool? = nil) async throws -> ProfileSummary {
         if let profile = try profileRepository.listProfiles().first(where: { $0.id == id }),
            profile.isSubStoreManaged {
             return try await refreshSubStoreProfile(id: id)
         }
         let status = try supervisor.status()
         let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
-        return try await profileRepository.refreshRemoteProfile(id: id, proxyPort: proxyPort)
+        return try await profileRepository.refreshRemoteProfile(id: id, useProxy: useProxy, proxyPort: proxyPort)
     }
 
+    /// Refreshes every profile whose subscription is due for its next
+    /// automatic update, in id order.
+    ///
+    /// Sub-Store-managed profiles refresh through `refreshSubStoreProfile`
+    /// rather than their raw download URL: the URL path rebuilds metadata
+    /// from the fetched document and would drop the Sub-Store ownership
+    /// record. `now` is injectable so tests can force due profiles without
+    /// waiting out the interval.
     @discardableResult
-    public func refreshDueProfiles() async throws -> [ProfileSummary] {
-        let status = try supervisor.status()
-        let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
-        return try await profileRepository.refreshDueRemoteProfiles(proxyPort: proxyPort)
+    public func refreshDueProfiles(now: Date = Date()) async throws -> [ProfileSummary] {
+        var refreshed: [ProfileSummary] = []
+        for id in try profileRepository.dueRemoteProfileIDs(now: now) {
+            refreshed.append(try await refreshProfile(id: id))
+        }
+        return refreshed
     }
 
     /// Byte window read from the end of `core.log` for each snapshot. Mihomo

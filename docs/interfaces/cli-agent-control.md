@@ -13,8 +13,22 @@ onboarding sheet (also reachable via Settings > General > Command Line Tool),
 which symlinks the bundled binary to `/usr/local/bin/kumo` after a one-time
 macOS administrator authorization prompt. The same flow is wrapped by
 `KumoController.cliLinkStatus()` / `installCLILink()` / `uninstallCLILink()`
-for programmatic use. Manual `ln -s` is supported but no longer required for
-new installs.
+for programmatic use, and exposed on the command line:
+
+```bash
+kumo cli-link [status] [--json]
+kumo cli-link install [--dry-run] [--json]
+kumo cli-link uninstall [--dry-run] [--json]
+```
+
+`status` reports the symlink state (`installed`, `notInstalled`,
+`differentSymlink`, `occupiedByOther`, or `bundledCLIMissing`), the target
+path, and the bundled binary path. `install` / `uninstall` need the one-time
+macOS administrator authorization because `/usr/local/bin` is not
+user-writable; `--dry-run` never prompts, it prints the current link state and
+the intended action as a `CLILinkActionReport`. `uninstall` refuses to remove a
+symlink or file that Kumo does not manage. Manual `ln -s` is supported but no
+longer required for new installs.
 
 `swift run kumo` is only a source-tree development smoke test. User-facing
 installs must be validated through the bundled helper binary and, when
@@ -37,13 +51,24 @@ kumo select "Proxy" "HK-01"
 kumo rules --json
 kumo rules enable 12
 kumo test "Proxy" --url https://example.com --json
+kumo connections close --ids 3f2a,9b1c
 kumo profile list --json
 kumo profile use default
+kumo profile groups airport-1f2a3b4c --json
+kumo profile nodes airport-1f2a3b4c --json
 kumo profile refresh "https://example.com/sub.yaml"
+kumo profile refresh --id airport-1f2a3b4c --use-proxy
+kumo profile update airport-1f2a3b4c --no-auto-update
+kumo profile edit airport-1f2a3b4c --file ./airport.yaml
 kumo profile import ./local.yaml
+kumo override list --json
+kumo override add --name dns-fix --file dns.yaml --dry-run --json
 kumo dns --json
 kumo dns set --file dns.json --dry-run --json
 kumo sysproxy on --dry-run --json
+kumo prefs get --json
+kumo prefs set keepCoreRunningOnQuit true --json
+kumo cli-link status --json
 kumo service status --json
 kumo service install
 kumo agent status --json
@@ -51,6 +76,11 @@ kumo agent install --dry-run --json
 kumo agent migrate --dry-run --json
 kumo tun enable --json
 kumo substore status --json
+kumo substore subscriptions --json
+kumo substore content airport --json
+kumo substore preview airport --json
+kumo substore import airport --name "Airport A" --json
+kumo substore logs --limit 50
 kumo skills status --json
 kumo skills install --agent codex --dry-run --json
 kumo completion zsh
@@ -67,26 +97,98 @@ Read-only inspection and tuning commands that map directly onto the shared
 ```bash
 kumo rules [--json]
 kumo rules enable <index> | kumo rules disable <index>
+kumo proxies [--geo] [--json]                       # --geo sends node hostnames to ipwho.is
+kumo connections close --ids <id1,id2,...> [--json]
 kumo profile list [--json]
 kumo profile use <id>
 kumo profile delete <id> [--dry-run] [--json]
 kumo profile import <path|file-url> [--json]      # local YAML; remote uses profile refresh
 kumo profile content <id> [--json]
+kumo profile groups <id> [--json]                 # offline preview of proxy-groups
+kumo profile nodes <id> [--json]                  # offline node/server map
+kumo profile refresh <url> [--use-proxy] [--json]
+kumo profile refresh --id <id> [--use-proxy] [--json]
+kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]
+kumo profile edit <id> --file <path>|--stdin [--dry-run] [--json]
 kumo dns [--json] | kumo dns enable|disable [--json]
 kumo sniffer [--json] | kumo sniffer enable|disable [--json]
 kumo tun status|enable|disable [--json]
 kumo tun settings [--json]
 kumo sysproxy on|off [--dry-run] [--json]
+kumo sysproxy set --add-defaults [--dry-run] [--json]
 kumo providers [--json]                           # proxy/rule provider counts
 kumo providers update --proxy <name> [--json]
 kumo providers update --rule <name> [--json]
 kumo providers update --geo [--json]
+kumo providers update --all [--json]              # every proxy and rule provider
 kumo test <proxy|group> [--url <url>] [--json]
 ```
 
 `kumo test` treats a name that matches a proxy group as a group test (every
 member is probed); other names are tested as a single proxy. `--url` applies
 to single-proxy tests.
+
+`kumo providers update --all` updates every provider returned by the running
+core's proxy and rule provider listings. Each provider's outcome is collected
+into one `ProvidersUpdateAllReport`; a failing provider never stops the run,
+so the report names every failure instead of only the first one. `--all`
+cannot be combined with `--proxy`/`--rule`; `--geo` may be added to upgrade
+the GeoIP/GeoSite data files after the loop. The command still exits `0` when
+only some providers failed — the report's `failed` count is the signal.
+
+#### Proxies and connections (`--geo`, batch close)
+
+`kumo proxies` lists proxy groups from the running core. `--geo` additionally
+resolves a country code per node by sending each upstream hostname from the
+current profile to the public [ipwho.is](https://ipwho.is) GeoIP service
+(answers are cached under the app support directory, like the GUI). Because
+that discloses node hostnames to a third party, the lookup is opt-in and off
+by default: without `--geo` no hostname leaves the machine and both text and
+JSON output are unchanged. Nodes whose server is not in the profile (for
+example built-ins like `DIRECT`) stay unresolved.
+
+`kumo connections close --ids <id1,id2,...>` closes each id independently.
+Per-id failures are reported (`failed` in JSON, `failed <id>: <message>` lines
+in text) and never abort the remaining ids; the command exits 0 once the batch
+was attempted. `kumo connections --close <id>` and `--close-all` keep their
+single-target behavior.
+
+#### Profiles
+
+`kumo profile refresh <url>` refreshes in place when a profile with the same
+subscription URL is already stored: the profile keeps its id and name, the
+current selection does not change, and the stored auto-update preference is
+preserved. Only a URL that no profile uses is imported, and a new import
+becomes the current profile with auto-update enabled. Repeating the same URL
+therefore never duplicates a profile or force-switches the current one.
+
+`kumo profile refresh --id <id>` re-downloads that profile in place (Sub-Store
+profiles refresh through Sub-Store). When the refreshed profile is the current
+one and the core is running, the core is restarted so the new YAML takes
+effect, mirroring the GUI. `--use-proxy` fetches through the local Mihomo
+proxy and fails with a clear error when no core is running.
+
+`kumo profile update <id>` merges the provided flags over the stored metadata:
+omitted fields (`--name`, `--url`, `--auto-update`, `--use-proxy`) keep their
+stored value, so an update can never demote a subscription or disable
+auto-update by omission. `--auto-update` / `--no-auto-update` and
+`--use-proxy` / `--no-use-proxy` set the stored preference explicitly.
+`--dry-run` prints the merged metadata without writing. The profile YAML is
+not re-downloaded; use `profile refresh` for that.
+
+`kumo profile edit <id>` replaces the profile YAML from `--file <path>` or
+`--stdin`. The replacement must parse as a YAML mapping; `--dry-run` validates
+it without writing. Name and subscription settings are preserved.
+
+`kumo profile content <id>` fails on an unknown id instead of falling back to
+the current profile, so scripts never print the wrong profile. The id must
+appear in `kumo profile list`.
+
+`kumo profile groups <id>` previews a profile's `proxy-groups:` (group name
+plus member names) and `kumo profile nodes <id>` lists its `proxies:` entries
+with their `server`/`port`. Both parse the profile YAML on disk, so they work
+while the core is stopped, and both pre-validate the id the same way as
+`profile content`. JSON echoes the requested `id` next to the parsed payload.
 
 #### Settings patches
 
@@ -102,9 +204,178 @@ restarting the core. Applying DNS or sniffer settings while the core is
 running restarts the core, exactly like the SwiftUI settings panes.
 
 `kumo sysproxy set` also supports explicit options (`--bypass <comma-list>`,
-`--network-service`, `--host`, `--port`, `--mode manual|pac`); explicit
-options and `--file`/`--stdin` are mutually exclusive. Stored settings are
-re-applied when the system proxy is currently enabled.
+`--network-service`, `--host`, `--port`, `--mode manual|pac`,
+`--add-defaults`); explicit options and `--file`/`--stdin` are mutually
+exclusive. Stored settings are re-applied when the system proxy is currently
+enabled. `--add-defaults` unions the resulting bypass list with
+`SystemProxySettings.defaultBypassList` — the same list the GUI's "Add
+Defaults" button uses, shared through `KumoCoreKit` — dropping duplicates and
+sorting the result, so it is idempotent and works together with `--bypass` or
+a patch.
+
+#### GUI preferences (`kumo prefs`)
+
+```bash
+kumo prefs [get] [<key>] [--json]
+kumo prefs set <key> <value> [--dry-run] [--json]
+```
+
+`kumo prefs` owns the stored `UserPreferences` (`preferences.json`) that the
+SwiftUI app reads on launch and in Settings. Exposed keys:
+`launchAtLogin`, `hideMenuBarIcon`, `quitOnLastWindowClose`,
+`keepCoreRunningOnQuit`, `updateChannel`, `appLanguage`, and
+`hasCompletedOnboarding`.
+
+`prefs get` prints the whole set or one key; unknown keys fail with the list
+of valid ones. In JSON output `appLanguage` is `null` when the app follows the
+system language.
+
+`prefs set` reads the stored preferences, changes only the given key, and
+writes the whole set back, so unrelated keys — including
+`updateManifestURL`, which the CLI does not expose — keep their stored values.
+Values are type-checked: booleans are strict `true`/`false` (`yes`/`1` are
+rejected), `updateChannel` is `stable|beta`, and `appLanguage` is a BCP-47 tag
+such as `en` or `zh-Hans`, or `system` to store `nil` (follow the system
+language). `--dry-run` prints the merged preferences without writing.
+
+Two keys only take effect inside the GUI:
+
+- `launchAtLogin` is honoured on the next GUI launch, which calls
+  `SMAppService.mainApp.register()`/`unregister()`; the CLI never registers
+  the login item itself.
+- `keepCoreRunningOnQuit` takes effect on the next GUI quit
+  (`prepareForAppTermination(policy:)`).
+
+`hideMenuBarIcon` is a GUI-only preference, and `hasCompletedOnboarding` is
+settable for recovery scenarios (the GUI re-opens onboarding when it is
+`false`). Mutating `prefs set` commands print these notes in text output.
+
+### Overrides
+
+```bash
+kumo override [list] [--json]
+kumo override content <id> [--json]
+kumo override add --name <name> (--file <path> | --stdin) [--format yaml|js] [--global] [--dry-run] [--restart] [--json]
+kumo override add --url <url> [--name <name>] [--format yaml|js] [--global] [--restart] [--json]
+kumo override update <id> (--file <path> | --stdin) [--restart] [--json]
+kumo override delete <id> [--dry-run] [--restart] [--json]
+kumo override reorder --ids <id1,id2,...> [--restart] [--json]
+```
+
+Overrides are edits merged into the runtime config; they are never applied to
+a live core in place, matching the GUI, which performs no core restart after
+an override edit.
+
+- **Next start, not now.** Active YAML overrides merge into the runtime
+  config when the core starts (`RuntimeConfigBuilder` at launch). Every
+  mutating command states `takes effect on next core start` in text output.
+  Pass `--restart` to restart a running core and apply the change
+  immediately; with no running core `--restart` is a no-op and the command
+  reports `core not running`.
+- **Only YAML is applied.** `--format js` stores the body but it is never
+  merged into the runtime config; `add` warns about this.
+- **`--global` has no runtime effect yet.** The flag is stored on the item but
+  global overrides are not applied anywhere; `add` warns about this.
+- **Remote fetches are unproxied.** `add --url` downloads the body directly
+  (no proxy support) before storing it.
+- **Ordering.** `list` prints the merge order by ascending index.
+  `reorder --ids` moves the listed ids to the front in the given order;
+  unlisted ids keep their relative order after them.
+- **Ids are pre-validated.** `content`, `update`, `delete`, and `reorder`
+  fail with `Unknown override id: <id>` instead of relying on the core API's
+  silent no-op for unknown delete ids. `reorder` also rejects duplicate ids.
+- **Dry run.** Local `add --dry-run` validates that the YAML parses (for
+  `--format yaml`) without writing; `delete --dry-run` names the item that
+  would be removed. `--dry-run` cannot be combined with `--restart`.
+
+#### Runtime settings (`kumo config get|set|secret`)
+
+```bash
+kumo config get [<key>] [--json]
+kumo config set --mixed-port <port> [--allow-lan <bool>] [--log-level <level>] [--ipv6 <bool>] [--find-process-mode <mode>] [--dry-run] [--json]
+kumo config set --file <path> [--dry-run] [--json]
+kumo config set --stdin [--dry-run] [--json]
+kumo config secret [--set <secret>] [--json]
+```
+
+`config get` prints the stored `CoreRuntimeSettings` object; with a key
+(`mixedPort`, `allowLan`, `logLevel`, `ipv6`, `findProcessMode`, `geoData`) it
+prints only that value. Unknown keys fail listing the valid ones.
+
+`config set` owns the scalar runtime fields (`mixedPort`, `allowLan`,
+`logLevel`, `ipv6`, `findProcessMode`) and accepts either explicit flags or a
+`--file`/`--stdin` JSON object patch; the two input styles are mutually
+exclusive. `mixedPort` must be `1...65535`, `logLevel` one of
+`silent|error|warning|info|debug`, and `findProcessMode` one of
+`always|strict|off`. A patch rejects unknown top-level keys with the list of
+valid ones. The `dns`, `sniffer`, and `tun` keys are rejected with a pointer
+to `kumo dns set`, `kumo sniffer set`, and `kumo tun settings`; geo data is
+read-only here (`config get geoData`). `--dry-run` prints the merged settings
+without writing state or patching the running core.
+
+`config secret` reports `set=true|false` without ever printing the stored
+value; `--set <secret>` stores a new secret. The secret is read when the core
+starts, so a new secret takes effect on the next core start, not on a running
+core.
+
+Patches for `DnsSettings`, `SnifferSettings`, and `TunSettings` also reject
+unknown top-level keys and list the valid ones.
+
+### Sub-Store
+
+```bash
+kumo substore status|prepare|start|stop|restart [--json]
+kumo substore subscriptions|collections [--json]
+kumo substore files|modules [--json]
+kumo substore content <name> [--kind subscription|collection|file] [--json]
+kumo substore preview <name> [--kind subscription|collection|file] [--json]
+kumo substore import <name-or-path> [--name <profile-name>] [--use-proxy] [--json]
+kumo substore settings [--json]
+kumo substore logs [--limit <count>] [--json]
+```
+
+**Read + import only.** The content commands read through `SubStoreClient`
+(the same data plane the GUI uses) and never create, update, or delete
+Sub-Store entries. `import` is the only write: it stores one new Kumo profile.
+Sub-Store mutations (create/update/delete, artifacts, share tokens, archives)
+stay in the GUI.
+
+`subscriptions`/`collections` list `name`, `displayName`, `icon`, and tags;
+`files`/`modules` list the read-only fields the client exposes (files: name,
+display name, type, source, URL; modules: name, description, icon).
+
+`content <name>` prints one entry's detail. `--kind` restricts the search;
+without it the name is resolved against subscriptions, then collections, then
+files. Names match the canonical name first, then the display name; a display
+name matching more than one entry fails as ambiguous. Unknown names fail with
+the list command to run.
+
+`preview <name>` uses the backend's JSON target, so it prints the parsed node
+arrays (`original`/`processed` in `--json`) exactly as the GUI's preview shows
+them. Preview output is never rendered Clash YAML.
+
+`import <name-or-path>` resolves a bare name the same way `content` does and
+imports the result as a Sub-Store-managed Kumo profile (`--name` sets the
+profile name, otherwise the entry display name is used; `--use-proxy`
+downloads through the local Mihomo proxy and requires a running core).
+Subscriptions resolve to `/download/<name>` and collections to
+`/download/collection/<name>` — the same path shapes the GUI builds from
+`SubStoreEntry.downloadPath`. A `/...` path or a URL with a scheme is passed
+through unchanged, mirroring `KumoController.subStoreProfileDownloadURL`.
+Files are not Clash profiles: a name that resolves to a Sub-Store file fails
+with a pointer to `kumo substore content <name> --kind file`, and names that
+resolve to nothing fail before any download is attempted.
+
+`settings` prints the backend URL and mode (`bundled`/`custom`) from local
+state, plus host/port/cron flags. When the backend answers it also prints the
+backend's own settings; otherwise `settingsError` carries the reason and the
+command still succeeds, so it doubles as a diagnostic when the backend is
+down.
+
+`logs` reads the backend's log buffer and, when the backend cannot be reached
+or its log payload does not match the typed client, falls back to the
+supervisor-captured `logs/substore.log`. The payload's `source` (`backend` or
+`file`) and `path` say which one answered.
 
 ## CLI Interaction Conventions
 
@@ -312,6 +583,9 @@ command names and JSON schemas compatible whether the GUI is open or closed:
   tier handoff behavior.
 - `kumo substore status|prepare|start|stop|restart` manages bundled Sub-Store
   resources and the same local lifecycle used by the SwiftUI app.
+- `kumo substore subscriptions|collections|files|modules|content|preview|settings|logs`
+  read the Sub-Store data plane through `SubStoreClient`; `kumo substore import`
+  stores one Sub-Store-managed profile through `KumoController.importSubStoreProfile`.
 
 App Intents still call `KumoAppStore` directly. Routing them through service
 endpoints so they keep working when the GUI is closed remains follow-up work

@@ -1,4 +1,5 @@
 import Foundation
+import Yams
 
 public struct ProfileRepository: Sendable {
     private let profilesDirectory: URL
@@ -48,6 +49,16 @@ public struct ProfileRepository: Sendable {
     public func currentProfileSummary() throws -> ProfileSummary {
         try listProfiles().first(where: \.isCurrent)
             ?? ProfileSummary(id: "default", name: "Default", sourceDescription: "Generated direct profile", isCurrent: true)
+    }
+
+    /// First profile whose stored subscription URL matches `remoteURL`.
+    ///
+    /// `KumoController.refreshProfile(from:)` uses this to refresh an existing
+    /// subscription in place instead of importing a duplicate profile that
+    /// would also flip the current selection.
+    public func findProfile(byRemoteURL remoteURL: URL) throws -> ProfileSummary? {
+        let target = remoteURL.absoluteString
+        return try listProfiles().first { $0.remoteURL?.absoluteString == target }
     }
 
     public func setCurrentProfile(id: String) throws {
@@ -288,8 +299,13 @@ public struct ProfileRepository: Sendable {
         return try summary(for: id, url: profileURL, metadata: metadata[id], currentID: makeCurrent ? id : currentProfileID())
     }
 
+    /// Re-downloads the profile's subscription in place.
+    ///
+    /// `autoUpdate` and the profile name always come from the stored metadata;
+    /// `useProxy` defaults to the stored preference and only overrides it for
+    /// callers that explicitly request the local Mihomo proxy for this refresh.
     @discardableResult
-    public func refreshRemoteProfile(id: String, proxyPort: Int? = nil) async throws -> ProfileSummary {
+    public func refreshRemoteProfile(id: String, useProxy: Bool? = nil, proxyPort: Int? = nil) async throws -> ProfileSummary {
         let metadata = try loadMetadata()
         guard let item = metadata[id], item.kind == .remote, let remoteURL = item.remoteURL else {
             throw KumoError.invalidArguments("This profile does not have a remote subscription URL.")
@@ -299,34 +315,57 @@ public struct ProfileRepository: Sendable {
             from: remoteURL,
             name: item.name,
             autoUpdate: item.autoUpdate,
-            useProxy: item.useProxy,
+            useProxy: useProxy ?? item.useProxy,
             proxyPort: proxyPort,
             preferredID: id,
             makeCurrent: false
         )
     }
 
-    @discardableResult
-    public func refreshDueRemoteProfiles(now: Date = Date(), proxyPort: Int? = nil) async throws -> [ProfileSummary] {
+    /// Ids of the remote profiles whose next automatic update is due, sorted
+    /// so a refresh pass is deterministic.
+    ///
+    /// Sub-Store-managed profiles are included: routing them through
+    /// Sub-Store is the caller's job, because the Sub-Store download URL is
+    /// derived outside this repository.
+    public func dueRemoteProfileIDs(now: Date = Date()) throws -> [String] {
         let metadata = try loadMetadata()
-        var refreshed: [ProfileSummary] = []
-
-        for item in metadata.values where item.kind == .remote && item.autoUpdate {
-            guard let interval = item.updateIntervalSeconds, interval > 0 else {
-                continue
+        return metadata.values
+            .filter { item in
+                guard item.kind == .remote, item.autoUpdate else { return false }
+                guard let interval = item.updateIntervalSeconds, interval > 0 else { return false }
+                let updatedAt = item.updatedAt ?? .distantPast
+                return now.timeIntervalSince(updatedAt) >= TimeInterval(interval)
             }
-            let updatedAt = item.updatedAt ?? .distantPast
-            guard now.timeIntervalSince(updatedAt) >= TimeInterval(interval) else {
-                continue
-            }
-            refreshed.append(try await refreshRemoteProfile(id: item.id, proxyPort: proxyPort))
-        }
-
-        return refreshed
+            .map(\.id)
+            .sorted()
     }
 
     public func profileContent(id: String) throws -> String {
         try loadProfile(id: id).rawYAML
+    }
+
+    /// Parses profile YAML to prove it is a well-formed mapping before it is
+    /// written. Throws `KumoError.invalidArguments` with the parser message
+    /// otherwise, so `kumo profile edit` can fail before touching the file.
+    public func validateProfileYAML(_ rawYAML: String) throws {
+        guard !rawYAML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw KumoError.invalidArguments("The profile YAML is empty.")
+        }
+
+        let document: Any?
+        do {
+            document = try Yams.load(yaml: rawYAML)
+        } catch {
+            // `YamlError` is CustomStringConvertible and its description
+            // carries the line/column context; `localizedDescription` would
+            // collapse to "Yams.YamlError error 2".
+            throw KumoError.invalidArguments("The profile YAML is not valid YAML: \(String(describing: error))")
+        }
+
+        guard document is [String: Any] else {
+            throw KumoError.invalidArguments("The profile YAML must be a mapping, like a Mihomo config document.")
+        }
     }
 
     @discardableResult

@@ -109,6 +109,8 @@ final class KumoCLIKitTests: XCTestCase {
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["providers", "--json"]))
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["providers", "update", "--proxy", "Airport"]))
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["providers", "update", "--rule", "GeoIP", "--geo"]))
+        XCTAssertNoThrow(try KumoCommand.parseAsRoot(["providers", "update", "--all", "--json"]))
+        XCTAssertNoThrow(try KumoCommand.parseAsRoot(["sysproxy", "set", "--add-defaults", "--json"]))
 
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["test", "HK-01", "--url", "https://example.com", "--json"]))
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["test", "Proxy", "--json"]))
@@ -180,6 +182,8 @@ final class KumoCLIKitTests: XCTestCase {
         XCTAssertThrowsError(try KumoCommand.parseAsRoot(["dns", "set"]))
         XCTAssertThrowsError(try KumoCommand.parseAsRoot(["dns", "set", "--stdin", "--file", "/tmp/dns.json"]))
         XCTAssertThrowsError(try KumoCommand.parseAsRoot(["providers", "update"]))
+        XCTAssertThrowsError(try KumoCommand.parseAsRoot(["providers", "update", "--all", "--proxy", "Airport"]))
+        XCTAssertThrowsError(try KumoCommand.parseAsRoot(["providers", "update", "--all", "--rule", "GeoIP"]))
         XCTAssertThrowsError(try KumoCommand.parseAsRoot(["sysproxy", "set"]))
         XCTAssertThrowsError(try KumoCommand.parseAsRoot(["test", "x", "--url", "not a url"]))
     }
@@ -269,6 +273,71 @@ final class KumoCLIKitTests: XCTestCase {
         }
     }
 
+    // MARK: - Providers update --all and sysproxy defaults
+
+    func testProvidersUpdateAllCollectsPartialFailures() async throws {
+        struct Boom: LocalizedError {
+            var errorDescription: String? { "boom" }
+        }
+
+        let report = try await KumoCommand.Providers.Update.updateAll(
+            listProxyProviders: {
+                [
+                    ProxyProviderEntry(name: "Alpha", vehicleType: "HTTP"),
+                    ProxyProviderEntry(name: "Broken", vehicleType: "HTTP")
+                ]
+            },
+            listRuleProviders: {
+                [RuleProviderEntry(name: "GeoIP", vehicleType: "HTTP")]
+            },
+            updateProxyProvider: { name in
+                if name == "Broken" {
+                    throw Boom()
+                }
+            },
+            updateRuleProvider: { _ in
+                throw Boom()
+            }
+        )
+
+        XCTAssertEqual(report.results.map(\.name), ["Alpha", "Broken", "GeoIP"])
+        XCTAssertEqual(report.results.map(\.kind), ["proxy", "proxy", "rule"])
+        XCTAssertEqual(report.updated, 1)
+        XCTAssertEqual(report.failed, 2)
+        XCTAssertFalse(report.geoData)
+        XCTAssertNil(report.results[0].error)
+        XCTAssertEqual(report.results[1].error, "boom")
+        XCTAssertEqual(report.results[2].updated, false)
+
+        let text = KumoCommand.Providers.Update.text(for: report)
+        XCTAssertTrue(text.contains("updated 1 of 3 providers"), text)
+        XCTAssertTrue(text.contains("failed proxy provider Broken: boom"), text)
+        XCTAssertTrue(text.contains("failed rule provider GeoIP: boom"), text)
+    }
+
+    func testSysproxyAddDefaultsUnionsAndDedupes() throws {
+        let command = try XCTUnwrap(
+            try KumoCommand.parseAsRoot(["sysproxy", "set", "--add-defaults", "--dry-run", "--json"]) as? KumoCommand.Sysproxy.Set
+        )
+        XCTAssertTrue(command.addDefaults)
+        XCTAssertTrue(command.dryRun)
+
+        XCTAssertNoThrow(try KumoCommand.parseAsRoot(["sysproxy", "set", "--bypass", "example.com", "--add-defaults"]))
+        XCTAssertThrowsError(try KumoCommand.parseAsRoot(["sysproxy", "set"]))
+
+        let merged = mergingSystemProxyBypassDefaults(["localhost", "example.com"])
+        XCTAssertEqual(Set(merged), Set(["localhost", "example.com"] + SystemProxySettings.defaultBypassList))
+        XCTAssertEqual(merged, merged.sorted())
+        XCTAssertEqual(merged.count, Set(merged).count)
+
+        // Re-merging the defaults is idempotent; duplicates from the stored
+        // list are dropped.
+        XCTAssertEqual(
+            mergingSystemProxyBypassDefaults(SystemProxySettings.defaultBypassList),
+            SystemProxySettings.defaultBypassList.sorted()
+        )
+    }
+
     // MARK: - Help system completeness
 
     func testTopLevelHelpListsEveryTopLevelCommandIncludingSelect() {
@@ -301,7 +370,8 @@ final class KumoCLIKitTests: XCTestCase {
     func testDocumentedTopicsCarrySummaryUsageAndExample() {
         let documented = [
             "status", "start", "stop", "restart", "mode", "proxies", "select",
-            "rules", "profile", "dns", "sniffer", "tun", "sysproxy", "service",
+            "rules", "profile", "override", "prefs", "dns", "sniffer", "tun", "sysproxy",
+            "cli-link", "service",
             "agent", "providers", "test", "logs", "traffic", "connections",
             "backup", "core", "config", "doctor", "runtime-events", "substore",
             "skills", "completion"

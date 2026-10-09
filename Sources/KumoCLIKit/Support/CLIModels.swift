@@ -63,6 +63,62 @@ struct ProfileContentPayload: Encodable, Equatable {
     var content: String
 }
 
+/// Offline preview of a profile's `proxy-groups:` section. `id` is echoed so
+/// script consumers can prove which profile was parsed.
+struct ProfileGroupsPayload: Encodable, Equatable {
+    var id: String
+    var groups: [ProxyGroup]
+}
+
+/// One outbound entry of a profile's `proxies:` section.
+struct ProfileNodeEntry: Encodable, Equatable {
+    var name: String
+    var server: String
+    var port: Int?
+}
+
+/// Offline map of a profile's outbound nodes, ordered by name.
+struct ProfileNodesPayload: Encodable, Equatable {
+    var id: String
+    var nodes: [ProfileNodeEntry]
+}
+
+/// Per-id outcome of `kumo connections close --ids`; the batch reports
+/// failures instead of aborting on the first one.
+struct ConnectionCloseFailure: Encodable, Equatable {
+    var id: String
+    var error: String
+}
+
+struct ConnectionCloseReport: Encodable, Equatable {
+    var closed: [String]
+    var failed: [ConnectionCloseFailure]
+}
+
+struct ProfileRefreshReport: Encodable, Equatable {
+    var profile: ProfileSummary
+    var restartedCore: Bool
+}
+
+/// Merged profile metadata a `profile update` writes. Also returned by
+/// `--dry-run`, where nothing is written but the planned values are reported.
+struct ProfileUpdateReport: Encodable, Equatable {
+    var id: String
+    var name: String
+    var kind: ProfileKind
+    var remoteURL: URL?
+    var autoUpdate: Bool
+    var useProxy: Bool
+    var dryRun: Bool
+}
+
+struct ProfileEditReport: Encodable, Equatable {
+    var id: String
+    var name: String
+    var dryRun: Bool
+    var byteCount: Int
+}
+
 struct ProxyDelayReport: Encodable, Equatable {
     var proxy: String
     var url: String?
@@ -75,6 +131,12 @@ struct ProvidersUpdateReport: Encodable, Equatable {
     var geoData: Bool
 }
 
+/// Reports whether a controller secret is stored; the secret value itself is
+/// never part of CLI output.
+struct ConfigSecretReport: Encodable, Equatable {
+    var isSet: Bool
+}
+
 struct AgentActionReport: Encodable, Equatable {
     var action: String
     var label: String
@@ -82,4 +144,209 @@ struct AgentActionReport: Encodable, Equatable {
     var socketPath: String
     var dryRun: Bool
     var status: ServiceModeStatus
+}
+
+struct OverrideListEntry: Encodable, Equatable {
+    var index: Int
+    var id: String
+    var name: String
+    var format: String
+    var kind: String
+    var isGlobal: Bool
+    var remoteURL: String?
+}
+
+struct OverrideContentPayload: Encodable, Equatable {
+    var id: String
+    var content: String
+}
+
+struct OverrideMutationReport: Encodable, Equatable {
+    var id: String?
+    var name: String
+    var format: String
+    var kind: String
+    var isGlobal: Bool
+    var dryRun: Bool
+    var warnings: [String]
+    var restartRequested: Bool
+    var restarted: Bool
+}
+
+struct OverrideDeleteReport: Encodable, Equatable {
+    var id: String
+    var name: String
+    var dryRun: Bool
+    var restartRequested: Bool
+    var restarted: Bool
+}
+
+struct OverrideReorderReport: Encodable, Equatable {
+    var ids: [String]
+    var restartRequested: Bool
+    var restarted: Bool
+}
+
+/// The user-facing `UserPreferences` keys printed by `prefs get`.
+///
+/// `updateManifestURL` is intentionally absent: it is an internal
+/// update-channel override, not a user preference, and `prefs set` preserves
+/// it untouched because it round-trips the whole stored value.
+struct PrefsSnapshot: Encodable, Equatable {
+    var launchAtLogin: Bool
+    var hideMenuBarIcon: Bool
+    var quitOnLastWindowClose: Bool
+    var keepCoreRunningOnQuit: Bool
+    var updateChannel: AppUpdateChannel
+    var appLanguage: String?
+    var hasCompletedOnboarding: Bool
+
+    init(_ preferences: UserPreferences) {
+        self.launchAtLogin = preferences.launchAtLogin
+        self.hideMenuBarIcon = preferences.hideMenuBarIcon
+        self.quitOnLastWindowClose = preferences.quitOnLastWindowClose
+        self.keepCoreRunningOnQuit = preferences.keepCoreRunningOnQuit
+        self.updateChannel = preferences.updateChannel
+        self.appLanguage = preferences.appLanguage
+        self.hasCompletedOnboarding = preferences.hasCompletedOnboarding
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case launchAtLogin
+        case hideMenuBarIcon
+        case quitOnLastWindowClose
+        case keepCoreRunningOnQuit
+        case updateChannel
+        case appLanguage
+        case hasCompletedOnboarding
+    }
+
+    /// Encodes `appLanguage` as an explicit null when the preference follows
+    /// the system language, so the JSON shape does not change with the value.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(launchAtLogin, forKey: .launchAtLogin)
+        try container.encode(hideMenuBarIcon, forKey: .hideMenuBarIcon)
+        try container.encode(quitOnLastWindowClose, forKey: .quitOnLastWindowClose)
+        try container.encode(keepCoreRunningOnQuit, forKey: .keepCoreRunningOnQuit)
+        try container.encode(updateChannel, forKey: .updateChannel)
+        if let appLanguage {
+            try container.encode(appLanguage, forKey: .appLanguage)
+        } else {
+            try container.encodeNil(forKey: .appLanguage)
+        }
+        try container.encode(hasCompletedOnboarding, forKey: .hasCompletedOnboarding)
+    }
+}
+
+/// Result of `prefs set`: the parsed key/value, the merged preferences, and
+/// any deferred-effect notes for the key.
+struct PrefsSetReport: Encodable, Equatable {
+    var key: String
+    var value: String
+    var dryRun: Bool
+    var notes: [String]
+    var preferences: PrefsSnapshot
+}
+
+/// Result of a `cli-link install|uninstall` run (or its `--dry-run` preview).
+struct CLILinkActionReport: Encodable, Equatable {
+    var action: String
+    var dryRun: Bool
+    var status: CLILinkStatus
+}
+
+/// One provider's outcome in a `providers update --all` run.
+struct ProviderUpdateResult: Encodable, Equatable {
+    var kind: String
+    var name: String
+    var updated: Bool
+    var error: String?
+}
+
+/// Full report for `providers update --all`. Provider failures are collected
+/// instead of aborting the loop, so one broken provider cannot hide the rest.
+struct ProvidersUpdateAllReport: Encodable, Equatable {
+    var results: [ProviderUpdateResult]
+    var updated: Int
+    var failed: Int
+    var geoData: Bool
+}
+
+// MARK: - Sub-Store content
+
+/// One `kumo substore files` entry.
+struct SubStoreFileListEntry: Encodable, Equatable {
+    var name: String
+    var displayName: String?
+    var type: String?
+    var source: String?
+    var url: String?
+}
+
+/// One `kumo substore modules` entry. Module bodies stay out of the listing.
+struct SubStoreModuleListEntry: Encodable, Equatable {
+    var name: String
+    var description: String?
+    var icon: String?
+}
+
+/// `kumo substore content` payload. `entry` carries the full client model so
+/// the shape follows whatever the backend returned.
+struct SubStoreContentPayload: Encodable, Equatable {
+    var kind: String
+    var name: String
+    var entry: JSONValue
+}
+
+/// `kumo substore preview` payload. `original` and `processed` are the parsed
+/// node arrays exactly as the backend returns them for `target=JSON` — never
+/// rendered Clash YAML.
+struct SubStorePreviewPayload: Encodable, Equatable {
+    var kind: String
+    var name: String
+    var originalCount: Int
+    var processedCount: Int
+    var original: [JSONValue]
+    var processed: [JSONValue]
+}
+
+/// `kumo substore import` payload: the resolved download target plus the
+/// resulting Kumo profile.
+struct SubStoreImportReport: Encodable, Equatable {
+    var input: String
+    var kind: String
+    var path: String
+    var useProxy: Bool
+    var profile: ProfileSummary
+}
+
+/// `kumo substore settings` payload: the local backend configuration, plus a
+/// best-effort read of the backend's own settings.
+struct SubStoreSettingsReport: Encodable, Equatable {
+    var backendURL: String?
+    var backendMode: String
+    var customBackendURL: String?
+    var isEnabled: Bool
+    var isBackendRunning: Bool
+    var host: String
+    var port: Int?
+    var allowsLAN: Bool
+    var usesProxy: Bool
+    var syncCron: String
+    var downloadCron: String
+    var uploadCron: String
+    var resourceVersion: String?
+    var settings: SubStoreSettings?
+    var settingsError: String?
+}
+
+/// `kumo substore logs` payload. `source` is `backend` when the Sub-Store
+/// backend served its own log buffer, or `file` when the command fell back to
+/// the supervisor-captured `substore.log`.
+struct SubStoreLogPayload: Encodable, Equatable {
+    var source: String
+    var path: String?
+    var backendError: String?
+    var entries: [SubStoreLogEntry]
 }
