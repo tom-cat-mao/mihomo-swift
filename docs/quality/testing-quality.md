@@ -63,8 +63,9 @@ The first test suite covers:
   pid/owner/readiness/lastExit plus system-proxy observations.
 - App-level behavior (`Tests/KumoAppTests/`): quit-path sidecar termination,
   termination policy mapping, startup store attach for App Intents, update-install
-  flow including tier version-stamp repair prompts, and `lastExit` notification
-  baselining/deduplication with expected-stop suppression.
+  flow including tier version-stamp repair prompts, `lastExit` notification
+  baselining/deduplication with expected-stop suppression, and delay-presentation
+  colors for current, stale and legacy success/timeout values.
 
 These tests target `KumoCoreKit` because that layer carries the most important shared behavior.
 

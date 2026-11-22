@@ -87,9 +87,11 @@ apps. The left pane is a searchable proxy node list grouped by
 a delay pill (green < 300 ms, orange otherwise, red on timeout, `—` when
 unknown). Delay state is explicit: current success, timeout, missing, and error
 values are distinct, while `/proxies` history and values from an invalidated
-previous run are labelled `stale`. Errors are available on the node and in the
-per-group result summary; a failed batch request never leaves old values looking
-like a successful new run. `ProxiesView` uses the same node presentation and
+previous run are labelled `stale`. Stale and legacy history keep the same
+latency colors (including red timeout); the text label, not gray text, is what
+distinguishes old data from a current run. Errors are available on the node and
+in the per-group result summary; a failed batch request never leaves old values
+looking like a successful new run. `ProxiesView` uses the same node presentation and
 shows the summary on each group card. The summary counts successes, timeouts,
 missing references, and errors, with concrete controller details.
 

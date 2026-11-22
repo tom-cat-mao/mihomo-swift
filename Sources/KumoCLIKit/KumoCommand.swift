@@ -4,7 +4,7 @@ public struct KumoCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "kumo",
         abstract: "Control Kumo from the command line.",
-        version: "0.1.0",
+        version: "0.1.1",
         subcommands: [
             Status.self,
             Start.self,
