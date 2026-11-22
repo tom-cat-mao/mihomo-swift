@@ -39,8 +39,12 @@ installed, the `/usr/local/bin/kumo` symlink that points at it.
 Commands are intentionally close to user goals:
 
 ```bash
+kumo capabilities --json
+kumo prompt --list --json
+kumo prompt overview connect
 kumo status --json
 kumo start --core /path/to/mihomo
+kumo start --resolve-ports
 kumo stop
 kumo restart
 kumo mode rule
@@ -49,6 +53,7 @@ kumo mode direct
 kumo proxies --json
 kumo select "Proxy" "HK-01"
 kumo rules --json
+kumo topology [--issues] --json
 kumo rules enable 12
 kumo test "Proxy" --url https://example.com --json
 kumo connections close --ids 3f2a,9b1c
@@ -60,14 +65,20 @@ kumo profile refresh "https://example.com/sub.yaml"
 kumo profile refresh --id airport-1f2a3b4c --use-proxy
 kumo profile update airport-1f2a3b4c --no-auto-update
 kumo profile edit airport-1f2a3b4c --file ./airport.yaml
+kumo config diff --file ./airport.yaml --json
+kumo config validate --file ./airport.yaml --json
+kumo config apply --file ./airport.yaml --json
+kumo config rollback --json
 kumo profile import ./local.yaml
 kumo override list --json
 kumo override add --name dns-fix --file dns.yaml --dry-run --json
 kumo dns --json
 kumo dns set --file dns.json --dry-run --json
+kumo sysproxy status --json
 kumo sysproxy on --dry-run --json
+kumo sysproxy reclaim --dry-run --json
 kumo prefs get --json
-kumo prefs set keepCoreRunningOnQuit true --json
+kumo prefs set reclaimSystemProxy true --json
 kumo cli-link status --json
 kumo service status --json
 kumo service install
@@ -96,6 +107,7 @@ Read-only inspection and tuning commands that map directly onto the shared
 
 ```bash
 kumo rules [--json]
+kumo topology [--issues] [--json]                 # generated graph; live selections while running
 kumo rules enable <index> | kumo rules disable <index>
 kumo proxies [--geo] [--json]                       # --geo sends node hostnames to ipwho.is
 kumo connections close --ids <id1,id2,...> [--json]
@@ -114,7 +126,8 @@ kumo dns [--json] | kumo dns enable|disable [--json]
 kumo sniffer [--json] | kumo sniffer enable|disable [--json]
 kumo tun status|enable|disable [--json]
 kumo tun settings [--json]
-kumo sysproxy on|off [--dry-run] [--json]
+kumo sysproxy status [--json]
+kumo sysproxy on|off|reclaim [--dry-run] [--json]
 kumo sysproxy set --add-defaults [--dry-run] [--json]
 kumo providers [--json]                           # proxy/rule provider counts
 kumo providers update --proxy <name> [--json]
@@ -126,7 +139,12 @@ kumo test <proxy|group> [--url <url>] [--json]
 
 `kumo test` treats a name that matches a proxy group as a group test (every
 member is probed); other names are tested as a single proxy. `--url` applies
-to single-proxy tests.
+to single-proxy tests. Group text output starts with a success/timeout/missing/
+error summary and includes each node's real error detail. JSON keeps the
+existing `delay` field and adds `delayStatus` and `delayError` to group nodes
+and single-proxy reports. Failed current tests never reuse a historical delay;
+history read from `/proxies` is marked `stale`. Single-proxy HTTP failures still
+use the ordinary error envelope with the controller status and body.
 
 `kumo providers update --all` updates every provider returned by the running
 core's proxy and rule provider listings. Each provider's outcome is collected
@@ -163,10 +181,11 @@ becomes the current profile with auto-update enabled. Repeating the same URL
 therefore never duplicates a profile or force-switches the current one.
 
 `kumo profile refresh --id <id>` re-downloads that profile in place (Sub-Store
-profiles refresh through Sub-Store). When the refreshed profile is the current
-one and the core is running, the core is restarted so the new YAML takes
-effect, mirroring the GUI. `--use-proxy` fetches through the local Mihomo
-proxy and fails with a clear error when no core is running.
+profiles refresh through Sub-Store). When the refreshed profile is current and
+the core is running, Kumo preflights a candidate with `mihomo -t` and hot-reloads
+it with `PUT /configs?force=true`; failure rolls back the downloaded content and
+current selection without stopping the core. `--use-proxy` fetches through the
+local Mihomo proxy and fails with a clear error when no core is running.
 
 `kumo profile update <id>` merges the provided flags over the stored metadata:
 omitted fields (`--name`, `--url`, `--auto-update`, `--use-proxy`) keep their
@@ -178,7 +197,16 @@ not re-downloaded; use `profile refresh` for that.
 
 `kumo profile edit <id>` replaces the profile YAML from `--file <path>` or
 `--stdin`. The replacement must parse as a YAML mapping; `--dry-run` validates
-it without writing. Name and subscription settings are preserved.
+it without writing. Name and subscription settings are preserved. Editing the
+current profile while the core runs also preflights and hot-reloads a changed
+YAML document transactionally. Invalid or rejected edits preserve the running
+pid, previous profile content, current selection, and last known-good runtime
+file. `profile update` with unchanged YAML does not trigger a reload.
+
+`kumo profile delete <id>` similarly hot-reloads the next selected profile when
+it deletes the current one. Deleting a non-current profile does not reload. If
+the next profile fails preflight or reload, the deleted profile and current
+selection are restored.
 
 `kumo profile content <id>` fails on an unknown id instead of falling back to
 the current profile, so scripts never print the wrong profile. The id must
@@ -197,7 +225,9 @@ accept `--file <path>` or `--stdin` with a JSON object whose top-level keys
 match the corresponding settings type (`DnsSettings`, `SnifferSettings`,
 `TunSettings`, `SystemProxySettings`). Only the provided keys are changed;
 arrays and nested objects are replaced wholesale. The command fails cleanly
-when the JSON is malformed or a value does not match the schema.
+when the JSON is malformed or a value does not match the schema. TUN `stack`
+accepts `mixed`, `gvisor`, `system`, or `mips`; unknown values fail validation,
+and the command help notes that MIPS requires Mihomo 1.19.32 or later.
 
 `--dry-run` prints the merged settings without writing state and without
 restarting the core. Applying DNS or sniffer settings while the core is
@@ -223,7 +253,7 @@ kumo prefs set <key> <value> [--dry-run] [--json]
 `kumo prefs` owns the stored `UserPreferences` (`preferences.json`) that the
 SwiftUI app reads on launch and in Settings. Exposed keys:
 `launchAtLogin`, `hideMenuBarIcon`, `quitOnLastWindowClose`,
-`keepCoreRunningOnQuit`, `updateChannel`, `appLanguage`, and
+`keepCoreRunningOnQuit`, `reclaimSystemProxy`, `updateChannel`, `appLanguage`, and
 `hasCompletedOnboarding`.
 
 `prefs get` prints the whole set or one key; unknown keys fail with the list
@@ -262,20 +292,24 @@ kumo override delete <id> [--dry-run] [--restart] [--json]
 kumo override reorder --ids <id1,id2,...> [--restart] [--json]
 ```
 
-Overrides are edits merged into the runtime config; they are never applied to
-a live core in place, matching the GUI, which performs no core restart after
-an override edit.
+Overrides are transactional edits. With a running core, every mutation builds
+the merged candidate, validates it with `mihomo -t`, and applies it through
+`PUT /configs?force=true`. Failure restores the override files/metadata and the
+last known-good runtime config without stopping the core. With a stopped core,
+the edit is stored and validated on the next start.
 
-- **Next start, not now.** Active YAML overrides merge into the runtime
-  config when the core starts (`RuntimeConfigBuilder` at launch). Every
-  mutating command states `takes effect on next core start` in text output.
-  Pass `--restart` to restart a running core and apply the change
-  immediately; with no running core `--restart` is a no-op and the command
-  reports `core not running`.
-- **Only YAML is applied.** `--format js` stores the body but it is never
-  merged into the runtime config; `add` warns about this.
-- **`--global` has no runtime effect yet.** The flag is stored on the item but
-  global overrides are not applied anywhere; `add` warns about this.
+- **Hot reload first.** GUI and CLI use the same `KumoController` transaction;
+  there is no SwiftUI-specific reload implementation. Text output says that hot
+  reload applies to a running core. `--restart` additionally restarts a running
+  core after the transaction; with no running core it remains a no-op.
+- **JavaScript is executable.** `--format js` runs `main(config)` in a fresh
+  macOS JavaScriptCore shell process and requires a JSON-serializable object
+  result. Scripts have standard JavaScript and `console` methods, but no file,
+  network, or process APIs, and are terminated after 5 seconds. Errors name
+  the override and prevent a partial runtime config from being written.
+- **Shared order.** YAML merges and JavaScript transforms run in list order;
+  `--global` is stored as scope metadata and does not move an item ahead of
+  other entries.
 - **Remote fetches are unproxied.** `add --url` downloads the body directly
   (no proxy support) before storing it.
 - **Ordering.** `list` prints the merge order by ascending index.
@@ -284,9 +318,66 @@ an override edit.
 - **Ids are pre-validated.** `content`, `update`, `delete`, and `reorder`
   fail with `Unknown override id: <id>` instead of relying on the core API's
   silent no-op for unknown delete ids. `reorder` also rejects duplicate ids.
-- **Dry run.** Local `add --dry-run` validates that the YAML parses (for
-  `--format yaml`) without writing; `delete --dry-run` names the item that
+- **Dry run.** Local `add --dry-run` validates YAML parsing (for
+  `--format yaml`) or executes the JavaScript transform against an empty
+  configuration without writing; `delete --dry-run` names the item that
   would be removed. `--dry-run` cannot be combined with `--restart`.
+
+#### Generated configuration transactions
+
+```bash
+kumo config diff [--file <path>|--stdin] [--json]
+kumo config validate [--file <path>|--stdin] [--json]
+kumo config apply (--file <path>|--stdin) [--json]
+kumo config rollback [--json]
+```
+
+All four commands call `KumoController`; `CoreRuntimeRunner` forwards the same
+methods for the GUI actor. Candidate generation is shared with subscription and
+override transactions: current-profile YAML, ordered YAML/JavaScript overrides,
+then Kumo-owned runtime settings. `--file` and `--stdin` are mutually exclusive.
+Diff and validate accept no input to inspect the current generated configuration;
+apply deliberately requires explicit candidate input.
+
+- **Diff is read-only.** It compares the last installed `work/config.yaml` with
+  the generated candidate and returns `changed` plus `diff`. `diff` is stable
+  unified text with fixed `a/work/config.yaml` and `b/work/config.yaml` headers
+  and no timestamps. No core is launched and no application-support file is
+  created, replaced, or removed.
+- **Validate uses the real core without installing.** `CoreSupervisor` has an
+  `install:false` path that runs `mihomo -t` with a unique temporary work and
+  candidate directory. It never writes `work/config.yaml`, state, profiles,
+  overrides, or runtime-event logs and never fakes a dry run by restoring the
+  real file afterward. JSON returns `valid` and `diagnostics`; a candidate that
+  Mihomo rejects is a completed validation (`ok:true`, `valid:false`) with the
+  core's actual fatal output, rather than a generic parse message.
+- **Apply commits history only after success.** It stages a private pre-apply
+  point before invoking the existing `performProfileTransaction` update path.
+  The transaction validates and atomically installs the candidate and uses
+  `PUT /configs?force=true` when the core runs. A stopped core is validated and
+  installed without starting. The pending point is promoted only after those
+  steps succeed; validation/reload failure follows the established automatic
+  restore path and leaves no successful rollback point. Apply JSON contains
+  `rollbackPointID`, `snapshotCount`, and `reloaded`.
+- **Rollback is explicit and retryable.** It restores the newest successful
+  pre-apply point, preflights and hot-reloads a running core, and consumes the
+  point only after success. Failure restores the configuration that was current
+  before the rollback attempt and keeps the point available. Rollback JSON
+  contains `rollbackPointID`, `remainingSnapshots`, and `reloaded`.
+
+A point includes every profile body plus profile metadata and `current.txt`,
+override bodies and metadata, the related `CoreStatus`, and the last usable
+runtime YAML. Points live under `configuration-rollbacks/`, are private (`0700`
+directory, `0600` files), and are bounded to 10; pending hidden files are never
+rollback candidates. Snapshot contents are not logged.
+
+Restoring `CoreStatus` copies only generated-config inputs (`mode`, `endpoint`,
+`proxyPorts`, and `runtimeSettings`). Current run state, pid, process start
+identity, owner, readiness, message, `lastExit`, service/TUN observations, and
+all system-proxy intent/settings/applied/ownership fields stay current. Rollback
+therefore cannot re-enable an old system-proxy observation or transfer process
+ownership. This history covers the new explicit apply command; unrelated writes
+do not implicitly create rollback points.
 
 #### Runtime settings (`kumo config get|set|secret`)
 
@@ -406,7 +497,12 @@ The default output is readable text. `--json` returns a stable wrapper:
 }
 ```
 
-Errors use the same wrapper with `ok: false`.
+Errors use the same wrapper with `ok: false`. A start blocked by listener
+conflicts additionally includes `portConflicts`; each item preserves `role`,
+`host`, `port`, optional `pid` / `processName`, and `suggestedPort`. The legacy
+string `error` remains present. Without `--resolve-ports`, the command makes no
+port changes. With the flag, it explicitly persists free mixed/controller
+ports and reapplies an enabled system proxy after readiness.
 
 `--json` output is always plain JSON on stdout. It must not include ANSI escape
 codes, progress text, warnings, or diagnostic logs. Human-readable diagnostics
@@ -462,6 +558,50 @@ is only available as a live stream, so `--watch` is required. In `--json`
 mode, `--follow` and `--watch` write one compact
 `{ok,data,error}` envelope per line (NDJSON). Ctrl-C exits both streams
 cleanly with code 0.
+
+## Agent Discovery and Page Prompts
+
+Agents should discover the current executable's contract instead of inferring
+commands from examples:
+
+```bash
+kumo capabilities --json
+kumo prompt --list --json
+kumo prompt <page> [intent] --json
+```
+
+`capabilities --json` uses the ordinary `{ok,data,error}` envelope. Its `data`
+contains `protocolVersion` (currently `1.1`), `cliVersion`, envelope/exit-code
+metadata, global parameters, prompt pages, and a descriptor for every runnable
+command (including default-subcommand forms). Each command descriptor contains:
+
+- `path`, generated `usage`, `summary`, and `aliases`;
+- command-specific `parameters`, with argument/option/flag kind, value name,
+  required/repeating state, accepted values where known, and a summary;
+- `access`: `read`, `write`, or `protected` (a privileged macOS change);
+- `risk`: `low`, `medium`, or `high`; dual-use commands are classified by their
+  strongest available effect;
+- `outputStability`: `stable`, `stableStream` (one envelope per NDJSON line),
+  or `humanText` for help/completion output that automation must not parse;
+- `supportsDryRun`, `supportsValidate`, and `supportsRollback`. Validation
+  means supplied input can be checked without mutation, normally through
+  `--dry-run`; it is not a claim that a separate `--validate` flag exists.
+
+The `capabilities` index groups command paths by read/write/protected access
+and by dry-run/validate/rollback support. `config diff` and `config validate`
+are indexed as dry-run operations; `config validate` and `config apply` carry
+validation semantics; `config apply` and `config rollback` populate the
+rollback list. The envelope and existing command fields remain compatible.
+
+`kumo prompt` shares `KumoCoreKit.AgentGuidance` with the SwiftUI app. With no
+page, or with `--list`, it lists page and intent ids. With a page and optional
+intent it prints a ready-to-paste prompt in text mode; JSON returns the selected
+page, intent, goal, structured steps, and prompt text. Unknown pages or intents
+fail with the valid ids. Pages are `overview`, `profiles`, `proxies`,
+`topology`, `connections`, `logs`, `rules`, `core`, `systemProxy`, `dns`,
+`tun`, `sniffer`, `resources`, `overrides`, `agents`, and `settings`. Topology
+guidance uses `kumo topology --issues --json`; the profiles page includes the
+complete config diff/validate/apply/rollback loop.
 
 ## Agent-Friendly Behavior
 

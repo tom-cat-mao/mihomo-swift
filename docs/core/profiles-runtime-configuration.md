@@ -20,9 +20,20 @@ profile card, or the CLI. The macOS app also keeps a lightweight in-process
 poller running while the UI is open. Once a remote profile's
 `profile-update-interval` has elapsed and `autoUpdate` is enabled, Kumo refreshes
 that profile in the background. If the refreshed profile is currently active and
-Mihomo is running, Kumo restarts the core so the generated runtime configuration
-uses the new YAML. Manual refreshes show inline progress; background refreshes
-surface system notifications for completed updates and throttled failure alerts.
+Mihomo is running, Kumo builds a candidate, validates it with `mihomo -t`, and
+uses `PUT /configs?force=true` to hot-reload it. A validation or reload failure
+restores the subscription body, metadata, current profile id, and last
+known-good runtime file without stopping the core. Manual refreshes show inline
+progress; background refreshes surface system notifications for completed
+updates and throttled failure alerts.
+
+Local edits and deletion use the same transaction boundary. Editing the current
+profile while Mihomo runs preflights and hot-reloads only when its YAML actually
+changes; metadata-only updates and edits to non-current profiles do not reload.
+Deleting the current profile preflights and hot-reloads the next selected
+profile, while deleting a non-current profile leaves the running configuration
+untouched. Any failure restores profile bodies, metadata, the current id, and
+the previous runtime file.
 
 ## Default Profile
 
@@ -60,6 +71,9 @@ This lets the app start with a safe empty state instead of crashing on missing c
 - `hosts` when the user has configured hosts in the Kumo UI
 
 The goal is to keep user profiles portable while ensuring Kumo can control the running core.
+When explicit port-conflict resolution selects a new mixed or controller port,
+the next generated configuration uses that persisted endpoint; conflict checks
+alone never rewrite runtime settings or the generated YAML.
 Kumo sets `find-process-mode: always` by default so the Mihomo controller
 returns `processPath` metadata for active connections; the macOS Connections
 view uses that path to display native application icons.
@@ -101,16 +115,61 @@ configuration. A key ending in `!` replaces the target value directly instead
 of recursively merging nested mappings.
 
 This gives deterministic precedence for common Mihomo configuration sections
-without introducing JavaScript transforms or a privileged service dependency.
-Full YAML comments and formatting are not preserved because the generated
-runtime file is serialized from structured values.
+without introducing a privileged service dependency. Full YAML comments and
+formatting are not preserved because the generated runtime file is serialized
+from structured values.
+
+### JavaScript overrides
+
+JavaScript overrides run in the same repository order as YAML overrides. Each
+script receives the complete configuration produced by the preceding profile
+and overrides, and must define `main(config)` and return a non-null,
+non-array, JSON-serializable object. The returned object replaces the complete
+working document, so scripts can modify arrays and delete keys directly:
+
+```javascript
+function main(config) {
+    config.rules = (config.rules || []).concat(["MATCH,DIRECT"])
+    return config
+}
+```
+
+Execution uses the JavaScriptCore shell bundled with macOS in a fresh
+one-shot process. The wrapper removes shell host functions and exposes only
+standard JavaScript, the `config` argument, and `console` logging methods; no
+file, network, or process APIs are provided. Each execution has a real
+5-second timeout, after which the process is terminated.
+
+An override failure identifies its name and aborts generation before the
+runtime file is written. JavaScript transforms do not change YAML merge
+semantics, and Kumo-controlled runtime settings are still removed and appended
+after every user override so their ownership and precedence are unchanged.
 
 TUN advanced setting edits are persisted to `CoreRuntimeSettings.tun`. Applying
 them while Mihomo is running restarts the core, matching Mihomo's expectation
 that interface-level TUN changes are loaded from the generated runtime YAML
 rather than patched piecemeal.
 
-## Future Work
+## Explicit Preview, Apply, and Rollback
 
-- Add JavaScript transforms only after the YAML override flow and sandbox
-  strategy are stable.
+`kumo config diff` and `kumo config validate` accept either no input (the current
+profile) or replacement current-profile YAML through `--file` / `--stdin`.
+Both build the same ordered override plus Kumo-owned candidate as launch and
+subscription transactions. Diff is entirely in memory. Validation runs real
+`mihomo -t` in an isolated temporary directory through the supervisor's
+`install:false` path; neither operation changes application-support files.
+
+`kumo config apply` requires explicit YAML and updates the current profile via
+`performProfileTransaction`, preserving its name, subscription URL, update
+preferences, and id. A pending snapshot captures profiles/metadata/current id,
+overrides/metadata, relevant `CoreStatus`, and the last generated runtime file.
+It becomes one of at most 10 rollback points only after validation/install and
+any running-core hot reload succeed. Invalid or rejected applies use the
+existing automatic restoration and produce no successful point.
+
+`kumo config rollback` restores the newest point and consumes it only after
+preflight/hot reload. Failed rollback restores the configuration current before
+the attempt and leaves the point retryable. Only mode, endpoint, proxy ports,
+and runtime settings are restored in `CoreStatus`; current process identity,
+owner, readiness, last exit, and system-proxy observations are never replaced
+from history.

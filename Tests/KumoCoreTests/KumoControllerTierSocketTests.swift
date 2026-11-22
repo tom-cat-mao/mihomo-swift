@@ -77,6 +77,54 @@ final class KumoControllerTierSocketTests: XCTestCase {
         XCTAssertEqual(agent.receivedPaths(), ["/core/start"])
     }
 
+    func testServiceStartRestoresStructuredPortConflicts() throws {
+        let paths = hermeticPaths()
+        _ = try KumoServiceManager(paths: paths).ensureCredentials()
+        let conflict = PortConflict(
+            role: .controller,
+            host: "127.0.0.1",
+            port: 9097,
+            pid: 123,
+            processName: "mihomo",
+            suggestedPort: 9098
+        )
+        let agent = try FakeServiceSocket(socketPath: paths.userAgentSocketFile.path) { request in
+            let options = try JSONDecoder().decode(CoreStartOptions.self, from: request.body)
+            XCTAssertFalse(options.resolvePortConflicts)
+            return KumoServiceTransportResponse(
+                status: 409,
+                error: KumoError.portConflicts([conflict]).localizedDescription,
+                portConflicts: [conflict]
+            )
+        }
+        defer { agent.stop() }
+        let controller = makeController(paths: paths, rootReachable: true, agentReachable: true)
+
+        XCTAssertThrowsError(try controller.start()) { error in
+            XCTAssertEqual(error as? KumoError, .portConflicts([conflict]))
+        }
+    }
+
+    func testServiceStartSendsExplicitPortResolutionFlag() throws {
+        let paths = hermeticPaths()
+        _ = try KumoServiceManager(paths: paths).ensureCredentials()
+        let agent = try FakeServiceSocket(socketPath: paths.userAgentSocketFile.path) { request in
+            let options = try JSONDecoder().decode(CoreStartOptions.self, from: request.body)
+            XCTAssertTrue(options.resolvePortConflicts)
+            return KumoServiceTransportResponse(
+                status: 200,
+                body: try JSONEncoder().encode(CoreStatus(state: .running, pid: 888))
+            )
+        }
+        defer { agent.stop() }
+        let controller = makeController(paths: paths, rootReachable: true, agentReachable: true)
+
+        let status = try controller.start(resolvePortConflicts: true)
+
+        XCTAssertEqual(status.pid, 888)
+        XCTAssertEqual(agent.receivedPaths(), ["/core/start"])
+    }
+
     func testStopClearsTheRecordedOwnerTier() throws {
         let paths = hermeticPaths()
         _ = try KumoServiceManager(paths: paths).ensureCredentials()

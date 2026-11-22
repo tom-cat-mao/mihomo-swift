@@ -164,6 +164,10 @@ public struct KumoPaths: Sendable {
         workDirectory.appendingPathComponent("config.yaml")
     }
 
+    public var configurationRollbacksDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent("configuration-rollbacks", isDirectory: true)
+    }
+
     public var corePIDFile: URL {
         workDirectory.appendingPathComponent("core.pid")
     }

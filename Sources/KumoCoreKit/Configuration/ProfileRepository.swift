@@ -421,6 +421,43 @@ public struct ProfileRepository: Sendable {
         return wasCurrent
     }
 
+    struct TransactionSnapshot: Codable, Sendable {
+        let files: [String: Data]
+    }
+
+    /// Captures profile bodies, metadata and `current.txt` together so a failed
+    /// runtime configuration transaction can restore the whole selection.
+    func transactionSnapshot() throws -> TransactionSnapshot {
+        guard FileManager.default.fileExists(atPath: profilesDirectory.path) else {
+            return TransactionSnapshot(files: [:])
+        }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: profilesDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        var files: [String: Data] = [:]
+        for url in urls where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            files[url.lastPathComponent] = try Data(contentsOf: url)
+        }
+        return TransactionSnapshot(files: files)
+    }
+
+    func restoreTransactionSnapshot(_ snapshot: TransactionSnapshot) throws {
+        try FileManager.default.createDirectory(at: profilesDirectory, withIntermediateDirectories: true)
+        let existing = try FileManager.default.contentsOfDirectory(
+            at: profilesDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        for url in existing where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            try FileManager.default.removeItem(at: url)
+        }
+        for (name, data) in snapshot.files {
+            try data.write(to: profilesDirectory.appendingPathComponent(name), options: .atomic)
+        }
+    }
+
     private func defaultProfileYAML() -> String {
         """
         proxies: []

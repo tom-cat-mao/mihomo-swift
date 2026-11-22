@@ -15,7 +15,7 @@ Kumo should feel like a Mac utility that helps users connect quickly, not like a
 The main app uses a source-list sidebar grouped by task frequency:
 
 - **Daily**: Overview, Profiles, Proxies.
-- **Inspect**: Connections, Logs, Rules.
+- **Inspect**: Connections, Logs, Rules, Topology.
 - **Configure**: Core, System Proxy, DNS, TUN, Sniffer, Resources, Overrides, Sub-Store.
 
 This keeps daily operations at the top while preserving access to deeper capabilities without hiding them behind a generic advanced page.
@@ -32,10 +32,10 @@ The following features belong in `Configure` or `Settings`:
 - Agent Skills installation (bundled `kumo-cli` skill for supported coding agents)
 - Core path overrides
 - External resources and provider management
-- Ordered YAML overrides and future JavaScript transforms
+- Ordered YAML and sandboxed JavaScript overrides
 - Sub-Store management (subscriptions, collections, files, modules, artifacts, archives, tokens, settings, and logs)
 
-Inspect-only features such as connection tables, full logs, and rules live in `Inspect`, because they answer what the core is doing rather than how it should be configured.
+Inspect-only features such as connection tables, full logs, rules, and the configuration topology live in `Inspect`, because they answer what the core is doing rather than how it should be configured. Topology diagnostics identify unresolved configuration references without mutating the profile or overrides.
 
 Settings is reserved for app-level preferences such as launch, window, quit
 behavior, background-agent setup, language, and update choices. Runtime status

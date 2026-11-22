@@ -14,6 +14,11 @@ struct SettingsView: View {
             }
         }
         .frame(width: 560)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                AgentPromptMenu(page: "settings")
+            }
+        }
     }
 }
 

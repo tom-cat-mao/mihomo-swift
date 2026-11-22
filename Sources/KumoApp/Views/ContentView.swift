@@ -9,6 +9,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case connections = "Connections"
     case logs = "Logs"
     case rules = "Rules"
+    case topology = "Topology"
     case core = "Core"
     case systemProxy = "System Proxy"
     case dns = "DNS"
@@ -33,6 +34,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .connections: "network"
         case .logs: "doc.text.magnifyingglass"
         case .rules: "list.bullet.rectangle"
+        case .topology: "point.3.connected.trianglepath.dotted"
         case .core: "cpu"
         case .systemProxy: "switch.2"
         case .dns: "globe"
@@ -42,6 +44,27 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .overrides: "slider.horizontal.3"
         case .subStore: "square.stack.3d.up"
         case .agentSkills: "puzzlepiece.extension"
+        }
+    }
+
+    var agentPromptPage: String? {
+        switch self {
+        case .overview: "overview"
+        case .profiles: "profiles"
+        case .proxies: "proxies"
+        case .connections: "connections"
+        case .logs: "logs"
+        case .rules: "rules"
+        case .topology: "topology"
+        case .core: "core"
+        case .systemProxy: "systemProxy"
+        case .dns: "dns"
+        case .tun: "tun"
+        case .sniffer: "sniffer"
+        case .resources: "resources"
+        case .overrides: "overrides"
+        case .agentSkills: "agents"
+        case .subStore: nil
         }
     }
 }
@@ -63,7 +86,7 @@ struct ContentView: View {
     @Environment(KumoNavigationState.self) private var navigation
     private let sections = [
         SidebarSection(id: "daily", title: "Daily", destinations: [.overview, .profiles, .proxies]),
-        SidebarSection(id: "inspect", title: "Inspect", destinations: [.connections, .logs, .rules]),
+        SidebarSection(id: "inspect", title: "Inspect", destinations: [.connections, .logs, .rules, .topology]),
         SidebarSection(
             id: "configure",
             title: "Configure",
@@ -73,6 +96,17 @@ struct ContentView: View {
 
     var body: some View {
         navigationRoot
+            .alert(String(localized: "Port Conflict"), isPresented: portConflictBinding) {
+                Button(String(localized: "Use Free Ports")) {
+                    store.dismissPortConflicts()
+                    Task { await store.startCore(resolvePortConflicts: true) }
+                }
+                Button(String(localized: "Cancel"), role: .cancel) {
+                    store.dismissPortConflicts()
+                }
+            } message: {
+                Text(portConflictMessage)
+            }
             .alert(errorAlertTitle, isPresented: errorAlertBinding) {
                 if isCoreNotFoundError {
                     Button(String(localized: "Open Core Settings")) {
@@ -130,6 +164,20 @@ struct ContentView: View {
             }
         }
         .listStyle(.sidebar)
+    }
+
+    private var portConflictBinding: Binding<Bool> {
+        Binding {
+            !store.portConflicts.isEmpty
+        } set: { isPresented in
+            if !isPresented {
+                store.dismissPortConflicts()
+            }
+        }
+    }
+
+    private var portConflictMessage: String {
+        store.portConflicts.map(\.displayMessage).joined(separator: "\n")
     }
 
     private var errorAlertBinding: Binding<Bool> {
@@ -190,6 +238,8 @@ struct ContentView: View {
             LogsView()
         case .rules:
             RulesView()
+        case .topology:
+            TopologyView()
         case .core:
             CoreView()
         case .systemProxy:
@@ -237,6 +287,12 @@ struct ContentView: View {
             .disabled(store.isLoading || store.status.state != .running)
             .allowsHitTesting(!store.isSwitchingMode)
             .help(String(localized: "Switch outbound mode"))
+        }
+
+        if let page = navigation.selection.agentPromptPage {
+            ToolbarItem(placement: .secondaryAction) {
+                AgentPromptMenu(page: page)
+            }
         }
 
         ToolbarItemGroup(placement: .primaryAction) {

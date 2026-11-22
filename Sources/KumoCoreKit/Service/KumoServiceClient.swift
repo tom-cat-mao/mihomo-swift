@@ -57,15 +57,35 @@ public struct KumoServiceTransportRequest: Codable, Equatable, Sendable {
     }
 }
 
+public struct CoreStartOptions: Codable, Equatable, Sendable {
+    public var resolvePortConflicts: Bool
+
+    public init(resolvePortConflicts: Bool = false) {
+        self.resolvePortConflicts = resolvePortConflicts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        resolvePortConflicts = try container.decodeIfPresent(Bool.self, forKey: .resolvePortConflicts) ?? false
+    }
+}
+
 public struct KumoServiceTransportResponse: Codable, Equatable, Sendable {
     public var status: Int
     public var bodyBase64: String
     public var error: String?
+    public var portConflicts: [PortConflict]?
 
-    public init(status: Int, body: Data = Data(), error: String? = nil) {
+    public init(
+        status: Int,
+        body: Data = Data(),
+        error: String? = nil,
+        portConflicts: [PortConflict]? = nil
+    ) {
         self.status = status
         self.bodyBase64 = body.base64EncodedString()
         self.error = error
+        self.portConflicts = portConflicts
     }
 
     public var body: Data {
@@ -248,8 +268,10 @@ public struct KumoServiceClient: Sendable {
         signedRequest(method: "GET", path: "/status")
     }
 
-    public func startCoreRequest() -> KumoServiceSignedRequest {
-        signedRequest(method: "POST", path: "/core/start")
+    public func startCoreRequest(resolvePortConflicts: Bool = false) -> KumoServiceSignedRequest {
+        let options = CoreStartOptions(resolvePortConflicts: resolvePortConflicts)
+        let body = (try? JSONEncoder().encode(options)) ?? Data()
+        return signedRequest(method: "POST", path: "/core/start", body: body)
     }
 
     public func stopCoreRequest() -> KumoServiceSignedRequest {
@@ -269,6 +291,10 @@ public struct KumoServiceClient: Sendable {
         return signedRequest(method: "POST", path: path)
     }
 
+    public func releaseSystemProxyRequest() -> KumoServiceSignedRequest {
+        signedRequest(method: "POST", path: "/sysproxy/release")
+    }
+
     public func send(_ request: KumoServiceSignedRequest) throws -> KumoServiceTransportResponse {
         let transportRequest = KumoServiceTransportRequest(request: request)
         let payload = try JSONEncoder().encode(transportRequest)
@@ -279,6 +305,9 @@ public struct KumoServiceClient: Sendable {
         )
         let response = try JSONDecoder().decode(KumoServiceTransportResponse.self, from: responseData)
         guard (200..<300).contains(response.status) else {
+            if let conflicts = response.portConflicts, !conflicts.isEmpty {
+                throw KumoError.portConflicts(conflicts)
+            }
             throw KumoError.serviceUnavailable(response.error ?? "Kumo service returned status \(response.status).")
         }
         return response
@@ -292,7 +321,7 @@ public struct KumoServiceClient: Sendable {
     private static func receiveTimeoutSeconds(for request: KumoServiceSignedRequest) -> Int32? {
         guard request.method.uppercased() == "GET" else { return nil }
         switch request.path {
-        case "/service/status", "/status":
+        case "/service/status", "/status", "/sysproxy/status":
             return KumoServiceTimeout.receiveSeconds
         default:
             return nil

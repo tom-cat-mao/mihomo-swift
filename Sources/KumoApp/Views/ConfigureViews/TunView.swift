@@ -54,8 +54,14 @@ struct TunView: View {
                         Text(String(localized: "Mixed")).tag("mixed")
                         Text(String(localized: "gVisor")).tag("gvisor")
                         Text(String(localized: "System")).tag("system")
+                        Text("MIPS").tag("mips")
                     }
                     .pickerStyle(.segmented)
+                    if tunDraft.stack == "mips" {
+                        Text(String(localized: "MIPS requires Mihomo 1.19.32 or later."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle(String(localized: "Auto Route"), isOn: $tunDraft.autoRoute)
                     Toggle(String(localized: "Auto Detect Interface"), isOn: $tunDraft.autoDetectInterface)
                     Toggle(String(localized: "Strict Route"), isOn: $tunDraft.strictRoute)
@@ -219,7 +225,7 @@ struct TunView: View {
     private func normalizedTunSettings(_ settings: TunSettings) -> TunSettings {
         var settings = settings
         settings.isEnabled = currentTunSettings.isEnabled
-        settings.stack = ["mixed", "gvisor", "system"].contains(settings.stack) ? settings.stack : "mixed"
+        settings.stack = normalizedTunStackForUI(settings.stack)
         settings.mtu = max(576, min(9000, settings.mtu))
         settings.dnsHijack = Self.normalizedList(settings.dnsHijack)
         settings.routeExcludeAddress = Self.normalizedList(settings.routeExcludeAddress)
@@ -259,4 +265,8 @@ struct TunView: View {
             return (0...255).contains(value)
         }
     }
+}
+
+func normalizedTunStackForUI(_ stack: String) -> String {
+    TunSettings.supportedStacks.contains(stack) ? stack : "mixed"
 }

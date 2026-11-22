@@ -1,6 +1,296 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Mihomo exited unexpectedly": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mihomo exited unexpectedly"
+          }
+        }
+      }
+    },
+    "Another application changed the system proxy.": {
+      "localizations": {}
+    },
+    "Automatically Reclaim": {
+      "localizations": {}
+    },
+    "Cleared": {
+      "localizations": {}
+    },
+    "Off": {
+      "localizations": {}
+    },
+    "Owned": {
+      "localizations": {}
+    },
+    "Reclaim": {
+      "localizations": {}
+    },
+    "State": {
+      "localizations": {}
+    },
+    "System proxy was cleared outside Kumo.": {
+      "localizations": {}
+    },
+    "Taken Over": {
+      "localizations": {}
+    },
+    "Waiting": {
+      "localizations": {}
+    },
+    "Topology": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Topology"
+          }
+        }
+      }
+    },
+    "Topology Unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Topology Unavailable"
+          }
+        }
+      }
+    },
+    "Refresh to inspect the generated configuration.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh to inspect the generated configuration."
+          }
+        }
+      }
+    },
+    "Search topology": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search topology"
+          }
+        }
+      }
+    },
+    "Dynamic members": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dynamic members"
+          }
+        }
+      }
+    },
+    "Show members resolved from include-all and filters": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show members resolved from include-all and filters"
+          }
+        }
+      }
+    },
+    "Issues (%@)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Issues (%@)"
+          }
+        }
+      }
+    },
+    "Show %@ more": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show %@ more"
+          }
+        }
+      }
+    },
+    "Entry": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entry"
+          }
+        }
+      }
+    },
+    "Groups": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Groups"
+          }
+        }
+      }
+    },
+    "Outbound": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outbound"
+          }
+        }
+      }
+    },
+    "Dynamic member": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dynamic member"
+          }
+        }
+      }
+    },
+    "active": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "active"
+          }
+        }
+      }
+    },
+    "dynamic": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dynamic"
+          }
+        }
+      }
+    },
+    "missing reference": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "missing reference"
+          }
+        }
+      }
+    },
+    "Select a Node": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a Node"
+          }
+        }
+      }
+    },
+    "Relations and configuration details appear here.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relations and configuration details appear here."
+          }
+        }
+      }
+    },
+    "Type": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        }
+      }
+    },
+    "Count": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Count"
+          }
+        }
+      }
+    },
+    "Country": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Country"
+          }
+        }
+      }
+    },
+    "Payloads": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Payloads"
+          }
+        }
+      }
+    },
+    "Issues": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Issues"
+          }
+        }
+      }
+    },
+    "Incoming": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incoming"
+          }
+        }
+      }
+    },
+    "Outgoing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outgoing"
+          }
+        }
+      }
+    },
+    "broken": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "broken"
+          }
+        }
+      }
+    },
     "About Kumo": {
       "localizations": {
         "zh-Hans": {
@@ -106,6 +396,9 @@
           }
         }
       }
+    },
+    "Copy Agent Prompt": {
+      "localizations": {}
     },
     "Agent Skills": {
       "localizations": {
@@ -591,6 +884,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Annuleren"
+          }
+        }
+      }
+    },
+    "Port Conflict": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Port Conflict"
+          }
+        }
+      }
+    },
+    "Use Free Ports": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Free Ports"
           }
         }
       }
@@ -12897,6 +13210,9 @@
     "Mihomo redirects DNS traffic destined for these hosts.": {
       "localizations": {}
     },
+    "MIPS requires Mihomo 1.19.32 or later.": {
+      "localizations": {}
+    },
     "Mixed": {
       "localizations": {
         "zh-Hans": {
@@ -17127,6 +17443,42 @@
       }
     },
     "Telegram": {
+      "localizations": {}
+    },
+    "%1$d ms · stale": {
+      "localizations": {}
+    },
+    "%1$d timeout": {
+      "localizations": {}
+    },
+    "%1$d missing": {
+      "localizations": {}
+    },
+    "%1$d error": {
+      "localizations": {}
+    },
+    "%1$d/%2$d succeeded": {
+      "localizations": {}
+    },
+    "Delay test failed": {
+      "localizations": {}
+    },
+    "success": {
+      "localizations": {}
+    },
+    "timeout": {
+      "localizations": {}
+    },
+    "missing": {
+      "localizations": {}
+    },
+    "error": {
+      "localizations": {}
+    },
+    "stale": {
+      "localizations": {}
+    },
+    "stale timeout": {
       "localizations": {}
     },
     "Test Delay": {

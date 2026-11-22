@@ -41,11 +41,15 @@ final class KumoAppDelegate: NSObject, NSApplicationDelegate, UNUserNotification
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let notificationCenter = UNUserNotificationCenter.current()
-        notificationCenter.delegate = self
-        AppNotificationCoordinator.shared.registerCategories()
-        Task {
-            await AppNotificationCoordinator.shared.requestAuthorization()
+        // UserNotifications requires a bundled application. SwiftPM's bare
+        // debug executable has no bundleProxy, so keep UI smoke runs usable.
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            let notificationCenter = UNUserNotificationCenter.current()
+            notificationCenter.delegate = self
+            AppNotificationCoordinator.shared.registerCategories()
+            Task {
+                await AppNotificationCoordinator.shared.requestAuthorization()
+            }
         }
         statusItemController = KumoStatusItemController()
         synchronizeLaunchAtLogin()

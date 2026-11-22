@@ -4,20 +4,40 @@
 
 The first test suite covers:
 
-- Runtime config generation.
+- Runtime config generation, including TUN MIPS YAML and legacy stack decoding.
+- Ordered YAML/JavaScript overrides: successful transforms, array edits,
+  missing `main`, non-object results, exceptions, real timeout termination,
+  sandbox API limits, mixed-format ordering, and failure without partial writes.
+- Mixed/controller port occupation, holder metadata, free-port suggestions,
+  same-port collision avoidance, explicit resolution, recently closed `TIME_WAIT`
+  connections versus active listeners, and the default no-silent-port-change
+  guarantee across local and socket-tier starts.
 - Core state persistence.
 - System proxy command construction in dry-run mode.
+- System proxy ownership with in-memory `networksetup` state: endpoint/PAC/bypass
+  conflicts, service switching, takeover, external clear, manual/automatic
+  Reclaim, safe stop/quit/guardian cleanup, and legacy Codable decoding.
 - Mihomo controller response mapping with mocked URL loading.
+- Delay testing through `MockURLProtocol`: batch success, unsupported-endpoint
+  fallback, the eight-request concurrency ceiling (asynchronous mock responses),
+  404/408/503/504 behavior, single-segment slash encoding, missing `/proxies`
+  references, stale history, no old-delay reuse, and single-proxy HTTP errors.
 - Backup export/import round trips.
 - Service request signing.
+- Agent protocol discovery: every runnable command has exactly one capabilities
+  descriptor, dry-run/validate/rollback claims stay accurate, every prompt page
+  and intent resolves, and every prompt step references a registered command.
+- Configuration topology: missing groups/nodes/providers/rule sets, nested and
+  dynamic groups, logical-rule comma parsing, active paths, generated stopped
+  previews, hidden GLOBAL selections, and stable Codable/CLI output.
 - CLI argument parsing, JSON envelope stability, color/log rendering rules, and
   npm-style help behavior.
 - CLI command behavior: profile refresh dedupe, refresh-by-id, and
   `--use-proxy`; profile metadata update and YAML edit with pre-read backfill;
   offline profile group/node previews; runtime config get/set/secret
-  validation; override CRUD with next-start semantics; GUI preferences; the
-  CLI link; provider `--all`; batch connection close; and the read-only
-  Sub-Store content surface.
+  validation; transactional override CRUD with preflight/hot-reload semantics;
+  GUI preferences; the CLI link; provider `--all`; batch connection close; and
+  the read-only Sub-Store content surface.
 - Profile refresh metadata: remote-URL dedupe refreshes the matching profile
   in place, and `refreshDueProfiles` preserves Sub-Store profile metadata.
 - Dev-instance environment overrides (`KUMO_APP_SUPPORT_DIR`,
@@ -26,9 +46,25 @@ The first test suite covers:
   ownership handoff and rollback, the app termination policy, root-to-agent
   migration guards, tier socket behavior, and the user-agent manager's launchd
   plist and idle policy.
+- Runtime failure safety: expected/unexpected exits, exit codes and fatal log
+  propagation, zombie/PID-reuse rejection, mixed/controller port conflicts,
+  bounded 2/5/15-second recovery and the five-minute stability reset.
+- Configuration transactions: `mihomo -t` candidate validation, forced full
+  hot reload, profile/current-id/subscription/override rollback, preservation
+  of the last known-good runtime config, and preflight before required restarts.
+- Legacy profile mutation closure: current-profile edit preserves the running
+  pid and old YAML on invalid input, valid edits hot-reload, metadata-only and
+  non-current edits do not reload, current deletion hot-reloads the next
+  profile, and failed deletion restores the deleted profile and selection.
+- Explicit configuration closure: recursive proof that diff/validate change no
+  application-support files, stable CLI JSON, successful apply snapshot commit,
+  invalid apply without a successful point, bounded 10-point history, rollback
+  content restoration and retry after failure, and preservation of running
+  pid/owner/readiness/lastExit plus system-proxy observations.
 - App-level behavior (`Tests/KumoAppTests/`): quit-path sidecar termination,
-  termination policy mapping, startup store attach for App Intents, and the
-  update-install flow including tier version-stamp repair prompts.
+  termination policy mapping, startup store attach for App Intents, update-install
+  flow including tier version-stamp repair prompts, and `lastExit` notification
+  baselining/deduplication with expected-stop suppression.
 
 These tests target `KumoCoreKit` because that layer carries the most important shared behavior.
 
@@ -41,7 +77,7 @@ manual/opt-in and never replace L0.
 |-------|----------------|---------------|-------------|
 | L0 | Unit behavior: core kit, signing, launchd plists, idle policy | CI / local `swift test` | `swift test` |
 | L1 | The agent tier installs, activates on demand, idles out and relaunches on this host, hermetically | Owner's Mac, disjoint dev label + `/tmp` app-support | `Scripts/dev/agent-smoke.sh` |
-| L2 | Root daemon, system proxy, TUN and app bundle on a disposable VM | tart VM (deferred) | not wired up yet |
+| L2 | Root daemon, system proxy and TUN on a disposable VM | Tart VM | `Scripts/dev/tart-l2-smoke.sh` |
 | L3 | Production migration (real label, real app-support) | Owner-gated, manual | existing install flows |
 
 ### L0 — Unit / CI
@@ -95,11 +131,62 @@ or invalid values keep production behavior byte-identical. The root daemon
 label (`io.kumo.KumoService`) has no override yet; root-tier dev instances are
 L2/L3 territory.
 
-### L2 — Disposable VM (deferred)
+### L2 — Disposable VM (Tart)
 
-A tart-based macOS VM is the target for exercising the root daemon, system
-proxy, TUN and the app bundle without touching the owner's machine. Not wired
-up yet.
+`Scripts/dev/tart-l2-smoke.sh` is the hermetic root/system-proxy/TUN acceptance
+entry point. It builds the release CLI and helper, resolves an existing Mihomo
+binary, creates a uniquely named clone, waits for SSH, installs the real root
+LaunchDaemon, runs the guest assertions, collects detailed JSON results, and
+removes the clone after both success and failure. It never modifies the host's
+application support, launchd jobs or `/Applications`.
+
+```bash
+Scripts/dev/tart-l2-smoke.sh
+```
+
+The default base is the NJU mirror of `cirruslabs/macos-tahoe-base:latest`, with
+the image's `admin`/`admin` credentials. Override `KUMO_TART_BASE_VM`,
+`KUMO_TART_VM_USER`, `KUMO_TART_VM_PASSWORD` and `KUMO_MIHOMO_PATH` as needed.
+`KUMO_L2_SKIP_BUILD=1` reuses release binaries; `KUMO_TART_GRAPHICS=1` shows the
+Tart window instead of running headlessly. Logs and guest JSON are retained
+under the ignored `build/l2-acceptance/` directory.
+
+On 2026-11-22 the automated entry point passed with Tart 2.37.0, a macOS 26.6.2
+arm64 guest and Mihomo 1.19.32:
+
+- The real LaunchDaemon installed and ran, the signed socket became reachable,
+  and the core reported `rootService` ownership.
+- System proxy apply/disable and HTTP traversal passed; an external endpoint
+  change produced `takenOver`, Reclaim restored `owned`, and disable cleaned up.
+- New TUN defaults used MIPS. Enabling TUN created the `198.18.0.1` split routes
+  on `utun4` and HTTPS traversal returned 200; disabling it removed those routes
+  and preserved direct connectivity.
+- Invalid `config apply` input was rejected without changing the running PID.
+  Valid apply and rollback hot-reloaded with the same PID and working TUN.
+- A real `SIGKILL` recorded signal 9, scheduled recovery attempt 1 after 2
+  seconds, started a new PID and restored TUN HTTPS traversal.
+- Restarting the root LaunchDaemon preserved the running core PID and network.
+- Core stop and helper uninstall removed the guest runtime and daemon files.
+
+The automated script invokes the helper's underlying privileged install command
+directly. A separate visible Tart GUI run on the same date covered the user-facing
+install surface:
+
+- The generated DMG mounted and its checksum verified; Finder copied the arm64
+  app to `/Applications`, onboarding completed, and the installed path launched.
+- Clicking **Install / Repair Service** displayed the real macOS administrator
+  authorization dialog. Accepting it installed the LaunchDaemon, running signed
+  socket and `0.0.18` helper version stamp.
+- SwiftUI enabled the MIPS TUN preference; **Control → Start Kumo** started a
+  `rootService` core, installed the `utun4` split routes and passed HTTPS. The
+  TUN toggle later removed the routes and preserved direct connectivity.
+- SwiftUI enabled System Proxy on the auto-resolved Ethernet service, reported
+  `owned` and passed HTTPS. With keep-core-running-on-quit off, **Quit Kumo**
+  stopped Mihomo and disabled all managed system-proxy switches.
+- `codesign --verify --deep --strict` passed for the installed bundle. The test
+  build is ad-hoc signed and `spctl` rejected it as expected, so Developer ID,
+  Gatekeeper acceptance and notarization remain distribution checks, not claims
+  of either L2 run.
 
 ### L3 — User-gated migration
 
@@ -115,6 +202,9 @@ Use:
 swift build --product kumo
 swift test
 .build/debug/kumo --help
+.build/debug/kumo capabilities --json
+.build/debug/kumo prompt --list --json
+.build/debug/kumo prompt topology route --json
 .build/debug/kumo status --json
 .build/debug/kumo skills install --agent codex --scope global --dry-run --json
 ```
@@ -154,6 +244,13 @@ Prioritize tests that do not mutate real system state:
 ## Manual QA Checklist
 
 - `kumo status --json` returns valid JSON.
+- `kumo capabilities --json` returns protocol `1.1`, all runnable commands, and
+  `config apply` / `config rollback` in the rollback list; `kumo prompt profiles apply --json`
+  returns the real diff/validate/apply loop and topology guidance uses
+  `kumo topology --issues --json`.
+- The main-window Agent Prompt menu changes with the selected destination and
+  copies the same text as `kumo prompt <page> [intent]`; Settings exposes the
+  settings prompt and Sub-Store shows no placeholder.
 - `kumo --help`, `kumo -l`, `kumo help json`, and `kumo completion zsh` return
   npm-style discoverability output.
 - `kumo status --color never` contains no ANSI escapes, and `kumo status --json`
@@ -168,6 +265,7 @@ Prioritize tests that do not mutate real system state:
 - SwiftUI window opens with Overview selected.
 - Settings opens with Cmd+,.
 - Inspect search fields remain available when a query returns no matches.
+- `kumo topology --json` returns a stable graph and `kumo topology --issues --json` returns only issues; the native Topology page keeps active and missing nodes visible when large columns are collapsed.
 - Core runtime and System Proxy settings only commit after the user applies staged edits.
 - TUN helper uninstall asks for confirmation before removing the service.
 - `Settings → General → Background` installs and removes the Background Agent

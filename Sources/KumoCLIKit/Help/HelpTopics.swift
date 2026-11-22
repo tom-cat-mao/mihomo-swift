@@ -16,6 +16,27 @@ struct HelpTopic {
 
 enum HelpTopics {
     static let byPath: [String: HelpTopic] = [
+        "capabilities": HelpTopic(
+            summary: "Describe the versioned agent protocol and command catalog.",
+            usage: ["kumo capabilities --json"],
+            example: "kumo capabilities --json",
+            details: [
+                "Each runnable command includes parameters, read/write/protected access, risk, output stability, and dry-run/validate/rollback support. Global flags are listed separately.",
+                "Configuration transactions advertise dry-run diff, real validation, and bounded explicit rollback. No command should be inferred beyond this catalog."
+            ]
+        ),
+        "prompt": HelpTopic(
+            summary: "Print task-oriented guidance for a coding agent.",
+            usage: [
+                "kumo prompt --list [--json]",
+                "kumo prompt <page> [intent] [--json]"
+            ],
+            example: "kumo prompt proxies fastest",
+            details: [
+                "With no page, or with --list, prints valid page and intent ids. An unknown page or intent fails with the valid ids.",
+                "Text mode prints a ready-to-paste prompt. JSON returns the page, selected intent, goal, structured steps, and prompt text."
+            ]
+        ),
         "status": HelpTopic(
             summary: "Show current Kumo runtime state.",
             usage: ["kumo status [--json]"],
@@ -23,9 +44,15 @@ enum HelpTopics {
         ),
         "start": HelpTopic(
             summary: "Start Kumo with the managed Mihomo core.",
-            usage: ["kumo start [--core <path>] [--json]"],
-            options: ["--core <path>   Use a specific Mihomo core executable instead of the managed core."],
-            example: "kumo start --json"
+            usage: ["kumo start [--core <path>] [--resolve-ports] [--json]"],
+            options: [
+                "--core <path>     Use a specific Mihomo core executable instead of the managed core.",
+                "--resolve-ports   Explicitly move occupied mixed/controller listeners to free ports."
+            ],
+            example: "kumo start --resolve-ports --json",
+            details: [
+                "Without --resolve-ports, an occupied mixed or controller port fails with structured conflict details and no port is changed. The flag is required before Kumo persists suggested ports and reapplies an enabled system proxy."
+            ]
         ),
         "stop": HelpTopic(
             summary: "Stop the running Mihomo core.",
@@ -106,6 +133,19 @@ enum HelpTopics {
             ],
             example: "kumo rules enable 3 --json",
             details: ["Indexes match the index shown by `kumo rules`."]
+        ),
+        "topology": HelpTopic(
+            summary: "Show how traffic flows through rules, nested groups, providers, and nodes.",
+            usage: [
+                "kumo topology [--json]",
+                "kumo topology --issues [--json]"
+            ],
+            options: ["--issues        Print only unresolved proxy, group, provider, or rule-set references."],
+            example: "kumo topology --issues --json",
+            details: [
+                "The graph uses the generated profile-plus-override configuration. A running core supplies actual selections for the active path; a stopped core has no synthetic selections.",
+                "JSON returns the stable TopologyGraph Codable shape, or only the issues array with --issues. The alias is `graph`."
+            ]
         ),
         "profile": HelpTopic(
             summary: "Manage profiles.",
@@ -206,11 +246,11 @@ enum HelpTopics {
             ],
             example: "kumo override add --name dns-fix --file dns.yaml --json",
             details: [
-                "Overrides merge into the runtime config on the next core start. --restart restarts a running core so a mutation takes effect immediately; with no running core it is a no-op.",
-                "Only YAML overrides are merged. --format js bodies are stored but never applied, and --global is stored without a runtime effect yet.",
+                "With a running core, every mutation builds a candidate, runs `mihomo -t`, and hot-reloads through `PUT /configs?force=true`; failures restore the previous override and runtime config. With no running core the change takes effect on next core start. --restart additionally restarts a running core after the transaction.",
+                "YAML and JavaScript overrides run in list order. JavaScript must define main(config) and return an object; execution uses macOS JavaScriptCore with a 5-second timeout and no file, network, or process APIs.",
                 "Remote --url overrides are fetched directly with no proxy support.",
                 "`reorder --ids` moves the listed ids to the front in the given order; unlisted ids keep their relative order after them.",
-                "Local `add --dry-run` validates that the YAML parses without writing the override."
+                "Local `add --dry-run` validates YAML parsing or executes the JavaScript transform against an empty configuration without writing the override."
             ]
         ),
         "dns": HelpTopic(
@@ -253,7 +293,7 @@ enum HelpTopics {
             ],
             example: "kumo tun settings --json",
             details: [
-                "`tun settings` without input prints the current settings; with --file/--stdin it merges a JSON object whose keys match TunSettings."
+                "`tun settings` without input prints the current settings; with --file/--stdin it merges a JSON object whose keys match TunSettings. `stack` accepts mixed, gvisor, system, or mips; MIPS requires Mihomo 1.19.32 or later."
             ]
         ),
         "tun settings": HelpTopic(
@@ -269,13 +309,15 @@ enum HelpTopics {
                 "--dry-run       Preview the update without writing."
             ],
             example: "kumo tun settings --stdin --dry-run --json",
-            details: ["With no input this prints the current settings. A patch is a JSON object whose keys match TunSettings."]
+            details: ["With no input this prints the current settings. A patch is a JSON object whose keys match TunSettings. `stack` accepts mixed, gvisor, system, or mips; MIPS requires Mihomo 1.19.32 or later."]
         ),
         "sysproxy": HelpTopic(
             summary: "Control the macOS system proxy.",
             usage: [
+                "kumo sysproxy status [--json]",
                 "kumo sysproxy on [--dry-run] [--json]",
                 "kumo sysproxy off [--dry-run] [--json]",
+                "kumo sysproxy reclaim [--dry-run] [--json]",
                 "kumo sysproxy set --bypass <comma-list> [--network-service <name>] [--host <host>] [--port <port>] [--mode manual|pac] [--dry-run] [--json]",
                 "kumo sysproxy set --add-defaults [--dry-run] [--json]",
                 "kumo sysproxy set --file <path> [--dry-run] [--json]",
@@ -283,6 +325,8 @@ enum HelpTopics {
             ],
             example: "kumo sysproxy set --add-defaults --dry-run --json",
             details: [
+                "`sysproxy status` compares the current macOS values with Kumo's applied record: owned, takenOver, or cleared.",
+                "`sysproxy reclaim` explicitly reapplies Kumo after a takeover; automatic reclaim is controlled by the reclaimSystemProxy preference.",
                 "`sysproxy set` updates stored settings and re-applies them when the system proxy is currently enabled.",
                 "`--add-defaults` unions the resulting bypass list with the default list shared with the GUI's \"Add Defaults\" button, dropping duplicates and sorting the result."
             ]
@@ -432,18 +476,23 @@ enum HelpTopics {
             details: ["Installs the managed Mihomo core that `kumo start` runs."]
         ),
         "config": HelpTopic(
-            summary: "Show Kumo paths and runtime settings.",
+            summary: "Show Kumo paths and manage generated configuration transactions.",
             usage: [
                 "kumo config [path] [--json]",
                 "kumo config list [--json]",
                 "kumo config get [<key>] [--json]",
                 "kumo config set [<options>] [--dry-run] [--json]",
+                "kumo config diff [--file <path>|--stdin] [--json]",
+                "kumo config validate [--file <path>|--stdin] [--json]",
+                "kumo config apply (--file <path>|--stdin) [--json]",
+                "kumo config rollback [--json]",
                 "kumo config secret [--set <secret>] [--json]"
             ],
-            example: "kumo config get --json",
+            example: "kumo config diff --file ./candidate.yaml --json",
             details: [
                 "`config path` prints the application support directory; `config list` prints every CLI-visible path.",
-                "`config get` prints the stored CoreRuntimeSettings object or one key. `config set` owns mixedPort, allowLan, logLevel, ipv6, and findProcessMode; DNS, sniffer, and TUN settings use `kumo dns`, `kumo sniffer`, and `kumo tun`. `config secret` reports or replaces the controller secret without printing it."
+                "`config get` prints the stored CoreRuntimeSettings object or one key. `config set` owns mixedPort, allowLan, logLevel, ipv6, and findProcessMode; DNS, sniffer, and TUN settings use `kumo dns`, `kumo sniffer`, and `kumo tun`. `config secret` reports or replaces the controller secret without printing it.",
+                "`diff`, `validate`, `apply`, and `rollback` operate on the current profile plus ordered overrides and Kumo-owned settings. Preview and validation never write application state; apply records a rollback point only after success."
             ]
         ),
         "config get": HelpTopic(
@@ -465,6 +514,49 @@ enum HelpTopics {
             example: "kumo config set --mixed-port 7897 --dry-run --json",
             details: [
                 "`mixedPort` must be 1...65535, `logLevel` one of silent|error|warning|info|debug, and `findProcessMode` one of always|strict|off. A JSON patch rejects unknown top-level keys with the list of valid ones; dns, sniffer, and tun point at their dedicated commands. --dry-run prints the merged settings without writing."
+            ]
+        ),
+        "config diff": HelpTopic(
+            summary: "Preview generated configuration changes without writing.",
+            usage: [
+                "kumo config diff [--json]",
+                "kumo config diff --file <path> [--json]",
+                "kumo config diff --stdin [--json]"
+            ],
+            example: "kumo config diff --file ./candidate.yaml --json",
+            details: [
+                "Compares work/config.yaml with the generated candidate. With no input, the candidate uses the current profile; --file/--stdin replaces its YAML in memory. Ordered YAML/JavaScript overrides and Kumo-owned settings still apply. JSON returns changed and a stable unified diff without modifying any files."
+            ]
+        ),
+        "config validate": HelpTopic(
+            summary: "Run real Mihomo validation without writing.",
+            usage: [
+                "kumo config validate [--json]",
+                "kumo config validate --file <path> [--json]",
+                "kumo config validate --stdin [--json]"
+            ],
+            example: "kumo config validate --file ./candidate.yaml --json",
+            details: [
+                "Runs mihomo -t in an isolated temporary directory and returns valid plus the core's actual diagnostics. It never installs work/config.yaml or changes state, profiles, overrides, or runtime logs."
+            ]
+        ),
+        "config apply": HelpTopic(
+            summary: "Apply replacement current-profile YAML transactionally.",
+            usage: [
+                "kumo config apply --file <path> [--json]",
+                "kumo config apply --stdin [--json]"
+            ],
+            example: "kumo config apply --file ./candidate.yaml --json",
+            details: [
+                "Requires explicit candidate input. The existing profile transaction validates and installs the candidate and force-hot-reloads a running core. A private pre-apply snapshot becomes a rollback point only after success; failures restore state and create no successful point. At most 10 points are retained. The response includes rollbackPointID, snapshotCount, and reloaded."
+            ]
+        ),
+        "config rollback": HelpTopic(
+            summary: "Restore the newest successful pre-apply state.",
+            usage: ["kumo config rollback [--json]"],
+            example: "kumo config rollback --json",
+            details: [
+                "Restores the latest rollback point, preflights and hot-reloads a running core, then consumes the point. Failure restores the pre-rollback configuration and keeps the point for retry. Process pid/owner/readiness/lastExit and system-proxy observations are preserved."
             ]
         ),
         "config secret": HelpTopic(

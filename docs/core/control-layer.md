@@ -12,10 +12,15 @@
 - `currentProfile()`
 - `profiles()`
 - `setCurrentProfile(id:)`
+- `activateProfile(id:)` — transactional selection + preflight/hot reload
+- `reloadRuntimeConfiguration()` — candidate validation + forced full reload
+- `diffConfiguration(profileYAML:)` / `validateConfiguration(profileYAML:)` — side-effect-free generated-config preview and real core validation
+- `applyConfiguration(profileYAML:)` / `rollbackConfiguration()` — bounded successful-apply history and explicit transactional restore
 - `coreCandidates()`
 - `setCorePath(_:)`
 - `installManagedCore()`
-- `start(corePath:)`
+- `start(corePath:resolvePortConflicts:)`
+- `portConflicts()` / `resolvePortConflicts()` — read-only listener diagnostics and explicit opt-in port changes
 - `stop()`
 - `restart(corePath:)`
 - `setMode(_:)`
@@ -31,11 +36,15 @@
 - `deleteProfile(id:)`
 - `refreshProfile(id:)`
 - `refreshDueProfiles()`
+- `createLocalOverride(...)` / `createRemoteOverride(...)`
+- `changeOverride(...)` / `removeOverride(id:)` / `changeOverrideOrder(ids:)`
 - `coreConfiguration()`
+- `topology()` — generated configuration graph with live selections while running (see [Configuration Topology](topology.md))
 - `rules()`
 - `connections()`
 - `recentLogs(limit:)` (tail-read; see `docs/operations/persistence-logging.md`)
 - `setSystemProxy(_:dryRun:)`
+- `systemProxyStatus()` / `reclaimSystemProxy()` / `releaseSystemProxyForGuardian()`
 - `dnsSettings()` / `updateDnsSettings(_:)` / `applyDnsSettings(_:)` / `setDnsEnabled(_:)`
 - `snifferSettings()` / `updateSnifferSettings(_:)` / `applySnifferSettings(_:)` / `setSnifferEnabled(_:)`
 - `updateTunSettings(_:)` / `applyTunSettings(_:)` / `setTunEnabled(_:)`
@@ -131,12 +140,13 @@ observable one.
   so the core keeps serving after the GUI quits. The GUI selects this policy
   when `UserPreferences.keepCoreRunningOnQuit` is on.
 
-## Synchronous Facade, Serial App Executor
+## Controller Facade, Serial App Executor
 
-`KumoController` stays synchronous and `Sendable`. Its methods block the caller
-on file IO, helper IPC, `networksetup` or Yams parsing, and the CLI and the
-privileged helper (`KumoService`) call them directly on their own threads. That
-facade is deliberately unchanged.
+`KumoController` stays `Sendable`. Synchronous methods block the caller on file
+IO, helper IPC, `networksetup` or Yams parsing; async methods add network work
+such as subscription downloads and transactional hot reloads. The CLI and the
+privileged helper (`KumoService`) call the facade directly on their own
+executors rather than constructing an app runner.
 
 The GUI cannot afford that. It used to call the controller straight from
 `@MainActor` code — on the 1 Hz status refresh, on every profile poll, on each
@@ -188,8 +198,8 @@ or mutate a memoized entry.
 
 Shipped: runtime settings (ports, LAN, log level, controller secret, IPv6, Geo
 data), provider listing/update plus Geo upgrade, rule metadata and
-enable/disable, structured recent logs and a live log stream, ordered YAML
-overrides, and the Sub-Store lifecycle with custom backend support. DNS,
+enable/disable, structured recent logs and a live log stream, ordered YAML and
+sandboxed JavaScript overrides, and the Sub-Store lifecycle with custom backend support. DNS,
 Sniffer, and TUN changes restart the core per
 [ADR-004](../decisions/ADR-004-restart-vs-patch-for-dns-sniffer.md); simple
 scalar runtime settings still PATCH `/configs`.
@@ -197,7 +207,6 @@ scalar runtime settings still PATCH `/configs`.
 Still open:
 
 - Provider initialization progress reporting.
-- Reviewed JavaScript override transforms (sandbox design first).
 - Service-side log streaming and helper-hosted PAC hosting; PAC hosting runs in
   the app process today.
 - Root-daemon route parity: the daemon's signed-socket surface stays scoped to

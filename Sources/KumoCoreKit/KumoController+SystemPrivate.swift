@@ -23,6 +23,32 @@ extension KumoController {
         return SystemProxyConfiguration(networkService: resolvedService)
     }
 
+    /// Reconciles system-proxy ownership after every core status read without
+    /// introducing another tier probe. A socket tier's internal controller has
+    /// already performed the same reconciliation before returning its status.
+    func observingSystemProxyOwnership(fallback: CoreStatus) throws -> CoreStatus {
+        let observed = try systemProxyController.reconcileOwnership()
+        var merged = fallback
+        merged.systemProxyEnabled = observed.systemProxyEnabled
+        merged.systemProxySettings = observed.systemProxySettings
+        merged.previousSystemProxySnapshot = observed.previousSystemProxySnapshot
+        merged.systemProxyApplied = observed.systemProxyApplied
+        merged.systemProxyOwnership = observed.systemProxyOwnership
+        return merged
+    }
+
+    func releaseSystemProxyPreservingIntent() throws {
+        if let client = privilegedServiceClient() {
+            _ = try client.send(client.releaseSystemProxyRequest())
+            return
+        }
+        let status = try stateStore.load()
+        _ = try systemProxyController.disableSynchronously(
+            configuration: fallbackSystemProxyConfiguration(for: status),
+            preserveIntent: true
+        )
+    }
+
     func logLevel(in message: String) -> String {
         let lowercased = message.lowercased()
         if lowercased.contains("error") { return "error" }

@@ -1,6 +1,6 @@
 ---
 name: kumo-cli
-description: Drive Kumo, a macOS SwiftUI Mihomo client, from coding agents, scripts, and automation through the `kumo` CLI. Use when starting, stopping, inspecting, or changing Kumo runtime state, outbound mode, proxies, connections, providers, profiles, runtime config overrides, GUI preferences, rules, DNS, sniffer, TUN, system proxy, logs, traffic, the two-tier Kumo agent and Kumo Helper service, backups, Sub-Store, or bundled agent skill installation.
+description: Drive Kumo, a macOS SwiftUI Mihomo client, from coding agents, scripts, and automation through the `kumo` CLI. Use when starting, stopping, inspecting, or changing Kumo runtime state, outbound mode, proxies, connections, providers, profiles, runtime config overrides, GUI preferences, rules, configuration topology and unresolved-reference diagnostics, DNS, sniffer, TUN, system proxy, logs, traffic, the two-tier Kumo agent and Kumo Helper service, backups, Sub-Store, or bundled agent skill installation.
 ---
 
 # Kumo CLI
@@ -11,9 +11,11 @@ description: Drive Kumo, a macOS SwiftUI Mihomo client, from coding agents, scri
 
 - Use the installed `kumo`: onboarding symlinks `/usr/local/bin/kumo` to `Kumo.app/Contents/Helpers/kumo`; `kumo cli-link status|install|uninstall [--dry-run] [--json]` inspects or repairs that link. In a source tree, `swift run kumo ...` is a dev-only fallback.
 - `cli-link install|uninstall` request a one-time macOS administrator authorization (osascript); uninstall removes the link only when Kumo manages it.
-- Sanity check `kumo status --json`; broad snapshot `kumo doctor --json`; `kumo --version` prints the version.
-- Discover the surface with `kumo --help`, `kumo -l`, `kumo <command> -h`, `kumo help <term>`; `kumo completion zsh|bash|fish` prints completion scripts. Run `kumo help <command>` for exact flags — they are not duplicated here.
-- Output contract: stdout JSON envelope `{"ok": true|false, "data": ..., "error": ...}`; exit `0` success, `1` failure (read `error` when `ok` is false). Diagnostics go to stderr; `--json` stdout is always plain JSON.
+- Start with `kumo capabilities --json`, then sanity check `kumo status --json`; broad snapshot `kumo doctor --json`; `kumo --version` prints the version.
+- **Do not guess commands or flags.** `capabilities` declares protocol `1.1`, every runnable command and its parameters, aliases, generated usage, read/write/protected access, risk, output stability, and dry-run/validate/rollback support. Global flags are in `globalParameters`; the `capabilities` index groups command paths by access and safety feature. `config apply` and `config rollback` advertise explicit rollback support.
+- Discover task guidance with `kumo prompt --list --json`, then `kumo prompt <page> [intent] --json`. Text mode returns a ready-to-paste prompt; JSON returns the goal, structured steps, and prompt. Pages: `overview`, `profiles`, `proxies`, `topology`, `connections`, `logs`, `rules`, `core`, `systemProxy`, `dns`, `tun`, `sniffer`, `resources`, `overrides`, `agents`, `settings`. Topology guidance uses `kumo topology --issues --json`; profile transaction guidance uses the real `config diff|validate|apply|rollback` commands.
+- Human discovery remains available through `kumo --help`, `kumo -l`, `kumo <command> -h`, `kumo help <term>`; `kumo completion zsh|bash|fish` prints completion scripts. Prefer the machine catalog over duplicating flags here.
+- Output contract: stdout JSON envelope `{"ok": true|false, "data": ..., "error": ...}`; exit `0` success, `1` failure (read `error` when `ok` is false). Diagnostics go to stderr; `--json` stdout is always plain JSON. `outputStability=stableStream` means NDJSON; `humanText` applies to help/completion and is not an automation schema.
 - `--silent --json` suppresses text output for scripts; `--loglevel` controls CLI diagnostics.
 - Prefer read commands before writes, and re-run the narrow read command after a write to verify.
 
@@ -55,12 +57,12 @@ description: Drive Kumo, a macOS SwiftUI Mihomo client, from coding agents, scri
 
 ## 6. Settings and preferences
 
-- Preferences: `kumo prefs [get] [<key>] [--json]` and `kumo prefs set <key> <value> [--dry-run] [--json]` over `launchAtLogin`, `hideMenuBarIcon`, `quitOnLastWindowClose`, `keepCoreRunningOnQuit`, `updateChannel`, `appLanguage`, `hasCompletedOnboarding`. Values are typed (`true|false`, `stable|beta`, a BCP-47 tag such as `zh-Hans`, or `system`); a set preserves every key it does not expose, and notes flag deferred effects (next GUI launch or quit, GUI-only keys).
+- Preferences: `kumo prefs [get] [<key>] [--json]` and `kumo prefs set <key> <value> [--dry-run] [--json]` over `launchAtLogin`, `hideMenuBarIcon`, `quitOnLastWindowClose`, `keepCoreRunningOnQuit`, `reclaimSystemProxy`, `updateChannel`, `appLanguage`, `hasCompletedOnboarding`. Values are typed (`true|false`, `stable|beta`, a BCP-47 tag such as `zh-Hans`, or `system`); a set preserves every key it does not expose, and notes flag deferred effects (next GUI launch or quit, GUI-only keys).
 - Core runtime scalars (mixed port, allow LAN, log level, IPv6, process mode) are separate: see `kumo config get|set` under Backup and config.
 - DNS: `kumo dns [--json]`, `kumo dns enable|disable`.
 - Sniffer: `kumo sniffer [--json]`, `kumo sniffer enable|disable`.
-- TUN: `kumo tun status [--json]`, `kumo tun settings [--json]`, `kumo tun enable|disable`.
-- System proxy: `kumo sysproxy on|off [--dry-run]`; `kumo sysproxy set [--bypass <comma-list>] [--add-defaults] [--network-service <name>] [--host <host>] [--port <port>] [--mode manual|pac] [--dry-run]` — `--add-defaults` unions the current bypass list with the GUI default bypass list.
+- TUN: `kumo tun status [--json]`, `kumo tun settings [--json]`, `kumo tun enable|disable`. Stack values are `mixed`, `gvisor`, `system`, and `mips`; MIPS requires Mihomo 1.19.32 or later.
+- System proxy: `kumo sysproxy status [--json]`; `kumo sysproxy on|off|reclaim [--dry-run]`; `kumo sysproxy set [--bypass <comma-list>] [--add-defaults] [--network-service <name>] [--host <host>] [--port <port>] [--mode manual|pac] [--dry-run]` — status reports `owned|takenOver|cleared`, reclaim reapplies Kumo's recorded settings, and `--add-defaults` unions the current bypass list with the GUI default bypass list.
 - Patch convention: `dns set`, `sniffer set`, `tun settings`, `config set`, and `sysproxy set` accept `--file <path>` or `--stdin` with a JSON object whose top-level keys match the corresponding settings type (`DnsSettings`, `SnifferSettings`, `TunSettings`, `CoreRuntimeSettings`, `SystemProxySettings`). Only provided keys change (shallow merge; arrays and nested objects are replaced wholesale); malformed JSON or schema mismatches fail cleanly. Applying DNS or sniffer settings while the core runs restarts it.
 - `sysproxy set` explicit options and `--file`/`--stdin` are mutually exclusive; stored settings are re-applied when the system proxy is currently enabled.
 - TUN enable/disable needs a privileged executor (Kumo Helper) and fails clearly when none is reachable; these two mutate immediately, without dry-run.
@@ -71,13 +73,14 @@ description: Drive Kumo, a macOS SwiftUI Mihomo client, from coding agents, scri
 - `kumo override add --name <name> (--file <path> | --stdin) [--format yaml|js] [--global] [--dry-run] [--restart]`; remote: `kumo override add --url <url> [--name <name>]`.
 - `kumo override update <id> (--file <path> | --stdin) [--restart]`; `kumo override delete <id> [--dry-run] [--restart]` — ids are validated first, so unknown ids fail instead of silently doing nothing.
 - Mutations match the GUI's next-start semantics: they apply when the core next starts; `--restart` restarts a running core to apply immediately, and `--dry-run` cannot be combined with `--restart`.
-- Caveats reported as warnings: `--format js` bodies are stored but never merged, `--global` has no runtime effect yet, and remote `--url` adds are fetched directly without the proxy. Local `add --dry-run` validates the YAML.
+- YAML merges and JavaScript `main(config)` transforms run in repository order. JavaScript must return a JSON-serializable object and runs in macOS JavaScriptCore with no file/network/process APIs and a 5-second timeout. Local `add --dry-run` validates YAML or executes JavaScript against an empty configuration; remote `--url` adds are fetched directly without the proxy.
 
 ## 8. Observation
 
 - `kumo logs [runtime] [--limit <n>] [--level <level>] [--json]` — Mihomo runtime logs; `kumo logs --follow [--level <level>] [--json]` streams until Ctrl-C.
 - `kumo logs cli [--limit <n>] [--level <level>] [--json]` — Kumo CLI debug logs; `kumo logs path` prints the logs directory; `kumo logs clean [--dry-run] [--json]` removes old CLI debug logs.
 - `kumo traffic --watch [--json]` — `--watch` is required. With `--json`, `logs --follow` and `traffic --watch` emit one compact envelope per line (NDJSON); Ctrl-C exits with code 0.
+- `kumo topology [--json]` (alias `graph`) — inspect the generated configuration graph from mode through rules and nested groups to nodes, providers, built-ins, and missing references. `kumo topology --issues [--json]` returns only unresolved proxy/group/provider/rule-set issues. A running core contributes actual selections for the active path; a stopped core has no synthetic selections.
 - Connection listing and closing: see `kumo connections` under Proxy control. Offline profile previews (`kumo profile groups|nodes`) work without a running core.
 
 ## 9. Tiers and service
@@ -94,6 +97,10 @@ description: Drive Kumo, a macOS SwiftUI Mihomo client, from coding agents, scri
 - `kumo config path [--json]` (default) prints the application support directory; `kumo config list [--json]` prints profiles, work, logs, runtime config, and state paths (alias `c`).
 - `kumo config get [key] [--json]` — stored `CoreRuntimeSettings`, whole or one of `mixedPort`, `allowLan`, `logLevel`, `ipv6`, `findProcessMode`, `geoData`.
 - `kumo config set` — update `mixedPort`/`allowLan`/`logLevel`/`ipv6`/`findProcessMode` with explicit flags or a `--file`/`--stdin` JSON patch (mutually exclusive), with validation and `--dry-run`; DNS, sniffer, and TUN keys are rejected with a pointer to their dedicated commands.
+- `kumo config diff [--file <path>|--stdin] [--json]` — compare the last installed `work/config.yaml` with the current generated configuration or an in-memory candidate; returns `changed` and a stable unified diff. With no input it reads the current profile. Ordered YAML/JavaScript overrides and Kumo-owned settings are always applied. It never writes application-support files.
+- `kumo config validate [--file <path>|--stdin] [--json]` — run the selected core's real `mihomo -t` in an isolated temporary directory and return `valid` plus real `diagnostics`; no state/profile/override/generated config/runtime log is changed.
+- `kumo config apply (--file <path>|--stdin) [--json]` — explicit candidate only. Reuse the shared profile transaction, validate/install, and force-hot-reload a running core. A private pre-apply snapshot (profiles/metadata/current id, overrides/metadata, relevant CoreStatus, last runtime config) becomes a rollback point only after success; failed applies create no successful point. Retain at most 10. JSON returns `rollbackPointID`, `snapshotCount`, `reloaded`.
+- `kumo config rollback [--json]` — restore the newest pre-apply point, preflight/hot-reload before consuming it, and retain it on failure for retry. Current pid/owner/readiness/lastExit/process identity and all system-proxy observations are preserved; only generated-config inputs are restored.
 - `kumo config secret [--set <value>] [--json]` — prints `set:true|false` and never the stored value; `--set` stores a new controller secret and notes that it takes effect the next time the core starts.
 
 ## 11. Sub-Store
@@ -112,7 +119,7 @@ description: Drive Kumo, a macOS SwiftUI Mihomo client, from coding agents, scri
 ## 13. Safety rules
 
 - Read first, write second: inspect with the relevant status/read command before mutating, then verify with the same command afterward.
-- Preview with `--dry-run` where it exists: `sysproxy on|off|set`, `dns set`, `sniffer set`, `tun settings`, `profile delete|update|edit`, `override add|delete`, `config set`, `prefs set`, `agent install|uninstall|migrate`, `cli-link install|uninstall`, `skills install|uninstall`, `logs clean`. `tun enable|disable` and `service install|uninstall` apply immediately — confirm before running.
+- Preview with `--dry-run` where it exists: `sysproxy on|off|set`, `dns set`, `sniffer set`, `tun settings`, `profile delete|update|edit`, `override add|delete`, `config set`, `prefs set`, `agent install|uninstall|migrate`, `cli-link install|uninstall`, `skills install|uninstall`, `logs clean`. For generated config, use `config diff` then `config validate` before `config apply`; these previews have no `--dry-run` flag because they are inherently read-only. `tun enable|disable` and `service install|uninstall` apply immediately — confirm before running.
 - `kumo proxies --geo` is the only command that sends node details off the machine: it resolves node hostnames through the public ipwho.is service. Run it only when that is acceptable; without the flag no hostname leaves the machine and the output is unchanged.
 - Never hand-edit `state.json`, profile YAML, or generated runtime configuration when a `kumo` command exists.
 - `kumo config secret` never prints the stored secret; `config secret --set` and `override --restart` report that they take effect on the next core start or restart.

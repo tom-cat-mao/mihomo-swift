@@ -117,12 +117,13 @@ struct KumoApp: App {
                 navigationButton(String(localized: "Connections"), destination: .connections, key: "4")
                 navigationButton(String(localized: "Logs"), destination: .logs, key: "5")
                 navigationButton(String(localized: "Rules"), destination: .rules, key: "6")
+                navigationButton(String(localized: "Topology"), destination: .topology, key: "7")
 
                 Divider()
 
-                navigationButton(String(localized: "Core"), destination: .core, key: "7")
-                navigationButton(String(localized: "System Proxy"), destination: .systemProxy, key: "8")
-                navigationButton(String(localized: "Sub-Store"), destination: .subStore, key: "9")
+                navigationButton(String(localized: "Core"), destination: .core, key: "8")
+                navigationButton(String(localized: "System Proxy"), destination: .systemProxy, key: "9")
+                navigationButton(String(localized: "Sub-Store"), destination: .subStore, key: "0")
             }
         }
 
@@ -182,6 +183,7 @@ private struct KumoRootView: View {
                 }
                 store.startUpdatePolling()
                 store.startProfileUpdatePolling()
+                store.startSystemProxyPolling()
             }
     }
 }

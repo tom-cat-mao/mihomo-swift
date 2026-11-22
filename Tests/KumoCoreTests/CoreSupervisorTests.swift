@@ -47,7 +47,7 @@ final class CoreSupervisorTests: XCTestCase {
         XCTAssertNil(try stateStore.load().ownerTier)
     }
 
-    func testStalePIDCleanupClearsTheOwnershipRecord() throws {
+    func testDisappearedRunningCoreRecordsUnexpectedExitAndKeepsOwnerForNotification() throws {
         let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
         let stateStore = CoreStateStore(paths: paths)
         let deadPID = try exitedProcessID()
@@ -55,9 +55,10 @@ final class CoreSupervisorTests: XCTestCase {
 
         let status = try CoreSupervisor(paths: paths).status()
 
-        XCTAssertEqual(status.state, .stopped)
-        XCTAssertNil(status.ownerTier, "a core that is gone cannot keep an owner")
-        XCTAssertNil(try stateStore.load().ownerTier)
+        XCTAssertEqual(status.state, .failed)
+        XCTAssertEqual(status.lastExit?.expected, false)
+        XCTAssertEqual(status.ownerTier, .rootService, "failed state keeps the owner needed for recovery and notification")
+        XCTAssertNil(status.pid)
     }
 
     func testStopUsesPIDFileWhenStatePIDIsMissing() throws {
@@ -128,11 +129,9 @@ final class CoreSupervisorTests: XCTestCase {
         )
     }
 
-    /// `kill(pid, 0)` reports EPERM — not ESRCH — for live processes owned by
-    /// another user, which is exactly the case for a root-owned core spawned
-    /// by the privileged helper. pid 1 (launchd) is always live and always
-    /// owned by root, from either a privileged or unprivileged test process.
-    func testStatusTreatsForeignOwnedLiveProcessAsAlive() throws {
+    /// A live pid is not sufficient proof of ownership: pid 1 is launchd, not
+    /// the recorded core, and must never be adopted or signalled.
+    func testStatusRejectsLiveProcessWithoutMatchingCoreIdentity() throws {
         let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
         let stateStore = CoreStateStore(paths: paths)
         try stateStore.save(CoreStatus(state: .running, pid: 1))
@@ -140,10 +139,10 @@ final class CoreSupervisorTests: XCTestCase {
 
         let recovered = try supervisor.status()
 
-        XCTAssertEqual(recovered.state, .running)
-        XCTAssertEqual(recovered.pid, 1)
-
-        try stateStore.save(CoreStatus())
+        XCTAssertEqual(recovered.state, .failed)
+        XCTAssertNil(recovered.pid)
+        XCTAssertEqual(recovered.lastExit?.expected, false)
+        XCTAssertTrue(recovered.message?.contains("refused") == true)
     }
 
     func testStartRotatesNonEmptyCoreLog() throws {
@@ -211,7 +210,13 @@ final class CoreSupervisorTests: XCTestCase {
                 )
             )
         ) { error in
-            XCTAssertEqual(error as? KumoError, KumoError.controllerPortInUse("127.0.0.1", listener.port))
+            guard case KumoError.portConflicts(let conflicts) = error else {
+                return XCTFail("Expected structured port conflicts, got \(error)")
+            }
+            XCTAssertEqual(conflicts.map(\.role), [.controller])
+            XCTAssertEqual(conflicts.first?.host, "127.0.0.1")
+            XCTAssertEqual(conflicts.first?.port, listener.port)
+            XCTAssertNotNil(conflicts.first?.suggestedPort)
         }
 
         usleep(200_000)
@@ -272,8 +277,11 @@ final class CoreSupervisorTests: XCTestCase {
         XCTAssertFalse(isProcessAlive(pid))
     }
 
-    private func launchConfiguration(corePath: String, endpoint: ControllerEndpoint) -> CoreLaunchConfiguration {
-        CoreLaunchConfiguration(
+    private func launchConfiguration(corePath: String, endpoint: ControllerEndpoint) throws -> CoreLaunchConfiguration {
+        let mixedPort = try allocateFreeLocalPort()
+        var settings = CoreRuntimeSettings()
+        settings.mixedPort = mixedPort
+        return CoreLaunchConfiguration(
             corePath: corePath,
             profile: Profile(
                 name: "Test",
@@ -289,7 +297,9 @@ final class CoreSupervisorTests: XCTestCase {
                   - MATCH,DIRECT
                 """
             ),
-            endpoint: endpoint
+            endpoint: endpoint,
+            proxyPorts: ProxyPortConfiguration(mixedPort: mixedPort),
+            runtimeSettings: settings
         )
     }
 
@@ -301,12 +311,14 @@ final class CoreSupervisorTests: XCTestCase {
             let escapedPath = recordedArgumentsURL.path.replacingOccurrences(of: "'", with: "'\\''")
             script = """
             #!/bin/sh
+            if [ "${1:-}" = "-t" ]; then exit 0; fi
             printf '%s\\n' "$@" > '\(escapedPath)'
             exec /bin/sleep 600
             """
         } else {
             script = """
             #!/bin/sh
+            if [ "${1:-}" = "-t" ]; then exit 0; fi
             exec /bin/sleep 600
             """
         }

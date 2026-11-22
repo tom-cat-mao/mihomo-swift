@@ -48,7 +48,11 @@ public final class CLIRuntime: @unchecked Sendable {
     func writeError(_ error: Error) {
         let message = Self.message(for: error)
         if options.wantsJSON {
-            writeJSON(CLIResponse<String>(ok: false, error: message))
+            var conflicts: [PortConflict]?
+            if case KumoError.portConflicts(let found) = error {
+                conflicts = found
+            }
+            writeJSON(CLIResponse<String>(ok: false, error: message, portConflicts: conflicts))
             return
         }
         renderer.stderr(renderer.error("[error] \(message)"))

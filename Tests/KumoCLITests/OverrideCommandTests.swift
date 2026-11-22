@@ -69,11 +69,11 @@ final class OverrideCommandTests: XCTestCase {
 
     // MARK: - Happy paths on hermetic app support
 
-    func testAddListContentCycle() throws {
+    func testAddListContentCycle() async throws {
         let paths = try makeTemporaryPaths()
         let controller = KumoController(paths: paths)
 
-        let added = try OverrideCommandSupport.addLocal(
+        let added = try await OverrideCommandSupport.addLocal(
             controller: controller,
             name: "dns-fix",
             content: "dns:\n  enable: true\n",
@@ -107,12 +107,12 @@ final class OverrideCommandTests: XCTestCase {
         XCTAssertEqual(content.content, "dns:\n  enable: true\n")
     }
 
-    func testUpdateReplacesBodyAndKeepsIdentity() throws {
+    func testUpdateReplacesBodyAndKeepsIdentity() async throws {
         let controller = try makeController()
         let added = try addOverride(controller, name: "dns-fix")
         let id = added.id
 
-        let updated = try OverrideCommandSupport.update(
+        let updated = try await OverrideCommandSupport.update(
             controller: controller,
             id: id,
             content: "rules:\n  - MATCH,DIRECT\n",
@@ -127,13 +127,13 @@ final class OverrideCommandTests: XCTestCase {
         XCTAssertEqual(try controller.overrides().count, 1)
     }
 
-    func testReorderMovesListedIdsToFrontAndKeepsRemainder() throws {
+    func testReorderMovesListedIdsToFrontAndKeepsRemainder() async throws {
         let controller = try makeController()
         let first = try addOverride(controller, name: "first")
         let second = try addOverride(controller, name: "second")
         let third = try addOverride(controller, name: "third")
 
-        let report = try OverrideCommandSupport.reorder(
+        let report = try await OverrideCommandSupport.reorder(
             controller: controller,
             ids: "\(third.id),\(first.id)",
             restart: false
@@ -144,19 +144,19 @@ final class OverrideCommandTests: XCTestCase {
         XCTAssertEqual(OverrideCommandSupport.listEntries(try controller.overrides()).map(\.index), [0, 1, 2])
     }
 
-    func testDeleteRemovesItemAndBodyFile() throws {
+    func testDeleteRemovesItemAndBodyFile() async throws {
         let paths = try makeTemporaryPaths()
         let controller = KumoController(paths: paths)
         let added = try addOverride(controller, name: "dns-fix")
         let file = paths.overrideFilesDirectory.appendingPathComponent(added.id).appendingPathExtension("yaml")
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
 
-        let preview = try OverrideCommandSupport.delete(controller: controller, id: added.id, dryRun: true, restart: false)
+        let preview = try await OverrideCommandSupport.delete(controller: controller, id: added.id, dryRun: true, restart: false)
         XCTAssertTrue(preview.dryRun)
         XCTAssertEqual(preview.name, "dns-fix")
         XCTAssertEqual(try controller.overrides().count, 1)
 
-        let deleted = try OverrideCommandSupport.delete(controller: controller, id: added.id, dryRun: false, restart: false)
+        let deleted = try await OverrideCommandSupport.delete(controller: controller, id: added.id, dryRun: false, restart: false)
         XCTAssertFalse(deleted.dryRun)
         XCTAssertEqual(deleted.id, added.id)
         XCTAssertTrue(try controller.overrides().isEmpty)
@@ -165,55 +165,67 @@ final class OverrideCommandTests: XCTestCase {
 
     // MARK: - Id pre-validation
 
-    func testUnknownIdsFailInsteadOfSilentNoOps() throws {
+    func testUnknownIdsFailInsteadOfSilentNoOps() async throws {
         let paths = try makeTemporaryPaths()
         let controller = KumoController(paths: paths)
 
-        let operations: [() throws -> Void] = [
+        let operations: [() async throws -> Void] = [
             { _ = try OverrideCommandSupport.content(controller: controller, id: "missing") },
-            { _ = try OverrideCommandSupport.update(controller: controller, id: "missing", content: "a: 1\n", restart: false) },
-            { _ = try OverrideCommandSupport.delete(controller: controller, id: "missing", dryRun: false, restart: false) },
-            { _ = try OverrideCommandSupport.reorder(controller: controller, ids: "missing", restart: false) }
+            { _ = try await OverrideCommandSupport.update(controller: controller, id: "missing", content: "a: 1\n", restart: false) },
+            { _ = try await OverrideCommandSupport.delete(controller: controller, id: "missing", dryRun: false, restart: false) },
+            { _ = try await OverrideCommandSupport.reorder(controller: controller, ids: "missing", restart: false) }
         ]
         for operation in operations {
-            XCTAssertThrowsError(try operation()) { error in
+            do {
+                try await operation()
+                XCTFail("expected unknown id to fail")
+            } catch {
                 XCTAssertEqual((error as? ValidationError)?.message, "Unknown override id: missing")
             }
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.overridesMetadataFile.path))
     }
 
-    func testReorderRejectsDuplicatesAndLeavesOrderUnchanged() throws {
+    func testReorderRejectsDuplicatesAndLeavesOrderUnchanged() async throws {
         let controller = try makeController()
         let first = try addOverride(controller, name: "first")
         let second = try addOverride(controller, name: "second")
 
-        XCTAssertThrowsError(try OverrideCommandSupport.reorder(
-            controller: controller,
-            ids: "\(first.id),\(first.id)",
-            restart: false
-        )) { error in
+        do {
+            _ = try await OverrideCommandSupport.reorder(
+                controller: controller,
+                ids: "\(first.id),\(first.id)",
+                restart: false
+            )
+            XCTFail("expected duplicate ids to fail")
+        } catch {
             XCTAssertEqual((error as? ValidationError)?.message, "Duplicate override id in --ids: \(first.id)")
         }
-        XCTAssertThrowsError(try OverrideCommandSupport.reorder(controller: controller, ids: " , ", restart: false))
+        do {
+            _ = try await OverrideCommandSupport.reorder(controller: controller, ids: " , ", restart: false)
+            XCTFail("expected empty ids to fail")
+        } catch {}
         XCTAssertEqual(try controller.overrides().map(\.id), [first.id, second.id])
     }
 
     // MARK: - Dry run
 
-    func testAddDryRunValidatesYAMLWithoutWriting() throws {
+    func testAddDryRunValidatesYAMLWithoutWriting() async throws {
         let paths = try makeTemporaryPaths()
         let controller = KumoController(paths: paths)
 
-        XCTAssertThrowsError(try OverrideCommandSupport.addLocal(
-            controller: controller,
-            name: "broken",
-            content: "dns: [unterminated\n",
-            format: .yaml,
-            isGlobal: false,
-            dryRun: true,
-            restart: false
-        )) { error in
+        do {
+            _ = try await OverrideCommandSupport.addLocal(
+                controller: controller,
+                name: "broken",
+                content: "dns: [unterminated\n",
+                format: .yaml,
+                isGlobal: false,
+                dryRun: true,
+                restart: false
+            )
+            XCTFail("expected invalid YAML to fail")
+        } catch {
             guard let validation = error as? ValidationError else {
                 return XCTFail("expected ValidationError, got \(error)")
             }
@@ -221,7 +233,7 @@ final class OverrideCommandTests: XCTestCase {
         }
         XCTAssertTrue(try controller.overrides().isEmpty)
 
-        let report = try OverrideCommandSupport.addLocal(
+        let report = try await OverrideCommandSupport.addLocal(
             controller: controller,
             name: "dns-fix",
             content: "dns:\n  enable: true\n",
@@ -236,13 +248,13 @@ final class OverrideCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.overridesMetadataFile.path))
     }
 
-    func testAddDryRunForJSOnlyPreviews() throws {
+    func testAddDryRunForJSOnlyPreviews() async throws {
         let controller = try makeController()
 
-        let report = try OverrideCommandSupport.addLocal(
+        let report = try await OverrideCommandSupport.addLocal(
             controller: controller,
             name: "js-fix",
-            content: "not yaml at all: [",
+            content: "function main(config) { return config }",
             format: .javascript,
             isGlobal: false,
             dryRun: true,
@@ -254,29 +266,52 @@ final class OverrideCommandTests: XCTestCase {
         XCTAssertTrue(try controller.overrides().isEmpty)
     }
 
-    // MARK: - Warnings
-
-    func testAddWarnsForJSAndGlobalButUpdateDoesNotRepeatThem() throws {
+    func testAddDryRunForInvalidJSFailsWithoutWriting() async throws {
         let controller = try makeController()
 
-        let report = try OverrideCommandSupport.addLocal(
+        do {
+            _ = try await OverrideCommandSupport.addLocal(
+                controller: controller,
+                name: "broken-js",
+                content: "const x = 1",
+                format: .javascript,
+                isGlobal: false,
+                dryRun: true,
+                restart: false
+            )
+            XCTFail("expected invalid JavaScript to fail")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("main(config)"), String(describing: error))
+        }
+        XCTAssertTrue(try controller.overrides().isEmpty)
+    }
+
+    // MARK: - Warnings
+
+    func testAddDoesNotWarnThatJSAndGlobalAreInactive() async throws {
+        let controller = try makeController()
+
+        let report = try await OverrideCommandSupport.addLocal(
             controller: controller,
             name: "js-global",
-            content: "console.log('x')\n",
+            content: "function main(config) { return config }\n",
             format: .javascript,
             isGlobal: true,
             dryRun: false,
             restart: false
         )
 
-        XCTAssertEqual(report.warnings.count, 2)
-        XCTAssertTrue(report.warnings[0].contains("JavaScript overrides are stored but never merged"))
-        XCTAssertTrue(report.warnings[1].contains("Global overrides are stored but are not applied"))
+        XCTAssertEqual(report.warnings, [])
         XCTAssertEqual(report.format, "js")
         XCTAssertTrue(report.isGlobal)
 
         let id = try XCTUnwrap(report.id)
-        let updated = try OverrideCommandSupport.update(controller: controller, id: id, content: "console.log('y')\n", restart: false)
+        let updated = try await OverrideCommandSupport.update(
+            controller: controller,
+            id: id,
+            content: "function main(config) { return config }\n",
+            restart: false
+        )
         XCTAssertEqual(updated.warnings, [])
         XCTAssertTrue(updated.isGlobal)
     }
@@ -294,10 +329,10 @@ final class OverrideCommandTests: XCTestCase {
         XCTAssertEqual(performed, 1)
     }
 
-    func testRestartFlagIsNoOpWithoutRunningCore() throws {
+    func testRestartFlagIsNoOpWithoutRunningCore() async throws {
         let controller = try makeController()
 
-        let report = try OverrideCommandSupport.addLocal(
+        let report = try await OverrideCommandSupport.addLocal(
             controller: controller,
             name: "dns-fix",
             content: "dns:\n  enable: true\n",
@@ -315,7 +350,7 @@ final class OverrideCommandTests: XCTestCase {
 
     // MARK: - Payloads and help
 
-    func testOverridePayloadsEncodeStableKeys() throws {
+    func testOverridePayloadsEncodeStableKeys() async throws {
         let entry = OverrideListEntry(
             index: 1,
             id: "abc",

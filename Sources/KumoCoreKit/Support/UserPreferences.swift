@@ -12,6 +12,9 @@ public struct UserPreferences: Codable, Sendable, Equatable {
     /// owning tier (user agent or root daemon) instead of stopping it. See
     /// `KumoController.prepareForAppTermination(policy:)`.
     public var keepCoreRunningOnQuit: Bool
+    /// Reapply Kumo's system proxy after another application takes it over.
+    /// External clears are never automatically reclaimed.
+    public var reclaimSystemProxy: Bool
     public var updateChannel: AppUpdateChannel
     public var updateManifestURL: URL?
     /// The user's preferred app language. `nil` means follow the system
@@ -28,6 +31,7 @@ public struct UserPreferences: Codable, Sendable, Equatable {
         hideMenuBarIcon: Bool = false,
         quitOnLastWindowClose: Bool = false,
         keepCoreRunningOnQuit: Bool = false,
+        reclaimSystemProxy: Bool = false,
         updateChannel: AppUpdateChannel = .stable,
         updateManifestURL: URL? = nil,
         appLanguage: String? = nil,
@@ -37,6 +41,7 @@ public struct UserPreferences: Codable, Sendable, Equatable {
         self.hideMenuBarIcon = hideMenuBarIcon
         self.quitOnLastWindowClose = quitOnLastWindowClose
         self.keepCoreRunningOnQuit = keepCoreRunningOnQuit
+        self.reclaimSystemProxy = reclaimSystemProxy
         self.updateChannel = updateChannel
         self.updateManifestURL = updateManifestURL
         self.appLanguage = appLanguage
@@ -54,6 +59,7 @@ public struct UserPreferences: Codable, Sendable, Equatable {
         case hideMenuBarIcon
         case quitOnLastWindowClose
         case keepCoreRunningOnQuit
+        case reclaimSystemProxy
         case updateChannel
         case updateManifestURL
         case appLanguage
@@ -68,6 +74,7 @@ public struct UserPreferences: Codable, Sendable, Equatable {
             hideMenuBarIcon: try container.decodeIfPresent(Bool.self, forKey: .hideMenuBarIcon) ?? defaults.hideMenuBarIcon,
             quitOnLastWindowClose: try container.decodeIfPresent(Bool.self, forKey: .quitOnLastWindowClose) ?? defaults.quitOnLastWindowClose,
             keepCoreRunningOnQuit: try container.decodeIfPresent(Bool.self, forKey: .keepCoreRunningOnQuit) ?? defaults.keepCoreRunningOnQuit,
+            reclaimSystemProxy: try container.decodeIfPresent(Bool.self, forKey: .reclaimSystemProxy) ?? defaults.reclaimSystemProxy,
             updateChannel: try container.decodeIfPresent(AppUpdateChannel.self, forKey: .updateChannel) ?? defaults.updateChannel,
             updateManifestURL: try container.decodeIfPresent(URL.self, forKey: .updateManifestURL),
             appLanguage: try container.decodeIfPresent(String.self, forKey: .appLanguage),

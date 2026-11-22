@@ -6,7 +6,7 @@ extension KumoCommand {
     struct Config: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Show Kumo paths or runtime settings.",
-            subcommands: [Path.self, List.self, Get.self, Set.self, Secret.self],
+            subcommands: [Path.self, List.self, Get.self, Set.self, Diff.self, Validate.self, Apply.self, Rollback.self, Secret.self],
             defaultSubcommand: Path.self,
             aliases: ["c"]
         )
@@ -121,7 +121,7 @@ extension KumoCommand {
                 guard try controller.profiles().contains(where: { $0.id == id }) else {
                     throw ValidationError("Unknown profile id: \(id)")
                 }
-                try controller.setCurrentProfile(id: id)
+                try await controller.activateProfile(id: id)
                 CLIRuntime.current.write(["id": id]) { _ in "current profile \(id)" }
             }
         }
@@ -148,7 +148,7 @@ extension KumoCommand {
                     CLIRuntime.current.write(report) { "[dry-run] would delete \($0.id)" }
                     return
                 }
-                let wasCurrent = try controller.deleteProfile(id: id)
+                let wasCurrent = try await controller.deleteProfile(id: id)
                 let report = ProfileDeleteReport(id: id, dryRun: false, wasCurrent: wasCurrent)
                 CLIRuntime.current.write(report) { "deleted \($0.id)" }
             }
@@ -296,21 +296,14 @@ extension KumoCommand {
                 CLIRuntime.current.write(profile) { "refreshed \($0.name)" }
             }
 
-            /// Refreshes `id` in place. When the refreshed profile is current
-            /// and the core is running, the core is restarted so the new YAML
-            /// takes effect, mirroring the GUI's refresh flow.
+            /// Refreshes `id` in place. `KumoController` preflights and hot
+            /// reloads the current profile transactionally when the core runs.
             static func refreshByID(controller: KumoController, id: String, useProxy: Bool) async throws -> ProfileRefreshReport {
-                guard let existing = try controller.profiles().first(where: { $0.id == id }) else {
+                guard try controller.profiles().contains(where: { $0.id == id }) else {
                     throw ValidationError("Unknown profile id: \(id)")
                 }
                 let summary = try await controller.refreshProfile(id: id, useProxy: useProxy ? true : nil)
-                var restartedCore = false
-                if existing.isCurrent, try controller.status().state == .running {
-                    _ = try controller.restart()
-                    try await controller.waitForControllerReady()
-                    restartedCore = true
-                }
-                return ProfileRefreshReport(profile: summary, restartedCore: restartedCore)
+                return ProfileRefreshReport(profile: summary, restartedCore: false)
             }
 
             static func subscriptionURL(from value: String) throws -> URL {
@@ -419,7 +412,7 @@ extension KumoCommand {
                     )
                 }
 
-                let summary = try controller.updateProfile(
+                let summary = try await controller.updateProfile(
                     id: id,
                     name: mergedName,
                     remoteURL: mergedURL,
@@ -473,7 +466,7 @@ extension KumoCommand {
             mutating func run() async throws {
                 try options.install()
                 let rawYAML = try readProfileYAML(file: file, stdin: stdin)
-                let report = try Self.perform(
+                let report = try await Self.perform(
                     controller: CLIRuntime.current.controller,
                     id: id,
                     rawYAML: rawYAML,
@@ -495,7 +488,7 @@ extension KumoCommand {
                 id: String,
                 rawYAML: String,
                 dryRun: Bool
-            ) throws -> ProfileEditReport {
+            ) async throws -> ProfileEditReport {
                 guard let existing = try controller.profiles().first(where: { $0.id == id }) else {
                     throw ValidationError("Unknown profile id: \(id)")
                 }
@@ -505,7 +498,7 @@ extension KumoCommand {
                     return ProfileEditReport(id: id, name: existing.name, dryRun: true, byteCount: rawYAML.utf8.count)
                 }
 
-                let summary = try controller.updateProfile(
+                let summary = try await controller.updateProfile(
                     id: id,
                     name: existing.name,
                     remoteURL: existing.remoteURL,
@@ -521,8 +514,37 @@ extension KumoCommand {
     struct Sysproxy: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Control macOS system proxy.",
-            subcommands: [On.self, Off.self, Set.self]
+            subcommands: [On.self, Off.self, Set.self, Status.self, Reclaim.self]
         )
+
+        struct Status: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Show system proxy intent and ownership.")
+            @OptionGroup var options: CLIOptions
+
+            mutating func run() async throws {
+                try options.install()
+                let status = try await CLIRuntime.current.controller.systemProxyStatus()
+                CLIRuntime.current.write(status, text: systemProxyStatusText)
+            }
+        }
+
+        struct Reclaim: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Reapply Kumo's system proxy after a takeover.")
+            @Flag(name: .long, help: "Preview networksetup commands without changing system settings.")
+            var dryRun = false
+            @OptionGroup var options: CLIOptions
+
+            mutating func run() async throws {
+                try options.install()
+                if dryRun {
+                    let commands = try await CLIRuntime.current.controller.setSystemProxy(true, dryRun: true)
+                    writeSystemProxyCommands(commands, state: "reclaim", dryRun: true)
+                } else {
+                    let status = try await CLIRuntime.current.controller.reclaimSystemProxy()
+                    CLIRuntime.current.write(status, text: systemProxyStatusText)
+                }
+            }
+        }
 
         struct On: AsyncParsableCommand {
             static let configuration = CommandConfiguration(abstract: "Enable the macOS system proxy.")
@@ -721,6 +743,7 @@ extension KumoCommand {
 
                 let patch = try readSettingsPatchJSON(file: file, stdin: stdin)
                 let settings = try applyingSettingsPatch(patch, to: current, name: "TunSettings")
+                try validateTunSettings(settings)
                 if dryRun {
                     CLIRuntime.current.write(settings) { "[dry-run] \(tunSettingsSummary($0))" }
                     return
@@ -829,7 +852,7 @@ private func profileFileURL(from value: String) throws -> URL {
 /// Reads replacement profile YAML from `--file <path>` or stdin.
 ///
 /// Callers validate that exactly one source was provided before calling this.
-private func readProfileYAML(file: String?, stdin: Bool) throws -> String {
+func readProfileYAML(file: String?, stdin: Bool) throws -> String {
     let data: Data
     if let file {
         let path = (file as NSString).expandingTildeInPath
@@ -851,6 +874,15 @@ private func readProfileYAML(file: String?, stdin: Bool) throws -> String {
     return text
 }
 
+private func systemProxyStatusText(_ status: SystemProxyStatus) -> String {
+    [
+        "enabled=\(status.enabled)",
+        "active=\(status.active)",
+        "ownership=\(status.ownership?.rawValue ?? "none")",
+        "networkService=\(status.applied?.networkService ?? status.settings.networkService)"
+    ].joined(separator: " ")
+}
+
 private func writeSystemProxyCommands(_ commands: [ShellCommand], state: String, dryRun: Bool) {
     CLIRuntime.current.write(commands) { commands in
         let text = commands.map { ([$0.executable] + $0.arguments).joined(separator: " ") }.joined(separator: "\n")
@@ -865,6 +897,14 @@ private func writeSystemProxyCommands(_ commands: [ShellCommand], state: String,
 /// second copy to keep in sync.
 func mergingSystemProxyBypassDefaults(_ bypassList: [String]) -> [String] {
     Array(Set(bypassList + SystemProxySettings.defaultBypassList)).sorted()
+}
+
+func validateTunSettings(_ settings: TunSettings) throws {
+    guard TunSettings.supportedStacks.contains(settings.stack) else {
+        throw ValidationError(
+            "Invalid TUN stack '\(settings.stack)'. Valid stacks: \(TunSettings.supportedStacks.joined(separator: ", "))."
+        )
+    }
 }
 
 private func tunSettingsSummary(_ settings: TunSettings) -> String {

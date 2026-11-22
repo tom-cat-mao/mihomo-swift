@@ -241,14 +241,14 @@ final class ProfileCommandTests: XCTestCase {
 
     // MARK: - Edit
 
-    func testProfileEditValidatesYAMLAndWritesInPlace() throws {
+    func testProfileEditValidatesYAMLAndWritesInPlace() async throws {
         let controller = try makeController()
         let repository = ProfileRepository(paths: controller.paths)
         let remoteURL = try XCTUnwrap(URL(string: "https://example.com/a.yaml"))
         try seedProfile(controller, id: "airport", name: "Airport", remoteURL: remoteURL)
 
         do {
-            _ = try KumoCommand.Profile.Edit.perform(
+            _ = try await KumoCommand.Profile.Edit.perform(
                 controller: controller,
                 id: "airport",
                 rawYAML: "proxies: [",
@@ -260,7 +260,7 @@ final class ProfileCommandTests: XCTestCase {
         }
         XCTAssertEqual(try repository.profileContent(id: "airport"), "proxies: []\n")
 
-        let dryRun = try KumoCommand.Profile.Edit.perform(
+        let dryRun = try await KumoCommand.Profile.Edit.perform(
             controller: controller,
             id: "airport",
             rawYAML: "proxies:\n  - name: new\n",
@@ -269,7 +269,7 @@ final class ProfileCommandTests: XCTestCase {
         XCTAssertTrue(dryRun.dryRun)
         XCTAssertEqual(try repository.profileContent(id: "airport"), "proxies: []\n")
 
-        let written = try KumoCommand.Profile.Edit.perform(
+        let written = try await KumoCommand.Profile.Edit.perform(
             controller: controller,
             id: "airport",
             rawYAML: "proxies:\n  - name: new\n",
@@ -284,12 +284,12 @@ final class ProfileCommandTests: XCTestCase {
         XCTAssertEqual(stored.name, "Airport")
     }
 
-    func testProfileEditRejectsUnknownIDAndNonMappingYAML() throws {
+    func testProfileEditRejectsUnknownIDAndNonMappingYAML() async throws {
         let controller = try makeController()
         try seedProfile(controller, id: "airport", name: "Airport", remoteURL: nil)
 
         do {
-            _ = try KumoCommand.Profile.Edit.perform(
+            _ = try await KumoCommand.Profile.Edit.perform(
                 controller: controller,
                 id: "nope",
                 rawYAML: "proxies: []\n",
@@ -300,14 +300,15 @@ final class ProfileCommandTests: XCTestCase {
             XCTAssertEqual(String(describing: error), "Unknown profile id: nope")
         }
 
-        XCTAssertThrowsError(
-            try KumoCommand.Profile.Edit.perform(
+        do {
+            _ = try await KumoCommand.Profile.Edit.perform(
                 controller: controller,
                 id: "airport",
                 rawYAML: "- just\n- a list\n",
                 dryRun: true
             )
-        )
+            XCTFail("expected non-mapping YAML to be rejected")
+        } catch {}
     }
 
     // MARK: - Content

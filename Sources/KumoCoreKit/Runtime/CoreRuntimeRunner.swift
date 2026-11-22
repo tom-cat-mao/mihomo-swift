@@ -2,9 +2,9 @@ import Foundation
 
 /// Serial executor for `KumoController` work.
 ///
-/// `KumoController` is a synchronous `Sendable` struct: every one of its
-/// methods blocks its caller on file IO, helper-IPC sockets, `networksetup`
-/// or Yams parsing. The macOS app used to call those methods directly from
+/// `KumoController` is a `Sendable` struct whose synchronous methods block
+/// their caller on file IO, helper-IPC sockets, `networksetup` or Yams parsing;
+/// its async transaction methods also perform network reloads. The macOS app used to call those methods directly from
 /// `@MainActor` code (or, worse, from `@MainActor` code that awaited a
 /// `nonisolated async` method, which is unconstrained thread-wise), so every
 /// status refresh, proxy reload, log snapshot and TUN probe stalled the main
@@ -17,8 +17,8 @@ import Foundation
 /// deliberately not `Task.detached` per call: ordering between consecutive
 /// controller operations matters (write state, then read it back).
 ///
-/// The CLI (`KumoCLIKit`) and the privileged helper (`KumoService`) keep
-/// calling `KumoController` synchronously on their own threads; see
+/// The CLI (`KumoCLIKit`) and the privileged helper (`KumoService`) call
+/// `KumoController` directly on their own executors; see
 /// `docs/core/control-layer.md`.
 public actor CoreRuntimeRunner {
     private let controller: KumoController
@@ -56,8 +56,8 @@ public actor CoreRuntimeRunner {
     }
 
     @discardableResult
-    public func start(corePath: String? = nil) throws -> CoreStatus {
-        try controller.start(corePath: corePath)
+    public func start(corePath: String? = nil, resolvePortConflicts: Bool = false) throws -> CoreStatus {
+        try controller.start(corePath: corePath, resolvePortConflicts: resolvePortConflicts)
     }
 
     @discardableResult
@@ -108,6 +108,30 @@ public actor CoreRuntimeRunner {
         try controller.setCurrentProfile(id: id)
     }
 
+    public func activateProfile(id: String) async throws {
+        try await controller.activateProfile(id: id)
+    }
+
+    public func reloadRuntimeConfiguration() async throws {
+        try await controller.reloadRuntimeConfiguration()
+    }
+
+    public func diffConfiguration(profileYAML: String? = nil) throws -> ConfigurationDiffReport {
+        try controller.diffConfiguration(profileYAML: profileYAML)
+    }
+
+    public func validateConfiguration(profileYAML: String? = nil) -> ConfigurationValidationReport {
+        controller.validateConfiguration(profileYAML: profileYAML)
+    }
+
+    public func applyConfiguration(profileYAML: String) async throws -> ConfigurationApplyReport {
+        try await controller.applyConfiguration(profileYAML: profileYAML)
+    }
+
+    public func rollbackConfiguration() async throws -> ConfigurationRollbackReport {
+        try await controller.rollbackConfiguration()
+    }
+
     public func profileContent(id: String) throws -> String {
         try controller.profileContent(id: id)
     }
@@ -130,8 +154,8 @@ public actor CoreRuntimeRunner {
         autoUpdate: Bool,
         useProxy: Bool,
         rawYAML: String
-    ) throws -> ProfileSummary {
-        try controller.updateProfile(
+    ) async throws -> ProfileSummary {
+        try await controller.updateProfile(
             id: id,
             name: name,
             remoteURL: remoteURL,
@@ -142,8 +166,8 @@ public actor CoreRuntimeRunner {
     }
 
     @discardableResult
-    public func deleteProfile(id: String) throws -> Bool {
-        try controller.deleteProfile(id: id)
+    public func deleteProfile(id: String) async throws -> Bool {
+        try await controller.deleteProfile(id: id)
     }
 
     @discardableResult
@@ -184,10 +208,16 @@ public actor CoreRuntimeRunner {
         try await controller.proxyGroups()
     }
 
+    public func topology() async throws -> TopologyGraph {
+        try await controller.topology()
+    }
+
     public func selectProxy(group: String, name: String) async throws {
         try await controller.selectProxy(group: group, name: name)
     }
 
+    /// Returns one current status per group member. Batch-endpoint and
+    /// transport failures throw; per-node fallback failures carry `delayError`.
     public func testGroupDelay(group: ProxyGroup) async throws -> [ProxyNode] {
         try await controller.testGroupDelay(group: group)
     }
@@ -262,8 +292,8 @@ public actor CoreRuntimeRunner {
         format: OverrideFormat,
         content: String,
         isGlobal: Bool = false
-    ) throws -> OverrideItem {
-        try controller.addLocalOverride(name: name, format: format, content: content, isGlobal: isGlobal)
+    ) async throws -> OverrideItem {
+        try await controller.createLocalOverride(name: name, format: format, content: content, isGlobal: isGlobal)
     }
 
     @discardableResult
@@ -274,7 +304,7 @@ public actor CoreRuntimeRunner {
         fingerprint: String? = nil,
         isGlobal: Bool = false
     ) async throws -> OverrideItem {
-        try await controller.addRemoteOverride(
+        try await controller.createRemoteOverride(
             url: url,
             name: name,
             format: format,
@@ -283,12 +313,12 @@ public actor CoreRuntimeRunner {
         )
     }
 
-    public func updateOverride(_ item: OverrideItem, content: String? = nil) throws {
-        try controller.updateOverride(item, content: content)
+    public func updateOverride(_ item: OverrideItem, content: String? = nil) async throws {
+        try await controller.changeOverride(item, content: content)
     }
 
-    public func deleteOverride(id: String) throws {
-        try controller.deleteOverride(id: id)
+    public func deleteOverride(id: String) async throws {
+        try await controller.removeOverride(id: id)
     }
 
     // MARK: - System proxy & service mode
@@ -296,6 +326,14 @@ public actor CoreRuntimeRunner {
     @discardableResult
     public func setSystemProxy(_ isEnabled: Bool, dryRun: Bool = false) async throws -> [ShellCommand] {
         try await controller.setSystemProxy(isEnabled, dryRun: dryRun)
+    }
+
+    public func systemProxyStatus() async throws -> SystemProxyStatus {
+        try await controller.systemProxyStatus()
+    }
+
+    public func reclaimSystemProxy() async throws -> SystemProxyStatus {
+        try await controller.reclaimSystemProxy()
     }
 
     public func updateSystemProxySettings(_ settings: SystemProxySettings) throws {

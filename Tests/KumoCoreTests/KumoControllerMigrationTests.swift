@@ -132,6 +132,7 @@ final class KumoControllerMigrationTests: XCTestCase {
         try fixture.stateStore.save(CoreStatus(
             state: .running,
             pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath(),
             ownerTier: .rootService,
             runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
         ))
@@ -157,6 +158,7 @@ final class KumoControllerMigrationTests: XCTestCase {
         try fixture.stateStore.save(CoreStatus(
             state: .running,
             pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath(),
             runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: true))
         ))
 
@@ -177,7 +179,8 @@ final class KumoControllerMigrationTests: XCTestCase {
         let fixture = makeFixture(rootInstalled: true, agentInstalled: false)
         try fixture.stateStore.save(CoreStatus(
             state: .running,
-            pid: Int32(ProcessInfo.processInfo.processIdentifier)
+            pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath()
         ))
 
         do {
@@ -217,6 +220,7 @@ final class KumoControllerMigrationTests: XCTestCase {
         try fixture.stateStore.save(CoreStatus(
             state: .running,
             pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath(),
             runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
         ))
 
@@ -234,6 +238,7 @@ final class KumoControllerMigrationTests: XCTestCase {
         try fixture.stateStore.save(CoreStatus(
             state: .running,
             pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath(),
             runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
         ))
 
@@ -253,6 +258,7 @@ final class KumoControllerMigrationTests: XCTestCase {
         try fixture.stateStore.save(CoreStatus(
             state: .running,
             pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath(),
             runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
         ))
         fixture.recorder.failStart(.userAgent)
@@ -279,6 +285,7 @@ final class KumoControllerMigrationTests: XCTestCase {
         try fixture.stateStore.save(CoreStatus(
             state: .running,
             pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath(),
             runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
         ))
 
@@ -311,7 +318,8 @@ final class KumoControllerMigrationTests: XCTestCase {
         let fixture = makeFixture(rootInstalled: true, agentInstalled: true, rootReachable: true, agentReachable: true)
         try fixture.stateStore.save(CoreStatus(
             state: .running,
-            pid: Int32(ProcessInfo.processInfo.processIdentifier)
+            pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath()
         ))
 
         let result = try fixture.controller.migrateCoreToUserAgent()
@@ -340,6 +348,7 @@ final class KumoControllerMigrationTests: XCTestCase {
         try fixture.stateStore.save(CoreStatus(
             state: .running,
             pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            corePath: currentProcessPath(),
             runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: false))
         ))
 
@@ -435,6 +444,12 @@ final class KumoControllerMigrationTests: XCTestCase {
             agentReachable: agentProbe,
             paths: paths
         )
+    }
+
+    private func currentProcessPath() -> String? {
+        LiveCoreProcessInspector().snapshot(
+            pid: Int32(ProcessInfo.processInfo.processIdentifier)
+        )?.executablePath
     }
 
     private func hermeticPaths() -> KumoPaths {

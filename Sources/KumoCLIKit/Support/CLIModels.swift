@@ -122,7 +122,11 @@ struct ProfileEditReport: Encodable, Equatable {
 struct ProxyDelayReport: Encodable, Equatable {
     var proxy: String
     var url: String?
+    /// Stable legacy field: successful measurements are milliseconds and
+    /// timeouts are zero. HTTP failures are thrown instead of reported here.
     var delay: Int?
+    var delayStatus: ProxyDelayStatus?
+    var delayError: String?
 }
 
 struct ProvidersUpdateReport: Encodable, Equatable {
@@ -197,6 +201,7 @@ struct PrefsSnapshot: Encodable, Equatable {
     var hideMenuBarIcon: Bool
     var quitOnLastWindowClose: Bool
     var keepCoreRunningOnQuit: Bool
+    var reclaimSystemProxy: Bool
     var updateChannel: AppUpdateChannel
     var appLanguage: String?
     var hasCompletedOnboarding: Bool
@@ -206,6 +211,7 @@ struct PrefsSnapshot: Encodable, Equatable {
         self.hideMenuBarIcon = preferences.hideMenuBarIcon
         self.quitOnLastWindowClose = preferences.quitOnLastWindowClose
         self.keepCoreRunningOnQuit = preferences.keepCoreRunningOnQuit
+        self.reclaimSystemProxy = preferences.reclaimSystemProxy
         self.updateChannel = preferences.updateChannel
         self.appLanguage = preferences.appLanguage
         self.hasCompletedOnboarding = preferences.hasCompletedOnboarding
@@ -216,6 +222,7 @@ struct PrefsSnapshot: Encodable, Equatable {
         case hideMenuBarIcon
         case quitOnLastWindowClose
         case keepCoreRunningOnQuit
+        case reclaimSystemProxy
         case updateChannel
         case appLanguage
         case hasCompletedOnboarding
@@ -229,6 +236,7 @@ struct PrefsSnapshot: Encodable, Equatable {
         try container.encode(hideMenuBarIcon, forKey: .hideMenuBarIcon)
         try container.encode(quitOnLastWindowClose, forKey: .quitOnLastWindowClose)
         try container.encode(keepCoreRunningOnQuit, forKey: .keepCoreRunningOnQuit)
+        try container.encode(reclaimSystemProxy, forKey: .reclaimSystemProxy)
         try container.encode(updateChannel, forKey: .updateChannel)
         if let appLanguage {
             try container.encode(appLanguage, forKey: .appLanguage)

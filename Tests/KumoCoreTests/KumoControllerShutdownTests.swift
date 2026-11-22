@@ -47,40 +47,27 @@ final class KumoControllerShutdownTests: XCTestCase {
         let stateStore = CoreStateStore(paths: paths)
         try stateStore.save(CoreStatus(
             systemProxyEnabled: true,
-            systemProxySettings: SystemProxySettings(networkService: "Wi-Fi")
+            systemProxySettings: SystemProxySettings(networkService: "Wi-Fi"),
+            systemProxyApplied: manualApplied(),
+            systemProxyOwnership: .owned
         ))
 
-        let recorder = RecordingCommandRunner()
-        // `setSystemProxy(false)` ends with `verifyAppliedState`, which reads
-        // each proxy state via `networksetup -get…` and requires the output
-        // to contain "Enabled: No" before considering the disable applied.
-        recorder.stubCapture(for: "/usr/sbin/networksetup", with: "Enabled: No\nServer:\nPort: 0\n")
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": manualSnapshot()])
         let controller = KumoController(
             paths: paths,
-            systemProxyCommandRunner: recorder.makeRunner()
+            systemProxyCommandRunner: fake.makeRunner()
         )
 
         let result = await controller.shutdownActiveRuntime()
 
         XCTAssertTrue(result.diagnostics.isEmpty, "unexpected diagnostics: \(result.diagnostics)")
         XCTAssertFalse(result.status.systemProxyEnabled)
-        let runArgs = recorder.runArguments()
-        XCTAssertTrue(
-            runArgs.contains(["-setwebproxystate", "Wi-Fi", "off"]),
-            "expected web proxy disable; ran: \(runArgs)"
-        )
-        XCTAssertTrue(
-            runArgs.contains(["-setsecurewebproxystate", "Wi-Fi", "off"]),
-            "expected secure web proxy disable; ran: \(runArgs)"
-        )
-        XCTAssertTrue(
-            runArgs.contains(["-setsocksfirewallproxystate", "Wi-Fi", "off"]),
-            "expected SOCKS proxy disable; ran: \(runArgs)"
-        )
-        XCTAssertTrue(
-            runArgs.contains(["-setautoproxystate", "Wi-Fi", "off"]),
-            "expected PAC autoproxy disable; ran: \(runArgs)"
-        )
+        let runArgs = fake.runArguments()
+        XCTAssertTrue(runArgs.contains(["-setwebproxystate", "Wi-Fi", "off"]))
+        XCTAssertTrue(runArgs.contains(["-setsecurewebproxystate", "Wi-Fi", "off"]))
+        XCTAssertTrue(runArgs.contains(["-setsocksfirewallproxystate", "Wi-Fi", "off"]))
+        XCTAssertTrue(runArgs.contains(["-setautoproxystate", "Wi-Fi", "off"]))
+        XCTAssertTrue(fake.snapshot("Wi-Fi").isCleared)
     }
 
     func testShutdownActiveRuntimeCollectsBothProxyErrors() async throws {
@@ -88,31 +75,22 @@ final class KumoControllerShutdownTests: XCTestCase {
         let stateStore = CoreStateStore(paths: paths)
         try stateStore.save(CoreStatus(
             systemProxyEnabled: true,
-            systemProxySettings: SystemProxySettings(networkService: "Wi-Fi")
+            systemProxySettings: SystemProxySettings(networkService: "Wi-Fi"),
+            systemProxyApplied: manualApplied()
         ))
 
-        let recorder = RecordingCommandRunner()
-        recorder.runError = KumoError.commandFailed("simulated networksetup failure")
-        recorder.stubCapture(for: "/usr/sbin/networksetup", with: "")
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": manualSnapshot()])
+        fake.failRuns(with: KumoError.commandFailed("simulated networksetup failure"))
         let controller = KumoController(
             paths: paths,
-            systemProxyCommandRunner: recorder.makeRunner()
+            systemProxyCommandRunner: fake.makeRunner()
         )
 
         let result = await controller.shutdownActiveRuntime()
 
-        XCTAssertEqual(
-            result.diagnostics.count, 2,
-            "expected both system-proxy stages to report a diagnostic; got: \(result.diagnostics)"
-        )
-        XCTAssertTrue(
-            result.diagnostics[0].hasPrefix("system-proxy:"),
-            "first diagnostic should be the helper/async path; got: \(result.diagnostics)"
-        )
-        XCTAssertTrue(
-            result.diagnostics[1].hasPrefix("system-proxy-fallback:"),
-            "second diagnostic should be the synchronous fallback; got: \(result.diagnostics)"
-        )
+        XCTAssertEqual(result.diagnostics.count, 2, "got: \(result.diagnostics)")
+        XCTAssertTrue(result.diagnostics[0].hasPrefix("system-proxy:"))
+        XCTAssertTrue(result.diagnostics[1].hasPrefix("system-proxy-fallback:"))
     }
 
     func testShutdownActiveRuntimeIsNoOpWhenAlreadyStopped() async throws {
@@ -137,14 +115,16 @@ final class KumoControllerShutdownTests: XCTestCase {
     func testDisableSynchronouslyClearsPersistedState() throws {
         let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
         let stateStore = CoreStateStore(paths: paths)
+        let previous = SystemProxySnapshot(networkService: "Wi-Fi")
         try stateStore.save(CoreStatus(
             systemProxyEnabled: true,
             systemProxySettings: SystemProxySettings(networkService: "Wi-Fi"),
-            previousSystemProxySnapshot: SystemProxySnapshot(networkService: "Wi-Fi")
+            previousSystemProxySnapshot: previous,
+            systemProxyApplied: manualApplied()
         ))
 
-        let recorder = RecordingCommandRunner()
-        let controller = SystemProxyController(paths: paths, commandRunner: recorder.makeRunner())
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": manualSnapshot()])
+        let controller = SystemProxyController(paths: paths, commandRunner: fake.makeRunner())
 
         let commands = try controller.disableSynchronously(
             configuration: SystemProxyConfiguration(networkService: "Wi-Fi")
@@ -153,11 +133,11 @@ final class KumoControllerShutdownTests: XCTestCase {
         XCTAssertFalse(commands.isEmpty)
         let stored = try stateStore.load()
         XCTAssertFalse(stored.systemProxyEnabled)
-        XCTAssertNil(stored.previousSystemProxySnapshot)
-
-        let runArgs = recorder.runArguments()
-        XCTAssertTrue(runArgs.contains(["-setwebproxystate", "Wi-Fi", "off"]))
-        XCTAssertTrue(runArgs.contains(["-setautoproxystate", "Wi-Fi", "off"]))
+        XCTAssertNil(stored.systemProxyApplied)
+        var storedPrevious = stored.previousSystemProxySnapshot
+        storedPrevious?.capturedAt = previous.capturedAt
+        XCTAssertEqual(storedPrevious, previous)
+        XCTAssertTrue(fake.snapshot("Wi-Fi").isCleared)
     }
 
     // MARK: - Helpers
@@ -167,6 +147,7 @@ final class KumoControllerShutdownTests: XCTestCase {
         let url = directory.appendingPathComponent("fake-mihomo")
         try """
         #!/bin/sh
+        if [ "${1:-}" = "-t" ]; then exit 0; fi
         exec /bin/sleep 600
         """.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)

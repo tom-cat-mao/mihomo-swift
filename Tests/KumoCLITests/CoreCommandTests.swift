@@ -9,6 +9,15 @@ import KumoCoreKit
 final class CoreCommandTests: XCTestCase {
     // MARK: - Parsing
 
+    func testStartResolvePortsFlagIsExplicitAndDefaultsOff() throws {
+        let plain = try XCTUnwrap(try KumoCommand.parseAsRoot(["start"]) as? KumoCommand.Start)
+        XCTAssertFalse(plain.resolvePorts)
+
+        let resolve = try XCTUnwrap(try KumoCommand.parseAsRoot(["start", "--resolve-ports", "--json"]) as? KumoCommand.Start)
+        XCTAssertTrue(resolve.resolvePorts)
+        XCTAssertTrue(resolve.options.json)
+    }
+
     func testProxiesGeoFlagParsesAndDefaultsOff() throws {
         let plain = try XCTUnwrap(try KumoCommand.parseAsRoot(["proxies"]) as? KumoCommand.Proxies)
         XCTAssertFalse(plain.geo)
@@ -195,6 +204,25 @@ final class CoreCommandTests: XCTestCase {
             KumoCommand.Proxies.geoText(groups),
             "Proxy: HK-01\n  HK-01 [HK]\n  US-01"
         )
+    }
+
+    // MARK: - Delay reports
+
+    func testGroupDelayTextIncludesSummaryStatusesAndRealErrors() {
+        let nodes = [
+            ProxyNode(name: "A", delay: 42, delayStatus: .success),
+            ProxyNode(name: "B", delay: 0, delayStatus: .timeout, delayError: "Controller returned HTTP 408: slow"),
+            ProxyNode(name: "C", delayStatus: .missing, delayError: "missing from GET /proxies"),
+            ProxyNode(name: "D", delayStatus: .error, delayError: "Controller returned HTTP 503: down")
+        ]
+
+        let text = KumoCommand.TestLatency.groupText(nodes)
+
+        XCTAssertTrue(text.contains("Delay test: 1/4 succeeded · 1 timeout · 1 missing · 1 error"))
+        XCTAssertTrue(text.contains("A: 42ms"))
+        XCTAssertTrue(text.contains("B: timeout (Controller returned HTTP 408: slow)"))
+        XCTAssertTrue(text.contains("C: missing (missing from GET /proxies)"))
+        XCTAssertTrue(text.contains("D: error (Controller returned HTTP 503: down)"))
     }
 
     // MARK: - Helpers

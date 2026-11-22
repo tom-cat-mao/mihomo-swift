@@ -40,7 +40,7 @@ pane minimums within that detail budget so `.windowResizability(.contentMinSize)
 does not stretch the window horizontally.
 
 - Daily: `OverviewView`, `ProfilesView`, `ProxiesView`
-- Inspect: `ConnectionsView`, `LogsView`, `RulesView`
+- Inspect: `ConnectionsView`, `LogsView`, `RulesView`, `TopologyView`
 - Configure: `CoreView`, `SystemProxyView`, `DNSView`, `TunView`, `SnifferView`, `ResourcesView`, `OverridesView`, `SubStoreView`, `AgentSkillsView`
 
 `KumoAppStore` is an `@Observable` object that bridges SwiftUI state to `KumoCoreKit`. Views should call store methods instead of directly constructing controller clients.
@@ -65,6 +65,16 @@ Inspect pages keep toolbar search attached to the page container rather than
 only to populated `Table` / `List` branches. A no-match state must not remove
 the search field, because users need the same toolbar control to clear or edit
 the query.
+
+Topology is a native `HSplitView` graph/inspector, not an embedded web page.
+Its four columns show entry/mode, aggregated rules and rule sets, nested proxy
+groups, then nodes/providers/built-ins/missing references. Toolbar search,
+an expandable issues list, active-path highlighting, and a dynamic-member
+toggle share the same `TopologyGraph` as `kumo topology`. Large columns can be
+expanded on demand; active and missing nodes always remain visible. Selecting
+a node opens textual incoming/outgoing relations instead of requiring spatial
+edge hit targets. See [Configuration Topology](../core/topology.md).
+
 The Connections table shows process icons in the Process column when Mihomo
 returns `metadata.processPath`. Icons are resolved with `NSWorkspace` from the
 enclosing `.app` / `.xpc` bundle and cached in the SwiftUI view layer; the
@@ -75,7 +85,15 @@ Overview is a two-pane layout (`HSplitView`) inspired by single-window utility
 apps. The left pane is a searchable proxy node list grouped by
 `ProxyGroup`; each row shows a country flag inferred from the node `name` plus
 a delay pill (green < 300 ms, orange otherwise, red on timeout, `—` when
-unknown). When the inferred flag came from an emoji embedded in the node name,
+unknown). Delay state is explicit: current success, timeout, missing, and error
+values are distinct, while `/proxies` history and values from an invalidated
+previous run are labelled `stale`. Errors are available on the node and in the
+per-group result summary; a failed batch request never leaves old values looking
+like a successful new run. `ProxiesView` uses the same node presentation and
+shows the summary on each group card. The summary counts successes, timeouts,
+missing references, and errors, with concrete controller details.
+
+When the inferred flag came from an emoji embedded in the node name,
 the row text suppresses that embedded flag so the sidebar does not render the
 same country twice; the original node name is still used for selection, search,
 and Mihomo API calls. Tapping a row commits via `KumoAppStore.selectProxy(group:proxy:)`,
@@ -137,6 +155,14 @@ macOS system notification through `AppNotificationCoordinator`
 `CORE_STATE`) so the user notices even when the main window is occluded.
 Successful start / stop is not notified — the UI already reflects it.
 
+A start blocked by mixed/controller listener conflicts presents a dedicated
+native alert instead of the generic error alert. Each row identifies the role,
+host and port, the process name / pid when `lsof` proves them (or an unknown
+holder), and the suggested free port. **Cancel** leaves all settings untouched.
+Only **Use Free Ports** calls `startCore(resolvePortConflicts: true)`, persists
+the new endpoints, retries the start, and reapplies an enabled system proxy
+after controller readiness. There is no automatic port substitution.
+
 The right pane stacks four Liquid Glass cards using `kumoGlassCard`. Start /
 stop and the mode picker are intentionally not duplicated here because the
 toolbar already owns them:
@@ -169,9 +195,16 @@ toolbar already owns them:
   when present, and the same deep-link affordance.
 
 Detailed staged-edit forms still live in `SystemProxyView` and `TunView` (see
-Configure). Overview only exposes the immediate enable toggles so the daily
-workflow stays one click away from start, stop, mode switch, system proxy,
-and TUN.
+Configure). `SystemProxyView` also shows `owned` / `takenOver` / `cleared`,
+provides Reclaim after a takeover, and stores the default-off Automatically
+Reclaim preference. A five-second store poll observes ownership and performs
+only preference-gated automatic reclaim; external clears turn the intent off.
+The same single polling task refreshes core status and observes `lastExit`. Its
+first observation is a baseline, so launching the GUI never replays an old exit.
+A newly observed unexpected exit sets the app error and posts a `CORE_STATE`
+system notification once; repeated records and expected stops do not notify.
+Overview only exposes the immediate enable toggles so the daily workflow stays
+one click away from start, stop, mode switch, system proxy, and TUN.
 
 The Configure views may begin as small setting surfaces, but user-visible controls must correspond to shared `KumoCoreKit` behavior. Do not add a SwiftUI-only setting that bypasses the runtime builder, state store, or controller facade.
 System-facing configuration forms such as Core runtime settings and System
@@ -179,7 +212,10 @@ Proxy settings should stage edits in local SwiftUI state and commit them through
 explicit Apply actions. This avoids writing partially typed ports, hosts, or
 network service names into the shared controller layer.
 The TUN settings page follows the same pattern for stack, routing, MTU, DNS
-hijack, DNS resolver, ICMP forwarding, and route-exclude edits. The TUN enable
+hijack, DNS resolver, ICMP forwarding, and route-exclude edits. Its native
+stack picker includes Mixed, gVisor, System, and MIPS; selecting MIPS notes
+that Mihomo 1.19.32 or later is required. New settings default to MIPS while
+legacy missing-stack state and existing explicit values remain unchanged. The TUN enable
 toggle remains an immediate runtime action, while staged advanced settings are
 applied through `KumoCoreKit.applyTunSettings`; if Mihomo is running, Kumo
 restarts the core so the generated runtime YAML and actual TUN interface state
@@ -235,6 +271,19 @@ action so users never see an empty management chrome.
 coding-agent skill directories. The target list, supported scopes, destination
 paths, install state, and overwrite rules come from
 `KumoCoreKit.AgentSkillsInstaller`, matching `kumo skills`.
+
+### Agent prompt menu
+
+`AgentPromptMenu` is a shared native SwiftUI `Menu` in `KumoUIComponents.swift`.
+The main detail toolbar presents it for every destination that has a registered
+guide (`Agent Skills` maps to the `agents` guide), and the Settings window uses
+the same component for its `settings` guide. Sub-Store has no prompt entry yet,
+so no disabled placeholder is shown. Menu items are the page's intent goals;
+choosing one copies `KumoCoreKit.AgentGuidance.prompt` to the general pasteboard
+and briefly changes the toolbar icon to a checkmark. This is the exact text
+returned by `kumo prompt <page> [intent]`, not a second UI-only prompt template.
+The icon-only control keeps its accessibility label and tooltip as **Copy Agent
+Prompt**; no explanatory page copy is repeated.
 
 ## Liquid Glass Usage
 

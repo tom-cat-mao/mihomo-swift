@@ -40,17 +40,32 @@ the `SystemProxyMode` carried by `SystemProxyConfiguration`:
   `application/x-ns-proxy-autoconfig`), then runs `-setautoproxyurl
   http://127.0.0.1:<port>/proxy.pac` and `-setautoproxystate on`, while
   turning manual web/secure/socks off.
-- `setEnabled(false)` stops the PAC server and turns both manual and PAC
-  states off.
+- A successful apply records `SystemProxyApplied`: the actual network service,
+  mode, host, port, PAC URL, bypass list, and timestamp. `status()` compares the
+  current OS snapshot with that record, producing `owned`, `takenOver`, or
+  `cleared`. Editing stored settings does not change the service observed or
+  released by Kumo.
+- A takeover leaves the other application's values untouched and exposes
+  Reclaim in the GUI and CLI. `UserPreferences.reclaimSystemProxy` (default
+  `false`) allows the GUI's five-second monitor to reclaim automatically while
+  the core runs. An external clear instead turns Kumo's enable intent off and
+  is never automatically reclaimed.
+- `setEnabled(false)`, stop/quit, and guardian cleanup stop the PAC server as
+  applicable and turn manual/PAC states off only when the current snapshot is
+  still `owned`. Stop and guardian cleanup preserve the user's enable intent;
+  explicit disable and stop-on-quit clear it. Previous snapshots remain stored
+  for the existing restoration workflow.
 
-`setSystemProxy(_:dryRun:)` is `async` — dry-run mode skips the listener and
-returns the would-be commands for inspection (used by the CLI and tests).
+`setSystemProxy(_:dryRun:)` is `async` — dry-run mode skips the listener,
+commands, and state writes, and returns the would-be commands for inspection.
 
-Before enabling system proxy, Kumo now verifies that the target
-`host:mixed-port` is accepting local TCP connections. This prevents macOS from
-being pointed at a stale or failed listener. After applying `networksetup`
-commands, Kumo reads the OS proxy state back and only marks the feature enabled
-when manual or PAC settings match the requested mode.
+Before enabling system proxy, Kumo verifies that the target `host:mixed-port`
+is accepting local TCP connections. After applying `networksetup`, Kumo reads
+the OS proxy state back and records ownership only when all managed values
+match the requested mode. Explicit mixed-port
+conflict resolution follows the same path after the new core is ready: if the
+system proxy was enabled, Kumo reapplies it at the suggested mixed port without
+changing proxy ownership or restore behavior.
 
 ## Command Line Tool Symlink
 
@@ -242,14 +257,12 @@ core keeps running with that TUN route and DNS interception intact.
 
 The following remain hardening work after the first service-backed path:
 
-- System proxy guard and auto-restore
 - Privileged helper repair UX
 - LaunchDaemon management hardening and notarized distribution
 
 ## Future Work
 
 - Restore exact previous proxy settings from the captured snapshot.
-- Add a proxy guard in service mode.
 - Harden the signed privileged helper installer for TUN and protected system
   changes, including notarized app distribution.
 - Adopt App Sandbox + helper-bundle separation so `networksetup` invocations
