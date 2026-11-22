@@ -335,15 +335,22 @@ enum ProxyDelayPresentation {
 
     static func color(for proxy: ProxyNode) -> Color {
         switch proxy.delayStatus {
-        case .success:
-            guard let delay = proxy.delay else { return .secondary }
-            return delay < 300 ? .green : .orange
+        case .success, .stale, nil:
+            // Historical values stay explicitly marked as stale in text, but
+            // retain the familiar latency colors. A zero-delay history entry
+            // is a timeout and must remain visibly red rather than collapsing
+            // into the same secondary gray as an untested node.
+            return latencyColor(proxy.delay)
         case .timeout, .error:
             return .red
         case .missing:
             return .orange
-        case .stale, nil:
-            return .secondary
         }
+    }
+
+    private static func latencyColor(_ delay: Int?) -> Color {
+        guard let delay else { return .secondary }
+        if delay <= 0 { return .red }
+        return delay < 300 ? .green : .orange
     }
 }
