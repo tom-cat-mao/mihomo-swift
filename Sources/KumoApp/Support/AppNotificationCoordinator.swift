@@ -26,6 +26,7 @@ final class AppNotificationCoordinator {
         static let restartReady = "io.kumo.notification.update.restart"
         static let coreStartFailed = "io.kumo.notification.core.start-failed"
         static let coreStopFailed = "io.kumo.notification.core.stop-failed"
+        static let coreUnexpectedExit = "io.kumo.notification.core.unexpected-exit"
         static let profileAutoUpdated = "io.kumo.notification.profile.auto-updated"
         static let profileRefreshFailed = "io.kumo.notification.profile.refresh-failed"
     }
@@ -203,14 +204,28 @@ final class AppNotificationCoordinator {
         )
     }
 
+    func postCoreUnexpectedExit(error: String) {
+        let content = UNMutableNotificationContent()
+        content.title = String(localized: "Mihomo exited unexpectedly")
+        content.body = trimmedReason(error)
+        content.sound = .default
+        content.categoryIdentifier = CategoryID.coreState
+        replaceNotification(
+            requestID: RequestID.coreUnexpectedExit,
+            content: content
+        )
+    }
+
     func clearCoreStateNotifications() {
         center.removePendingNotificationRequests(withIdentifiers: [
             RequestID.coreStartFailed,
-            RequestID.coreStopFailed
+            RequestID.coreStopFailed,
+            RequestID.coreUnexpectedExit
         ])
         center.removeDeliveredNotifications(withIdentifiers: [
             RequestID.coreStartFailed,
-            RequestID.coreStopFailed
+            RequestID.coreStopFailed,
+            RequestID.coreUnexpectedExit
         ])
     }
 

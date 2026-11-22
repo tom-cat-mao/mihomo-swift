@@ -3,6 +3,79 @@ import Foundation
 import Observation
 import KumoCoreKit
 
+struct ProxyGroupDelaySummary: Equatable {
+    var totalCount: Int
+    var successCount: Int
+    var timeoutCount: Int
+    var missingCount: Int
+    var errorCount: Int
+    var details: [String]
+    var requestFailed: Bool
+
+    init(nodes: [ProxyNode]) {
+        totalCount = nodes.count
+        successCount = nodes.count { $0.delayStatus == .success }
+        timeoutCount = nodes.count { $0.delayStatus == .timeout }
+        missingCount = nodes.count { $0.delayStatus == .missing }
+        errorCount = nodes.count { $0.delayStatus == .error }
+        details = nodes.compactMap { node in
+            guard node.delayStatus == .error, let error = node.delayError else { return nil }
+            return "\(node.name): \(error)"
+        }
+        requestFailed = false
+    }
+
+    init(requestError: String) {
+        totalCount = 0
+        successCount = 0
+        timeoutCount = 0
+        missingCount = 0
+        errorCount = 0
+        details = [requestError]
+        requestFailed = true
+    }
+
+    var text: String {
+        if requestFailed { return String(localized: "Delay test failed") }
+        var parts = [String(format: String(localized: "%1$d/%2$d succeeded"), successCount, totalCount)]
+        if timeoutCount > 0 {
+            parts.append(String(format: String(localized: "%1$d timeout"), timeoutCount))
+        }
+        if missingCount > 0 {
+            parts.append(String(format: String(localized: "%1$d missing"), missingCount))
+        }
+        if errorCount > 0 {
+            parts.append(String(format: String(localized: "%1$d error"), errorCount))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var hasFailures: Bool {
+        requestFailed || timeoutCount > 0 || missingCount > 0 || errorCount > 0
+    }
+}
+
+/// Turns persisted exit records into at-most-once UI notifications. The first
+/// observation is only a baseline: an exit recorded before this GUI launched
+/// must not be presented as a new crash. Expected stops update the baseline but
+/// never produce an alert.
+struct CoreExitObservation {
+    private var lastExit: CoreExit?
+    private var hasBaseline = false
+
+    mutating func observe(_ exit: CoreExit?) -> CoreExit? {
+        let previousExit = lastExit
+        defer {
+            lastExit = exit
+            hasBaseline = true
+        }
+        guard hasBaseline, let exit, !exit.expected, exit != previousExit else {
+            return nil
+        }
+        return exit
+    }
+}
+
 @MainActor
 @Observable
 final class KumoAppStore {
@@ -23,6 +96,7 @@ final class KumoAppStore {
     /// or the stream errors out.
     var trafficHistory: [TrafficSample] = []
     var rules: [RuleEntry] = []
+    var topology: TopologyGraph?
     var connections: [ConnectionEntry] = []
     var logs: [LogEntry] = []
     var proxyProviders: [ProxyProviderEntry] = []
@@ -48,6 +122,8 @@ final class KumoAppStore {
     /// authorized state transitions.
     var showOnboarding = false
     var errorMessage: String?
+    /// Start failures that can be resolved only after explicit user approval.
+    var portConflicts: [PortConflict] = []
     var profileUpdateStatusMessage: String?
     var profileUpdateStatusIsFailure = false
     var refreshingProfileIDs: Set<String> = []
@@ -56,6 +132,9 @@ final class KumoAppStore {
     var isImportingProfile = false
     var isInstallingCore = false
     var isTestingDelay = false
+    /// Last completed delay-test outcome per group. A refresh of `/proxies`
+    /// clears these summaries because its history values are stale snapshots.
+    private(set) var delayTestSummaries: [String: ProxyGroupDelaySummary] = [:]
     var isStreamingLogs = false
     var isCheckingForUpdates = false
     var isDownloadingUpdate = false
@@ -80,6 +159,7 @@ final class KumoAppStore {
     private let proxyGeoLookup: ProxyGeoLookup
     private static let updatePollingIntervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
     private static let profileUpdatePollingIntervalNanoseconds: UInt64 = 60 * 1_000_000_000
+    private static let systemProxyPollingIntervalNanoseconds: UInt64 = 5 * 1_000_000_000
     private var loadingTaskCount = 0
     private var trafficStreamTask: Task<Void, Never>?
     private var logStreamTask: Task<Void, Never>?
@@ -87,8 +167,10 @@ final class KumoAppStore {
     private var proxyGeoTask: Task<Void, Never>?
     private var updatePollingTask: Task<Void, Never>?
     private var profileUpdatePollingTask: Task<Void, Never>?
+    private var systemProxyPollingTask: Task<Void, Never>?
     private var isPollingForUpdates = false
     private var lastProfileRefreshFailureNotifications: [String: Date] = [:]
+    private var coreExitObservation = CoreExitObservation()
     /// One-shot gate for the post-update agent repair in `refreshAll()`:
     /// launch must repair at most once, and manual refreshes must not re-run
     /// launchctl churn.
@@ -119,8 +201,10 @@ final class KumoAppStore {
         await refreshCoreCandidates()
         await refreshProfiles()
         await loadPreferences()
+        await refreshSystemProxyStatus()
         await loadProxyGroups()
         await loadCoreConfiguration()
+        await loadTopology()
         await loadInspectData()
         await loadResources()
         await refreshOverrides()
@@ -133,7 +217,30 @@ final class KumoAppStore {
 
     func refreshStatus() async {
         do {
-            status = try await runner.status()
+            let refreshed = try await runner.status()
+            status = refreshed
+            if let exit = coreExitObservation.observe(refreshed.lastExit) {
+                errorMessage = exit.message
+                appNotificationCoordinator.postCoreUnexpectedExit(error: exit.message)
+            } else {
+                errorMessage = nil
+            }
+        } catch {
+            errorMessage = displayMessage(for: error)
+        }
+    }
+
+    var systemProxyStatus: SystemProxyStatus {
+        SystemProxyStatus(status: status)
+    }
+
+    func refreshSystemProxyStatus() async {
+        do {
+            let proxy = try await runner.systemProxyStatus()
+            status.systemProxyEnabled = proxy.enabled
+            status.systemProxyOwnership = proxy.ownership
+            status.systemProxyApplied = proxy.applied
+            status.systemProxySettings = proxy.settings
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
@@ -212,18 +319,27 @@ final class KumoAppStore {
         await refreshProfilePreview()
     }
 
-    func startCore() async {
+    func startCore(resolvePortConflicts: Bool = false) async {
         beginLoading()
         defer { endLoading() }
+        portConflicts = []
 
         do {
+            let shouldReapplySystemProxy = resolvePortConflicts && status.systemProxyEnabled
             let installResult = try await installManagedCoreIfNeeded()
-            status = try await runner.start()
+            status = try await runner.start(resolvePortConflicts: resolvePortConflicts)
             try await runner.waitForControllerReady()
+            // Socket tiers reapply inside their start route. Apply here only
+            // for the local supervisor so the previous-proxy snapshot is not
+            // captured twice.
+            if shouldReapplySystemProxy, status.ownerTier == .localSupervisor {
+                _ = try await runner.setSystemProxy(true)
+            }
             startTrafficStream()
             await refreshProfiles()
             await loadProxyGroups()
             await loadCoreConfiguration()
+            await loadTopology()
             await loadResources()
             await refreshOverrides()
             if let installResult {
@@ -233,12 +349,21 @@ final class KumoAppStore {
             appNotificationCoordinator.clearCoreStateNotifications()
         } catch {
             let message = displayMessage(for: error)
-            errorMessage = message
+            if case KumoError.portConflicts(let conflicts) = error {
+                portConflicts = conflicts
+                errorMessage = nil
+            } else {
+                errorMessage = message
+            }
             // Surface the failure as a system notification so users notice
             // it even when the main window is occluded or the menu bar
             // status item isn't visible.
             appNotificationCoordinator.postCoreStartFailed(error: message)
         }
+    }
+
+    func dismissPortConflicts() {
+        portConflicts = []
     }
 
     func stopCore() async {
@@ -254,6 +379,7 @@ final class KumoAppStore {
             coreConfiguration = CoreConfigurationSnapshot(mode: status.mode, mixedPort: status.proxyPorts.mixedPort)
             trafficSnapshot = TrafficSnapshot()
             trafficHistory = []
+            await loadTopology()
             await refreshServiceModeStatus()
             await refreshTunStatus()
             errorMessage = nil
@@ -285,6 +411,7 @@ final class KumoAppStore {
     func prepareForTermination() async {
         stopUpdatePolling()
         stopProfileUpdatePolling()
+        stopSystemProxyPolling()
         stopTrafficStream()
         stopLogStream()
         proxyGeoTask?.cancel()
@@ -342,6 +469,7 @@ final class KumoAppStore {
                 connections = []
                 await loadProxyGroups()
             }
+            await loadTopology()
         } catch {
             if !didApplyMode {
                 status.mode = previousStatusMode
@@ -354,6 +482,7 @@ final class KumoAppStore {
     func loadProxyGroups() async {
         guard status.state == .running else {
             proxyGroups = []
+            delayTestSummaries = [:]
             proxyGeoTask?.cancel()
             proxyGeoTask = nil
             return
@@ -361,6 +490,7 @@ final class KumoAppStore {
 
         do {
             proxyGroups = try await runner.proxyGroups()
+            delayTestSummaries = [:]
             errorMessage = nil
         } catch {
             errorMessage = displayMessage(for: error)
@@ -491,6 +621,15 @@ final class KumoAppStore {
         }
     }
 
+    func loadTopology() async {
+        do {
+            topology = try await runner.topology()
+            errorMessage = nil
+        } catch {
+            errorMessage = displayMessage(for: error)
+        }
+    }
+
     func loadInspectData() async {
         do {
             logs = try await runner.recentLogs()
@@ -608,22 +747,48 @@ final class KumoAppStore {
         await performLoadingTask { [self] in
             try await self.runner.selectProxy(group: group.name, name: proxy.name)
             await self.loadProxyGroups()
+            await self.loadTopology()
         }
     }
 
     func testDelay(for group: ProxyGroup) async {
+        guard !isTestingDelay else { return }
         isTestingDelay = true
         defer { isTestingDelay = false }
+
+        // A new run invalidates the previous run immediately. Historical
+        // values may remain visible only as stale, never as fresh successes.
+        if let index = proxyGroups.firstIndex(where: { $0.id == group.id }) {
+            for nodeIndex in proxyGroups[index].proxies.indices {
+                var node = proxyGroups[index].proxies[nodeIndex]
+                guard node.delayStatus != .missing else { continue }
+                if node.delay != nil {
+                    node.delayStatus = .stale
+                } else {
+                    node.delayStatus = nil
+                }
+                node.delayError = nil
+                proxyGroups[index].proxies[nodeIndex] = node
+            }
+        }
+        delayTestSummaries[group.id] = nil
+        errorMessage = nil
 
         do {
             let nodes = try await runner.testGroupDelay(group: group)
             if let index = proxyGroups.firstIndex(where: { $0.id == group.id }) {
                 proxyGroups[index].proxies = nodes
+                delayTestSummaries[group.id] = ProxyGroupDelaySummary(nodes: nodes)
             }
-            errorMessage = nil
         } catch {
-            errorMessage = displayMessage(for: error)
+            let message = displayMessage(for: error)
+            delayTestSummaries[group.id] = ProxyGroupDelaySummary(requestError: message)
+            errorMessage = message
         }
+    }
+
+    func delayTestSummary(for group: ProxyGroup) -> ProxyGroupDelaySummary? {
+        delayTestSummaries[group.id]
     }
 
     func importRemoteProfile(urlString: String, useProxy: Bool) async {
@@ -832,7 +997,7 @@ final class KumoAppStore {
                 rawYAML: rawYAML
             )
             await self.refreshProfiles()
-            try await self.reactivateCurrentProfileIfNeeded(wasCurrent, message: "Profile updated.")
+            try await self.refreshCurrentProfileAfterTransactionIfNeeded(wasCurrent, message: "Profile updated.")
         }
     }
 
@@ -849,7 +1014,12 @@ final class KumoAppStore {
         do {
             _ = try await self.runner.refreshProfile(id: profile.id)
             await self.refreshProfiles()
-            try await self.reactivateCurrentProfileIfNeeded(profile.isCurrent, message: "Profile refreshed.")
+            if profile.isCurrent, self.status.state == .running {
+                self.status = try await self.runner.status()
+                await self.loadProxyGroups()
+                await self.loadCoreConfiguration()
+                self.status.message = "Profile refreshed."
+            }
             self.profileUpdateStatusMessage = String(format: String(localized: "%@ updated."), profile.name)
             self.profileUpdateStatusIsFailure = false
             if !profile.isCurrent || self.status.state != .running {
@@ -869,18 +1039,16 @@ final class KumoAppStore {
         await performLoadingTask { [self] in
             let deletedCurrentProfile = try await self.runner.deleteProfile(id: profile.id)
             await self.refreshProfiles()
-            try await self.reactivateCurrentProfileIfNeeded(deletedCurrentProfile, message: "Profile deleted.")
+            try await self.refreshCurrentProfileAfterTransactionIfNeeded(deletedCurrentProfile, message: "Profile deleted.")
         }
     }
 
     func selectProfile(_ profile: ProfileSummary) async {
         await performLoadingTask { [self] in
-            try await self.runner.setCurrentProfile(id: profile.id)
+            try await self.runner.activateProfile(id: profile.id)
             await self.refreshProfiles()
             if self.status.state == .running {
-                self.status = try await self.runner.restart()
-                try await self.runner.waitForControllerReady()
-                self.startTrafficStream()
+                self.status = try await self.runner.status()
                 await self.loadProxyGroups()
                 await self.loadCoreConfiguration()
             }
@@ -896,11 +1064,24 @@ final class KumoAppStore {
         Task { @MainActor in
             do {
                 _ = try await runner.setSystemProxy(isEnabled)
-                status.systemProxyEnabled = isEnabled
+                await refreshSystemProxyStatus()
                 errorMessage = nil
             } catch {
                 errorMessage = displayMessage(for: error)
             }
+        }
+    }
+
+    func reclaimSystemProxy() async {
+        do {
+            let proxy = try await runner.reclaimSystemProxy()
+            status.systemProxyEnabled = proxy.enabled
+            status.systemProxyOwnership = proxy.ownership
+            status.systemProxyApplied = proxy.applied
+            status.systemProxySettings = proxy.settings
+            errorMessage = nil
+        } catch {
+            errorMessage = displayMessage(for: error)
         }
     }
 
@@ -1296,6 +1477,27 @@ final class KumoAppStore {
         profileUpdatePollingTask = nil
     }
 
+    func startSystemProxyPolling() {
+        guard systemProxyPollingTask == nil else { return }
+        systemProxyPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: Self.systemProxyPollingIntervalNanoseconds)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await self?.refreshSystemProxyStatus()
+                await self?.refreshStatus()
+            }
+        }
+    }
+
+    func stopSystemProxyPolling() {
+        systemProxyPollingTask?.cancel()
+        systemProxyPollingTask = nil
+    }
+
     func checkForUpdate() async {
         await checkForUpdate(source: .manual)
     }
@@ -1506,17 +1708,11 @@ final class KumoAppStore {
 
         if !refreshedIDs.isEmpty {
             await refreshProfiles()
-            do {
-                try await reactivateCurrentProfileIfNeeded(
-                    currentID.map { refreshedIDs.contains($0) } ?? false,
-                    message: "Profiles auto-updated."
-                )
-            } catch {
-                if let currentProfile = profiles.first(where: { $0.id == currentID }) {
-                    failures.append((currentProfile, displayMessage(for: error)))
-                } else {
-                    errorMessage = displayMessage(for: error)
-                }
+            if currentID.map({ refreshedIDs.contains($0) }) == true, status.state == .running {
+                status = (try? await runner.status()) ?? status
+                await loadProxyGroups()
+                await loadCoreConfiguration()
+                status.message = "Profiles auto-updated."
             }
 
             profileUpdateStatusMessage = profileRefreshSummary(names: refreshedNames)
@@ -1544,16 +1740,15 @@ final class KumoAppStore {
         }
     }
 
-    private func reactivateCurrentProfileIfNeeded(_ shouldReactivate: Bool, message: String) async throws {
-        guard shouldReactivate, status.state == .running else {
+    private func refreshCurrentProfileAfterTransactionIfNeeded(_ wasCurrent: Bool, message: String) async throws {
+        guard wasCurrent, status.state == .running else {
             return
         }
 
-        status = try await runner.restart()
-        try await runner.waitForControllerReady()
-        startTrafficStream()
+        status = try await runner.status()
         await loadProxyGroups()
         await loadCoreConfiguration()
+        await loadTopology()
         await loadInspectData()
         status.message = message
     }
@@ -1584,19 +1779,10 @@ final class KumoAppStore {
 
     @discardableResult
     private func installManagedCoreIfNeeded() async throws -> CoreInstallResult? {
-        let currentStatus = try await runner.status()
         let candidates = try await runner.coreCandidates()
         coreCandidates = candidates
 
-        let managedCorePath = runner.paths.managedCoreExecutable.path
-        let managedCoreInstalled = FileManager.default.isExecutableFile(atPath: managedCorePath)
-        let shouldInstall = if currentStatus.corePath == nil {
-            !managedCoreInstalled
-        } else {
-            candidates.isEmpty
-        }
-
-        guard shouldInstall else {
+        guard candidates.isEmpty else {
             return nil
         }
 

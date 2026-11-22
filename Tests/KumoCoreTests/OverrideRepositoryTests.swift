@@ -17,6 +17,28 @@ final class OverrideRepositoryTests: XCTestCase {
         XCTAssertEqual(yaml, ["allow-lan: true", "mixed-port: 1"])
     }
 
+    func testActiveOverridesKeepYAMLAndJavaScriptInRepositoryOrder() throws {
+        let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
+        let repository = OverrideRepository(paths: paths)
+
+        let first = try repository.addLocalOverride(name: "YAML", format: .yaml, content: "rules: []")
+        let second = try repository.addLocalOverride(
+            name: "JavaScript",
+            format: .javascript,
+            content: "function main(config) { return config }"
+        )
+        try repository.reorderOverrides(ids: [second.id, first.id])
+
+        let overrides = try repository.activeOverrides()
+
+        XCTAssertEqual(overrides.map(\.name), ["JavaScript", "YAML"])
+        XCTAssertEqual(overrides.map(\.format), [.javascript, .yaml])
+        XCTAssertEqual(overrides.map(\.content), [
+            "function main(config) { return config }",
+            "rules: []"
+        ])
+    }
+
     func testDeleteOverrideRemovesMetadata() throws {
         let paths = KumoPaths(applicationSupportDirectory: temporaryDirectory())
         let repository = OverrideRepository(paths: paths)

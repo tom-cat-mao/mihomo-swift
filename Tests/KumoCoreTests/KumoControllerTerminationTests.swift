@@ -81,6 +81,7 @@ final class KumoControllerTerminationTests: XCTestCase {
         let url = directory.appendingPathComponent("fake-mihomo")
         try """
         #!/bin/sh
+        if [ "${1:-}" = "-t" ]; then exit 0; fi
         exec /bin/sleep 600
         """.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)

@@ -106,10 +106,12 @@ final class PrefsCommandTests: XCTestCase {
         _ = try applyPrefsSet(to: controller, key: "updateChannel", rawValue: "beta", dryRun: false)
         _ = try applyPrefsSet(to: controller, key: "appLanguage", rawValue: "zh-Hans", dryRun: false)
         _ = try applyPrefsSet(to: controller, key: "hasCompletedOnboarding", rawValue: "true", dryRun: false)
+        _ = try applyPrefsSet(to: controller, key: "reclaimSystemProxy", rawValue: "true", dryRun: false)
 
         XCTAssertEqual(controller.userPreferences().updateChannel, .beta)
         XCTAssertEqual(controller.userPreferences().appLanguage, "zh-Hans")
         XCTAssertTrue(controller.userPreferences().hasCompletedOnboarding)
+        XCTAssertTrue(controller.userPreferences().reclaimSystemProxy)
 
         _ = try applyPrefsSet(to: controller, key: "appLanguage", rawValue: "system", dryRun: false)
         XCTAssertNil(controller.userPreferences().appLanguage)
@@ -150,7 +152,7 @@ final class PrefsCommandTests: XCTestCase {
 
         XCTAssertEqual(Set(object.keys), [
             "launchAtLogin", "hideMenuBarIcon", "quitOnLastWindowClose", "keepCoreRunningOnQuit",
-            "updateChannel", "appLanguage", "hasCompletedOnboarding"
+            "reclaimSystemProxy", "updateChannel", "appLanguage", "hasCompletedOnboarding"
         ])
         XCTAssertEqual(object["launchAtLogin"] as? Bool, false)
         XCTAssertEqual(object["updateChannel"] as? String, "stable")

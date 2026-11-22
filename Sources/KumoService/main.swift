@@ -280,6 +280,12 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
                 guard idlePolicy != nil, ownedCoreIsRunning() == false else { continue }
                 if idlePolicy?.shouldExit(now: Date(), isCoreRunning: false) == true {
                     logger?.log("idle-exit: no client request for \(Int(idleTimeout))s and no core running")
+                    do {
+                        try KumoController(paths: paths, useServiceBackend: false, ownerTier: .userAgent)
+                            .releaseSystemProxyForGuardian()
+                    } catch {
+                        logger?.log("system proxy guardian cleanup failed: \(error.localizedDescription)")
+                    }
                     close(listener.descriptor)
                     removeSelfBoundSocketIfNeeded(listener, socketFile: socketFile)
                     Foundation.exit(0)
@@ -401,6 +407,9 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
                 }
             }
             return try await route(request)
+        } catch KumoError.portConflicts(let conflicts) {
+            let message = KumoError.portConflicts(conflicts).localizedDescription
+            return KumoServiceTransportResponse(status: 409, error: message, portConflicts: conflicts)
         } catch {
             return KumoServiceTransportResponse(status: 500, error: error.localizedDescription)
         }
@@ -432,9 +441,15 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
         case ("GET", "/status"), ("GET", "/sysproxy/status"):
             return try json(controller.status())
         case ("POST", "/core/start"):
-            let started = try controller.start()
+            let options = request.body.isEmpty
+                ? CoreStartOptions()
+                : try JSONDecoder().decode(CoreStartOptions.self, from: request.body)
+            let started = try controller.start(resolvePortConflicts: options.resolvePortConflicts)
             logger?.log("core start observed: pid \(started.pid.map(String.init) ?? "unknown")")
             try await controller.waitForControllerReady()
+            if options.resolvePortConflicts, started.systemProxyEnabled {
+                _ = try await controller.setSystemProxy(true)
+            }
             return try json(controller.status())
         case ("POST", "/core/stop"):
             let stopped = try controller.stop()
@@ -450,6 +465,9 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
             return try json(controller.status())
         case ("POST", "/sysproxy/disable"):
             _ = try await controller.setSystemProxy(false)
+            return try json(controller.status())
+        case ("POST", "/sysproxy/release"):
+            try controller.releaseSystemProxyForGuardian()
             return try json(controller.status())
         case ("GET", "/tun/status"):
             return try json(controller.tunStatus())

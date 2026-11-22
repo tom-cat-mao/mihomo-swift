@@ -75,24 +75,30 @@ extension KumoController {
         return status
     }
 
-    func performTierStart(_ backend: RuntimeBackend) throws -> CoreStatus {
+    func performTierStart(_ backend: RuntimeBackend, resolvePortConflicts: Bool = false) throws -> CoreStatus {
         var status: CoreStatus
         if let tierOperations {
             status = try tierOperations.start(backend)
         } else {
             switch backend {
             case .localSupervisor:
-                status = try startLocalCore(corePath: nil)
+                status = try startLocalCore(corePath: nil, resolvePortConflicts: resolvePortConflicts)
             case .rootService:
                 guard let client = rootServiceClient() else {
                     throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
                 }
-                status = try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
+                status = try client.sendDecodable(
+                    client.startCoreRequest(resolvePortConflicts: resolvePortConflicts),
+                    as: CoreStatus.self
+                )
             case .userAgent:
                 guard let client = userAgentClient() else {
                     throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
                 }
-                status = try client.sendDecodable(client.startCoreRequest(), as: CoreStatus.self)
+                status = try client.sendDecodable(
+                    client.startCoreRequest(resolvePortConflicts: resolvePortConflicts),
+                    as: CoreStatus.self
+                )
             }
         }
 

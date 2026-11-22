@@ -26,6 +26,8 @@ extension KumoCommand {
 
         @Option(name: .long, help: "Use a specific Mihomo core executable.")
         var core: String?
+        @Flag(name: .long, help: "Explicitly move occupied mixed/controller listeners to free ports.")
+        var resolvePorts = false
         @OptionGroup var options: CLIOptions
 
         mutating func run() async throws {
@@ -34,7 +36,7 @@ extension KumoCommand {
                 try await installManagedCoreIfNeeded()
             }
             let runtime = CLIRuntime.current
-            let status = try runtime.controller.start(corePath: core)
+            let status = try runtime.controller.start(corePath: core, resolvePortConflicts: resolvePorts)
             do {
                 try await runtime.controller.waitForControllerReady()
             } catch {
@@ -42,6 +44,12 @@ extension KumoCommand {
                 throw KumoError.commandFailed(
                     "Mihomo core started with pid \(pid) but its controller did not become ready: \(error.localizedDescription) Check the core log at \(runtime.controller.paths.coreLogFile.path)."
                 )
+            }
+            // Socket tiers reapply inside their start route. Apply here only
+            // for the local supervisor so the previous-proxy snapshot is not
+            // captured twice.
+            if resolvePorts, status.systemProxyEnabled, status.ownerTier == .localSupervisor {
+                _ = try await runtime.controller.setSystemProxy(true)
             }
             runtime.write(status) { "started pid=\($0.pid.map(String.init) ?? "-")" }
         }
@@ -406,17 +414,54 @@ extension KumoCommand {
             let groups = try await controller.proxyGroups()
             if let group = groups.first(where: { $0.name == target }) {
                 let nodes = try await controller.testGroupDelay(group: group)
-                CLIRuntime.current.write(nodes) { nodes in
-                    nodes.map { "\($0.name): \($0.delay.map { "\($0)ms" } ?? "timeout")" }.joined(separator: "\n")
-                }
+                CLIRuntime.current.write(nodes) { Self.groupText($0) }
                 return
             }
 
             let delay = try await controller.testProxyDelay(proxy: target, testURL: url)
-            let report = ProxyDelayReport(proxy: target, url: url, delay: delay)
+            let status: ProxyDelayStatus = delay.map { $0 > 0 ? .success : .timeout } ?? .timeout
+            let report = ProxyDelayReport(
+                proxy: target,
+                url: url,
+                delay: delay,
+                delayStatus: status,
+                delayError: status == .timeout ? "The delay test timed out." : nil
+            )
             CLIRuntime.current.write(report) { report in
-                "\(report.proxy): \(report.delay.map { "\($0)ms" } ?? "timeout")"
+                "\(report.proxy): \(report.delayStatus == .success ? report.delay.map { "\($0)ms" } ?? "success" : "timeout")"
             }
+        }
+
+        static func groupText(_ nodes: [ProxyNode]) -> String {
+            let success = nodes.count { $0.delayStatus == .success }
+            let timeout = nodes.count { $0.delayStatus == .timeout }
+            let missing = nodes.count { $0.delayStatus == .missing }
+            let errors = nodes.count { $0.delayStatus == .error }
+            var parts = ["\(success)/\(nodes.count) succeeded"]
+            if timeout > 0 { parts.append("\(timeout) timeout") }
+            if missing > 0 { parts.append("\(missing) missing") }
+            if errors > 0 { parts.append("\(errors) error") }
+            return (["Delay test: \(parts.joined(separator: " · "))"] + nodes.map(nodeText))
+                .joined(separator: "\n")
+        }
+
+        private static func nodeText(_ node: ProxyNode) -> String {
+            let value: String
+            switch node.delayStatus {
+            case .success:
+                value = node.delay.map { "\($0)ms" } ?? "success"
+            case .timeout:
+                value = "timeout"
+            case .missing:
+                value = "missing"
+            case .error:
+                value = "error"
+            case .stale:
+                value = node.delay.map { "\($0)ms (stale)" } ?? "stale"
+            case nil:
+                value = node.delay.map { "\($0)ms" } ?? "unknown"
+            }
+            return "\(node.name): \(value)\(node.delayError.map { " (\($0))" } ?? "")"
         }
     }
 

@@ -91,9 +91,60 @@ public struct OverrideRepository: Sendable {
     }
 
     public func activeYAMLs() throws -> [String] {
-        try loadItems()
+        try activeOverrides()
             .filter { $0.format == .yaml }
-            .compactMap { try? String(contentsOf: fileURL(for: $0), encoding: .utf8) }
+            .map(\.content)
+    }
+
+    public func activeOverrides() throws -> [RuntimeOverride] {
+        try loadItems().compactMap { item in
+            guard let content = try? String(contentsOf: fileURL(for: item), encoding: .utf8) else {
+                return nil
+            }
+            return RuntimeOverride(name: item.name, format: item.format, content: content)
+        }
+    }
+
+    struct TransactionSnapshot: Codable, Sendable {
+        let metadata: Data?
+        let files: [String: Data]
+    }
+
+    func transactionSnapshot() throws -> TransactionSnapshot {
+        let metadata = try? Data(contentsOf: paths.overridesMetadataFile)
+        var files: [String: Data] = [:]
+        if FileManager.default.fileExists(atPath: paths.overrideFilesDirectory.path) {
+            let urls = try FileManager.default.contentsOfDirectory(
+                at: paths.overrideFilesDirectory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+            for url in urls where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                files[url.lastPathComponent] = try Data(contentsOf: url)
+            }
+        }
+        return TransactionSnapshot(metadata: metadata, files: files)
+    }
+
+    func restoreTransactionSnapshot(_ snapshot: TransactionSnapshot) throws {
+        try FileManager.default.createDirectory(at: paths.overridesDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: paths.overrideFilesDirectory, withIntermediateDirectories: true)
+        let existing = try FileManager.default.contentsOfDirectory(
+            at: paths.overrideFilesDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        for url in existing where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            try FileManager.default.removeItem(at: url)
+        }
+        for (name, data) in snapshot.files {
+            try data.write(to: paths.overrideFilesDirectory.appendingPathComponent(name), options: .atomic)
+        }
+        if let metadata = snapshot.metadata {
+            try metadata.write(to: paths.overridesMetadataFile, options: .atomic)
+        } else if FileManager.default.fileExists(atPath: paths.overridesMetadataFile.path) {
+            try FileManager.default.removeItem(at: paths.overridesMetadataFile)
+        }
     }
 
     private func loadItems() throws -> [OverrideItem] {

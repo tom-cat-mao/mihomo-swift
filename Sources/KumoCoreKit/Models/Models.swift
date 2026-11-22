@@ -368,6 +368,8 @@ public struct CoreRuntimeSettings: Codable, Equatable, Sendable {
 }
 
 public struct TunSettings: Codable, Equatable, Sendable {
+    public static let supportedStacks = ["mixed", "gvisor", "system", "mips"]
+
     public var isEnabled: Bool
     public var stack: String
     public var autoRoute: Bool
@@ -382,7 +384,7 @@ public struct TunSettings: Codable, Equatable, Sendable {
 
     public init(
         isEnabled: Bool = false,
-        stack: String = "mixed",
+        stack: String = "mips",
         autoRoute: Bool = true,
         autoRedirect: Bool = false,
         autoDetectInterface: Bool = true,
@@ -425,7 +427,8 @@ public struct TunSettings: Codable, Equatable, Sendable {
         let defaults = TunSettings()
         self.init(
             isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? defaults.isEnabled,
-            stack: try container.decodeIfPresent(String.self, forKey: .stack) ?? defaults.stack,
+            // State written before MIPS support had `mixed` as its implicit default.
+            stack: try container.decodeIfPresent(String.self, forKey: .stack) ?? "mixed",
             autoRoute: try container.decodeIfPresent(Bool.self, forKey: .autoRoute) ?? defaults.autoRoute,
             autoRedirect: try container.decodeIfPresent(Bool.self, forKey: .autoRedirect) ?? defaults.autoRedirect,
             autoDetectInterface: try container.decodeIfPresent(Bool.self, forKey: .autoDetectInterface) ?? defaults.autoDetectInterface,
@@ -540,6 +543,45 @@ public struct SystemProxySettings: Codable, Equatable, Sendable {
     """
 }
 
+public struct SystemProxyEndpointSnapshot: Codable, Equatable, Sendable {
+    public var isEnabled: Bool
+    public var host: String
+    public var port: Int
+
+    public init(isEnabled: Bool = false, host: String = "", port: Int = 0) {
+        self.isEnabled = isEnabled
+        self.host = host
+        self.port = port
+    }
+
+    public init(networkSetupOutput: String) {
+        var values: [String: String] = [:]
+        for line in networkSetupOutput.split(separator: "\n") {
+            guard let separator = line.firstIndex(of: ":") else { continue }
+            let key = line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            values[key] = value
+        }
+        self.init(
+            isEnabled: values["Enabled"]?.caseInsensitiveCompare("Yes") == .orderedSame,
+            host: values["Server"] ?? "",
+            port: Int(values["Port"] ?? "") ?? 0
+        )
+    }
+
+    public func pointsAt(host expectedHost: String, port expectedPort: Int) -> Bool {
+        isEnabled && port == expectedPort && Self.sameHost(host, expectedHost)
+    }
+
+    private static func sameHost(_ lhs: String, _ rhs: String) -> Bool {
+        let left = lhs.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let right = rhs.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if left == right { return true }
+        let loopback: Set<String> = ["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]
+        return loopback.contains(left) && loopback.contains(right)
+    }
+}
+
 public struct SystemProxySnapshot: Codable, Equatable, Sendable {
     public var networkService: String
     public var capturedAt: Date
@@ -547,6 +589,9 @@ public struct SystemProxySnapshot: Codable, Equatable, Sendable {
     public var secureWebProxy: String
     public var socksProxy: String
     public var bypassDomains: String
+    /// Raw `networksetup -getautoproxyurl` output. Optional so state captured
+    /// by older builds remains decodable.
+    public var autoProxy: String?
 
     public init(
         networkService: String,
@@ -554,7 +599,8 @@ public struct SystemProxySnapshot: Codable, Equatable, Sendable {
         webProxy: String = "",
         secureWebProxy: String = "",
         socksProxy: String = "",
-        bypassDomains: String = ""
+        bypassDomains: String = "",
+        autoProxy: String? = nil
     ) {
         self.networkService = networkService
         self.capturedAt = capturedAt
@@ -562,6 +608,116 @@ public struct SystemProxySnapshot: Codable, Equatable, Sendable {
         self.secureWebProxy = secureWebProxy
         self.socksProxy = socksProxy
         self.bypassDomains = bypassDomains
+        self.autoProxy = autoProxy
+    }
+
+    public var web: SystemProxyEndpointSnapshot { SystemProxyEndpointSnapshot(networkSetupOutput: webProxy) }
+    public var secureWeb: SystemProxyEndpointSnapshot { SystemProxyEndpointSnapshot(networkSetupOutput: secureWebProxy) }
+    public var socks: SystemProxyEndpointSnapshot { SystemProxyEndpointSnapshot(networkSetupOutput: socksProxy) }
+    public var autoProxyEnabled: Bool { proxyValue("Enabled", in: autoProxy ?? "") == "Yes" }
+    public var pacURL: String { proxyValue("URL", in: autoProxy ?? "") ?? "" }
+    public var bypassList: [String] {
+        bypassDomains.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.localizedCaseInsensitiveContains("There aren't") }
+    }
+    public var isCleared: Bool {
+        !web.isEnabled && !secureWeb.isEnabled && !socks.isEnabled && !autoProxyEnabled
+    }
+
+    private func proxyValue(_ key: String, in output: String) -> String? {
+        for line in output.split(separator: "\n") {
+            guard let separator = line.firstIndex(of: ":") else { continue }
+            guard line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines) == key else { continue }
+            return line[line.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+}
+
+public enum SystemProxyOwnership: String, Codable, CaseIterable, Sendable {
+    case owned
+    case takenOver
+    case cleared
+}
+
+/// The values Kumo actually applied. Later observations are compared with this
+/// record rather than with the user's latest, possibly unapplied, settings.
+public struct SystemProxyApplied: Codable, Equatable, Sendable {
+    public var networkService: String
+    public var mode: SystemProxyMode
+    public var host: String
+    public var port: Int
+    public var pacURL: String?
+    public var bypassList: [String]
+    public var appliedAt: Date
+
+    public init(
+        networkService: String,
+        mode: SystemProxyMode,
+        host: String,
+        port: Int,
+        pacURL: String? = nil,
+        bypassList: [String] = [],
+        appliedAt: Date = Date()
+    ) {
+        self.networkService = networkService
+        self.mode = mode
+        self.host = host
+        self.port = port
+        self.pacURL = pacURL
+        self.bypassList = bypassList
+        self.appliedAt = appliedAt
+    }
+
+    public func ownership(of observed: SystemProxySnapshot) -> SystemProxyOwnership {
+        guard observed.networkService == networkService else { return .takenOver }
+        if observed.isCleared { return .cleared }
+        switch mode {
+        case .manual:
+            let endpointsMatch = observed.web.pointsAt(host: host, port: port)
+                && observed.secureWeb.pointsAt(host: host, port: port)
+                && observed.socks.pointsAt(host: host, port: port)
+            let bypassMatches = Set(observed.bypassList) == Set(bypassList)
+            return endpointsMatch && !observed.autoProxyEnabled && bypassMatches ? .owned : .takenOver
+        case .pac:
+            let manualCleared = !observed.web.isEnabled && !observed.secureWeb.isEnabled && !observed.socks.isEnabled
+            return observed.autoProxyEnabled && observed.pacURL == (pacURL ?? "") && manualCleared ? .owned : .takenOver
+        }
+    }
+}
+
+public struct SystemProxyStatus: Codable, Equatable, Sendable {
+    /// What the user wants. This is independent from `active`.
+    public var enabled: Bool
+    /// Whether Kumo still has an applied record to observe or safely release.
+    public var active: Bool
+    public var ownership: SystemProxyOwnership?
+    public var settings: SystemProxySettings
+    public var applied: SystemProxyApplied?
+
+    public init(
+        enabled: Bool,
+        active: Bool,
+        ownership: SystemProxyOwnership? = nil,
+        settings: SystemProxySettings = SystemProxySettings(),
+        applied: SystemProxyApplied? = nil
+    ) {
+        self.enabled = enabled
+        self.active = active
+        self.ownership = ownership
+        self.settings = settings
+        self.applied = applied
+    }
+
+    public init(status: CoreStatus) {
+        self.init(
+            enabled: status.systemProxyEnabled,
+            active: status.systemProxyApplied != nil,
+            ownership: status.systemProxyOwnership,
+            settings: status.systemProxySettings ?? SystemProxySettings(),
+            applied: status.systemProxyApplied
+        )
     }
 }
 
@@ -586,6 +742,35 @@ public enum RuntimeOwnerTier: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// The most recent observed Mihomo process exit. This is additive state: older
+/// `state.json` files decode with `lastExit == nil`, and either an exit code or
+/// a terminating signal may be absent when only process disappearance was
+/// observable (for example after a GUI restart).
+public struct CoreExit: Codable, Equatable, Sendable {
+    public var time: Date
+    public var pid: Int32?
+    public var exitCode: Int32?
+    public var signal: Int32?
+    public var expected: Bool
+    public var message: String
+
+    public init(
+        time: Date = Date(),
+        pid: Int32? = nil,
+        exitCode: Int32? = nil,
+        signal: Int32? = nil,
+        expected: Bool,
+        message: String
+    ) {
+        self.time = time
+        self.pid = pid
+        self.exitCode = exitCode
+        self.signal = signal
+        self.expected = expected
+        self.message = message
+    }
+}
+
 public struct CoreStatus: Codable, Equatable, Sendable {
     public var state: CoreRunState
     public var pid: Int32?
@@ -601,10 +786,17 @@ public struct CoreStatus: Codable, Equatable, Sendable {
     public var runtimeSettings: CoreRuntimeSettings?
     public var systemProxySettings: SystemProxySettings?
     public var previousSystemProxySnapshot: SystemProxySnapshot?
+    /// Optional additions decode as nil in legacy state files.
+    public var systemProxyApplied: SystemProxyApplied?
+    public var systemProxyOwnership: SystemProxyOwnership?
     public var serviceModeStatus: ServiceModeStatus?
     public var tunStatus: TunStatus?
     public var readiness: CoreReadiness?
     public var message: String?
+    /// Kernel process start time used to detect PID reuse before status
+    /// recovery or signal delivery. Nil only for legacy/adopted states.
+    public var processStartTime: TimeInterval?
+    public var lastExit: CoreExit?
 
     public init(
         state: CoreRunState = .stopped,
@@ -618,10 +810,14 @@ public struct CoreStatus: Codable, Equatable, Sendable {
         runtimeSettings: CoreRuntimeSettings? = nil,
         systemProxySettings: SystemProxySettings? = nil,
         previousSystemProxySnapshot: SystemProxySnapshot? = nil,
+        systemProxyApplied: SystemProxyApplied? = nil,
+        systemProxyOwnership: SystemProxyOwnership? = nil,
         serviceModeStatus: ServiceModeStatus? = nil,
         tunStatus: TunStatus? = nil,
         readiness: CoreReadiness? = nil,
-        message: String? = nil
+        message: String? = nil,
+        processStartTime: TimeInterval? = nil,
+        lastExit: CoreExit? = nil
     ) {
         self.state = state
         self.pid = pid
@@ -634,10 +830,14 @@ public struct CoreStatus: Codable, Equatable, Sendable {
         self.runtimeSettings = runtimeSettings
         self.systemProxySettings = systemProxySettings
         self.previousSystemProxySnapshot = previousSystemProxySnapshot
+        self.systemProxyApplied = systemProxyApplied
+        self.systemProxyOwnership = systemProxyOwnership
         self.serviceModeStatus = serviceModeStatus
         self.tunStatus = tunStatus
         self.readiness = readiness
         self.message = message
+        self.processStartTime = processStartTime
+        self.lastExit = lastExit
     }
 }
 
@@ -765,11 +965,28 @@ public struct ProfileSummary: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+public enum ProxyDelayStatus: String, Codable, Equatable, Sendable {
+    /// A delay measured by the current test run.
+    case success
+    /// The current test run timed out. `delay` remains `0` for compatibility.
+    case timeout
+    /// A group references a proxy that is absent from `GET /proxies`.
+    case missing
+    /// The current test run failed. `delayError` contains the controller detail.
+    case error
+    /// A historical value, not a result from the current test run.
+    case stale
+}
+
 public struct ProxyNode: Identifiable, Codable, Equatable, Sendable {
     public var id: String { name }
     public var name: String
     public var type: String?
+    /// Kept for CLI and persistence compatibility. Failed current tests use
+    /// `nil`; current timeouts use `0`.
     public var delay: Int?
+    public var delayStatus: ProxyDelayStatus?
+    public var delayError: String?
     /// ISO 3166-1 alpha-2 region code inferred from the upstream server IP,
     /// populated asynchronously by `ProxyGeoLookup`. UI uses this as a
     /// fallback when parsing the node's display name cannot determine the
@@ -780,11 +997,15 @@ public struct ProxyNode: Identifiable, Codable, Equatable, Sendable {
         name: String,
         type: String? = nil,
         delay: Int? = nil,
+        delayStatus: ProxyDelayStatus? = nil,
+        delayError: String? = nil,
         detectedCountry: String? = nil
     ) {
         self.name = name
         self.type = type
         self.delay = delay
+        self.delayStatus = delayStatus
+        self.delayError = delayError
         self.detectedCountry = detectedCountry
     }
 }
@@ -990,17 +1211,27 @@ public struct CLIResponse<T: Encodable>: Encodable {
     public var ok: Bool
     public var data: T?
     public var error: String?
+    /// Structured details for a failed start. The legacy string error remains
+    /// in place so existing JSON consumers keep working.
+    public var portConflicts: [PortConflict]?
 
-    public init(ok: Bool, data: T? = nil, error: String? = nil) {
+    public init(
+        ok: Bool,
+        data: T? = nil,
+        error: String? = nil,
+        portConflicts: [PortConflict]? = nil
+    ) {
         self.ok = ok
         self.data = data
         self.error = error
+        self.portConflicts = portConflicts
     }
 
     private enum CodingKeys: String, CodingKey {
         case ok
         case data
         case error
+        case portConflicts
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1016,6 +1247,7 @@ public struct CLIResponse<T: Encodable>: Encodable {
         } else {
             try container.encodeNil(forKey: .error)
         }
+        try container.encodeIfPresent(portConflicts, forKey: .portConflicts)
     }
 }
 

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import KumoCoreKit
 
@@ -27,6 +28,53 @@ struct AgentBrandIcon: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+}
+
+/// Quiet, page-scoped Agent guidance. The menu and pasteboard action are shared
+/// by every main-window destination and Settings, and use the same prompt data
+/// as `kumo prompt <page> [intent]`.
+struct AgentPromptMenu: View {
+    let page: String
+    @State private var copiedIntent: String?
+
+    private var guide: AgentGuide? {
+        AgentGuidance.guide(for: page)
+    }
+
+    var body: some View {
+        if let guide, !guide.intents.isEmpty {
+            Menu {
+                ForEach(guide.intents) { intent in
+                    Button(intent.goal) {
+                        copy(intent)
+                    }
+                }
+            } label: {
+                Label(
+                    String(localized: "Copy Agent Prompt"),
+                    systemImage: copiedIntent == nil ? "terminal" : "checkmark"
+                )
+                .labelStyle(.iconOnly)
+            }
+            .menuStyle(.button)
+            .help(String(localized: "Copy Agent Prompt"))
+            .accessibilityLabel(String(localized: "Copy Agent Prompt"))
+            .task(id: copiedIntent) {
+                guard copiedIntent != nil else { return }
+                try? await Task.sleep(for: .seconds(1.6))
+                if !Task.isCancelled {
+                    copiedIntent = nil
+                }
+            }
+        }
+    }
+
+    private func copy(_ intent: AgentIntent) {
+        guard let prompt = try? AgentGuidance.prompt(page: page, intent: intent.id) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(prompt, forType: .string)
+        copiedIntent = intent.id
     }
 }
 

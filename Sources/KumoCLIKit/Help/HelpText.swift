@@ -12,8 +12,13 @@ enum HelpText {
         kumo status --json          show current Kumo runtime state
         kumo start                  start Kumo with the managed Mihomo core
         kumo doctor --json          inspect runtime, profile, and core candidates
+        kumo capabilities --json    discover the agent protocol and command catalog
+        kumo prompt <page> [intent] print task guidance for a coding agent
         kumo proxies                list proxy groups and selected proxies
         kumo rules --json           list Mihomo rules with enabled state
+        kumo topology --issues      diagnose unresolved topology references
+        kumo config diff --file <path> --json
+                                     preview generated config without writing
         kumo dns --json             show DNS runtime settings
         kumo agent status --json    show user-level agent (kumod) state
         kumo skills install --dry-run --json

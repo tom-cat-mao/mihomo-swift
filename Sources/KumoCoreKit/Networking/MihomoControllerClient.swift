@@ -7,13 +7,30 @@ public struct ControllerVersion: Codable, Equatable, Sendable {
 
 public struct MihomoControllerClient: Sendable {
     private static let defaultDelayTestURL = "https://www.gstatic.com/generate_204"
+    private static let maxFallbackDelayConcurrency = 8
+    private static let groupDelayUnsupportedStatuses: Set<Int> = [404, 405, 501]
+    private static let unreservedPathSegmentCharacters = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    )
 
     public var endpoint: ControllerEndpoint
     public var session: URLSession
 
-    public init(endpoint: ControllerEndpoint = ControllerEndpoint(), session: URLSession = .shared) {
+    public init(endpoint: ControllerEndpoint = ControllerEndpoint(), session: URLSession? = nil) {
         self.endpoint = endpoint
-        self.session = session
+        self.session = session ?? Self.makeControllerSession()
+    }
+
+    private static func makeControllerSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        // Controller traffic is local control-plane traffic. An empty proxy
+        // dictionary explicitly disables the system HTTP/HTTPS/SOCKS proxies.
+        configuration.connectionProxyDictionary = [:]
+        return URLSession(configuration: configuration)
+    }
+
+    private static func encodePathSegment(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: unreservedPathSegmentCharacters) ?? value
     }
 
     public func version() async throws -> ControllerVersion {
@@ -35,6 +52,17 @@ public struct MihomoControllerClient: Sendable {
 
     public func patchConfiguration(_ patch: [String: Any]) async throws {
         _ = try await sendJSON("/configs", method: "PATCH", body: patch)
+    }
+
+    /// Reloads a complete runtime file without restarting Mihomo. `force=true`
+    /// asks Mihomo to apply the candidate even when listener fields changed.
+    public func reloadConfiguration(path: String) async throws {
+        _ = try await sendJSON(
+            "/configs",
+            method: "PUT",
+            body: ["path": path],
+            query: ["force": "true"]
+        )
     }
 
     public func configuration() async throws -> CoreConfigurationSnapshot {
@@ -86,8 +114,14 @@ public struct MihomoControllerClient: Sendable {
 
                 let nodes = allNames.map { nodeName -> ProxyNode in
                     let proxy = proxies[nodeName]
-                    let delay = (proxies[nodeName]?["history"] as? [[String: Any]])?.last?["delay"] as? Int
-                    return ProxyNode(name: nodeName, type: proxy?["type"] as? String, delay: delay)
+                    let delay = intValue((proxy?["history"] as? [[String: Any]])?.last?["delay"])
+                    return ProxyNode(
+                        name: nodeName,
+                        type: proxy?["type"] as? String,
+                        delay: delay,
+                        delayStatus: proxy == nil ? .missing : (delay == nil ? nil : .stale),
+                        delayError: proxy == nil ? Self.missingProxyError : nil
+                    )
                 }
 
                 return ProxyGroup(
@@ -100,35 +134,207 @@ public struct MihomoControllerClient: Sendable {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// Actual selections for topology, including Mihomo's hidden GLOBAL group.
+    public func proxySelections() async throws -> [String: String] {
+        let root = try await sendJSON("/proxies", method: "GET")
+        guard let proxies = root["proxies"] as? [String: [String: Any]] else {
+            return [:]
+        }
+        return proxies.reduce(into: [String: String]()) { result, entry in
+            guard entry.value["all"] as? [String] != nil,
+                  let selected = entry.value["now"] as? String,
+                  !selected.isEmpty else {
+                return
+            }
+            result[entry.key] = selected
+        }
+    }
+
     public func selectProxy(group: String, name: String) async throws {
-        let encodedGroup = group.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? group
+        let encodedGroup = Self.encodePathSegment(group)
         _ = try await sendJSON("/proxies/\(encodedGroup)", method: "PUT", body: ["name": name])
     }
 
     public func proxyDelay(proxy: String, testURL: String? = nil) async throws -> Int? {
-        let encodedProxy = proxy.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? proxy
-        let delayURL = testURL?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requestURL: String
-        if let delayURL, !delayURL.isEmpty {
-            requestURL = delayURL
-        } else {
-            requestURL = Self.defaultDelayTestURL
-        }
-        let query = [
-            "url": requestURL,
-            "timeout": "5000"
-        ]
-        let object = try await sendJSON("/proxies/\(encodedProxy)/delay", method: "GET", query: query)
+        let encodedProxy = Self.encodePathSegment(proxy)
+        let object = try await sendJSON(
+            "/proxies/\(encodedProxy)/delay",
+            method: "GET",
+            query: delayQuery(testURL: testURL)
+        )
         return intValue(object["delay"])
     }
 
+    /// Uses Mihomo's batch endpoint first. Only an endpoint that explicitly
+    /// does not implement batch testing falls back to bounded per-node calls.
+    /// Other HTTP and transport failures are controller failures and propagate.
     public func groupDelay(group: ProxyGroup) async throws -> [ProxyNode] {
-        var nodes: [ProxyNode] = []
-        for proxy in group.proxies {
-            let delay = try? await proxyDelay(proxy: proxy.name, testURL: group.testURL)
-            nodes.append(ProxyNode(name: proxy.name, type: proxy.type, delay: delay ?? proxy.delay))
+        let path = "/group/\(Self.encodePathSegment(group.name))/delay"
+        do {
+            let data = try await sendData(
+                path,
+                method: "GET",
+                body: nil,
+                query: delayQuery(testURL: group.testURL)
+            )
+            let json = try JSONSerialization.jsonObject(with: data)
+            guard let values = json as? [String: Any] else {
+                throw KumoError.commandFailed("Controller returned an invalid group delay response for \(group.name).")
+            }
+            return group.proxies.map { proxy in
+                guard proxy.delayStatus != .missing else {
+                    return Self.missingDelayNode(for: proxy)
+                }
+                guard let value = values[proxy.name] else {
+                    return errorDelayNode(
+                        for: proxy,
+                        error: "Group delay response did not include this proxy."
+                    )
+                }
+                if value is NSNull {
+                    return measuredDelayNode(for: proxy, delay: nil)
+                }
+                if let object = value as? [String: Any] {
+                    if let delay = intValue(object["delay"]) {
+                        return measuredDelayNode(for: proxy, delay: delay)
+                    }
+                    if let message = object["error"] as? String ?? object["message"] as? String {
+                        return errorDelayNode(for: proxy, error: message)
+                    }
+                }
+                if let delay = intValue(value) {
+                    return measuredDelayNode(for: proxy, delay: delay)
+                }
+                if let message = value as? String {
+                    return errorDelayNode(for: proxy, error: message)
+                }
+                return errorDelayNode(
+                    for: proxy,
+                    error: "Controller returned an invalid delay value for this proxy."
+                )
+            }
+        } catch let error as KumoError {
+            guard case .controllerResponse(let status, _) = error,
+                  Self.groupDelayUnsupportedStatuses.contains(status) else {
+                throw error
+            }
+            return try await fallbackGroupDelay(group: group)
         }
-        return nodes
+    }
+
+    private func fallbackGroupDelay(group: ProxyGroup) async throws -> [ProxyNode] {
+        try await withThrowingTaskGroup(
+            of: (Int, ProxyNode).self,
+            returning: [ProxyNode].self
+        ) { tasks in
+            var results = Array<ProxyNode?>(repeating: nil, count: group.proxies.count)
+            var nextIndex = 0
+
+            for index in group.proxies.indices.prefix(Self.maxFallbackDelayConcurrency) {
+                let proxy = group.proxies[index]
+                tasks.addTask { [self] in
+                    let node = try await fallbackDelayNode(for: proxy, testURL: group.testURL)
+                    return (index, node)
+                }
+            }
+            nextIndex = min(Self.maxFallbackDelayConcurrency, group.proxies.count)
+
+            while let (index, node) = try await tasks.next() {
+                results[index] = node
+                if nextIndex < group.proxies.count {
+                    let next = nextIndex
+                    let proxy = group.proxies[next]
+                    tasks.addTask { [self] in
+                        let node = try await fallbackDelayNode(for: proxy, testURL: group.testURL)
+                        return (next, node)
+                    }
+                    nextIndex += 1
+                }
+            }
+            return results.compactMap { $0 }
+        }
+    }
+
+    private func fallbackDelayNode(for proxy: ProxyNode, testURL: String?) async throws -> ProxyNode {
+        guard proxy.delayStatus != .missing else {
+            return Self.missingDelayNode(for: proxy)
+        }
+        do {
+            let delay = try await proxyDelay(proxy: proxy.name, testURL: testURL)
+            return measuredDelayNode(for: proxy, delay: delay)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let status = delayStatus(for: error)
+            return ProxyNode(
+                name: proxy.name,
+                type: proxy.type,
+                delay: status == .timeout ? 0 : nil,
+                delayStatus: status,
+                delayError: Self.errorDescription(error),
+                detectedCountry: proxy.detectedCountry
+            )
+        }
+    }
+
+    private func delayStatus(for error: Error) -> ProxyDelayStatus {
+        if case .controllerResponse(let status, _)? = error as? KumoError {
+            return status == 408 || status == 504 ? .timeout : .error
+        }
+        if (error as? URLError)?.code == .timedOut {
+            return .timeout
+        }
+        return .error
+    }
+
+    private func delayQuery(testURL: String?) -> [String: String] {
+        let trimmed = testURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            "url": trimmed?.isEmpty == false ? trimmed! : Self.defaultDelayTestURL,
+            "timeout": "5000"
+        ]
+    }
+
+    private func measuredDelayNode(for proxy: ProxyNode, delay: Int?) -> ProxyNode {
+        let succeeded = delay.map { $0 > 0 } ?? false
+        return ProxyNode(
+            name: proxy.name,
+            type: proxy.type,
+            delay: succeeded ? delay : 0,
+            delayStatus: succeeded ? .success : .timeout,
+            delayError: succeeded ? nil : "The delay test timed out.",
+            detectedCountry: proxy.detectedCountry
+        )
+    }
+
+    private func errorDelayNode(for proxy: ProxyNode, error: String) -> ProxyNode {
+        ProxyNode(
+            name: proxy.name,
+            type: proxy.type,
+            delay: nil,
+            delayStatus: .error,
+            delayError: error,
+            detectedCountry: proxy.detectedCountry
+        )
+    }
+
+    private static var missingProxyError: String {
+        "Proxy is referenced by this group but is missing from GET /proxies."
+    }
+
+    private static func missingDelayNode(for proxy: ProxyNode) -> ProxyNode {
+        ProxyNode(
+            name: proxy.name,
+            type: proxy.type,
+            delay: nil,
+            delayStatus: .missing,
+            delayError: missingProxyError,
+            detectedCountry: proxy.detectedCountry
+        )
+    }
+
+    private static func errorDescription(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
     public func rules() async throws -> [RuleEntry] {
@@ -166,7 +372,7 @@ public struct MihomoControllerClient: Sendable {
     }
 
     public func updateProxyProvider(name: String) async throws {
-        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        let encodedName = Self.encodePathSegment(name)
         _ = try await sendJSON("/providers/proxies/\(encodedName)", method: "PUT")
     }
 
@@ -178,7 +384,7 @@ public struct MihomoControllerClient: Sendable {
     }
 
     public func updateRuleProvider(name: String) async throws {
-        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        let encodedName = Self.encodePathSegment(name)
         _ = try await sendJSON("/providers/rules/\(encodedName)", method: "PUT")
     }
 
@@ -249,7 +455,7 @@ public struct MihomoControllerClient: Sendable {
     }
 
     public func closeConnection(id: String) async throws {
-        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let encodedID = Self.encodePathSegment(id)
         _ = try await sendJSON("/connections/\(encodedID)", method: "DELETE")
     }
 
@@ -319,7 +525,7 @@ public struct MihomoControllerClient: Sendable {
 
     private func url(path: String, query: [String: String]) -> URL {
         var components = URLComponents(url: endpoint.baseURL, resolvingAgainstBaseURL: false)!
-        components.path = path.hasPrefix("/") ? path : "/\(path)"
+        components.percentEncodedPath = path.hasPrefix("/") ? path : "/\(path)"
         if !query.isEmpty {
             components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         }

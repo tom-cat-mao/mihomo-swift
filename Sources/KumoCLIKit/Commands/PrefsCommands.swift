@@ -21,6 +21,7 @@ extension KumoCommand {
             case hideMenuBarIcon
             case quitOnLastWindowClose
             case keepCoreRunningOnQuit
+            case reclaimSystemProxy
             case updateChannel
             case appLanguage
             case hasCompletedOnboarding
@@ -66,6 +67,8 @@ extension KumoCommand {
                     CLIRuntime.current.write(preferences.quitOnLastWindowClose) { "quitOnLastWindowClose=\($0)" }
                 case .keepCoreRunningOnQuit:
                     CLIRuntime.current.write(preferences.keepCoreRunningOnQuit) { "keepCoreRunningOnQuit=\($0)" }
+                case .reclaimSystemProxy:
+                    CLIRuntime.current.write(preferences.reclaimSystemProxy) { "reclaimSystemProxy=\($0)" }
                 case .updateChannel:
                     CLIRuntime.current.write(preferences.updateChannel) { "updateChannel=\($0.rawValue)" }
                 case .appLanguage:
@@ -128,7 +131,7 @@ enum PrefsValue: Equatable {
 
 func parsePrefsValue(_ raw: String, for key: KumoCommand.Prefs.Key) throws -> PrefsValue {
     switch key {
-    case .launchAtLogin, .hideMenuBarIcon, .quitOnLastWindowClose, .keepCoreRunningOnQuit, .hasCompletedOnboarding:
+    case .launchAtLogin, .hideMenuBarIcon, .quitOnLastWindowClose, .keepCoreRunningOnQuit, .reclaimSystemProxy, .hasCompletedOnboarding:
         // Boolean preferences are strict: no yes/no/1/0 aliases, so a typo
         // can never flip a lifecycle preference by accident.
         switch raw {
@@ -173,6 +176,7 @@ func applyPrefsValue(_ value: PrefsValue, for key: KumoCommand.Prefs.Key, to pre
         case .hideMenuBarIcon: preferences.hideMenuBarIcon = flag
         case .quitOnLastWindowClose: preferences.quitOnLastWindowClose = flag
         case .keepCoreRunningOnQuit: preferences.keepCoreRunningOnQuit = flag
+        case .reclaimSystemProxy: preferences.reclaimSystemProxy = flag
         case .hasCompletedOnboarding: preferences.hasCompletedOnboarding = flag
         case .updateChannel, .appLanguage:
             throw ValidationError("Invalid boolean value for \(key.rawValue).")
@@ -228,6 +232,8 @@ func prefsSetNotes(for key: KumoCommand.Prefs.Key) -> [String] {
         ["GUI-only preference; the CLI does not change the menu bar icon"]
     case .hasCompletedOnboarding:
         ["settable for recovery scenarios; the GUI re-opens onboarding when it is false"]
+    case .reclaimSystemProxy:
+        ["automatically reapplies a taken-over proxy while the GUI monitors it; external clears stay off"]
     case .quitOnLastWindowClose, .updateChannel, .appLanguage:
         []
     }
@@ -239,6 +245,7 @@ func prefsSnapshotSummary(_ preferences: PrefsSnapshot) -> String {
         "hideMenuBarIcon=\(preferences.hideMenuBarIcon)",
         "quitOnLastWindowClose=\(preferences.quitOnLastWindowClose)",
         "keepCoreRunningOnQuit=\(preferences.keepCoreRunningOnQuit)",
+        "reclaimSystemProxy=\(preferences.reclaimSystemProxy)",
         "updateChannel=\(preferences.updateChannel.rawValue)",
         "appLanguage=\(preferences.appLanguage ?? "system")",
         "hasCompletedOnboarding=\(preferences.hasCompletedOnboarding)"

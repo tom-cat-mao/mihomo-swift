@@ -23,6 +23,8 @@ Kumo/
     files/
   work/
     config.yaml
+  configuration-rollbacks/
+    <uuid>.json                 # committed pre-apply state, maximum 10
   logs/
     core.log
     core-<yyyyMMdd-HHmmss>.log
@@ -120,18 +122,29 @@ CoreKit import/export contract.
 `state.json` stores `CoreStatus`:
 
 - core run state
-- process identifier
+- process identifier and precise `processStartTime` identity timestamp
+- additive `lastExit` record (time, pid, code/signal, expected, message)
 - outbound mode
 - controller endpoint
 - mixed proxy port
-- system proxy state (including PAC `mode` and `pacScript`)
+- system proxy intent and settings (including PAC `mode` and `pacScript`)
+- optional `systemProxyApplied` (actual service/mode/endpoint/PAC URL/bypass)
+  and `systemProxyOwnership` (`owned` / `takenOver` / `cleared`); snapshots also
+  carry optional raw auto-proxy output. Missing fields in older state files
+  decode as `nil`.
 - controlled runtime settings, including TUN stack, routing, DNS, route
   exclusions, MTU, and ICMP forwarding preferences
 - last status message
 
 This allows the CLI and GUI to share state without requiring a service in v1.
 Runtime setting models must decode missing fields with defaults so app updates
-can add new TUN controls without invalidating an existing `state.json`.
+can add new TUN controls without invalidating an existing `state.json`. New TUN
+settings default to the `mips` stack, while legacy state without a `stack`
+field decodes as `mixed`; explicit `mixed`, `gvisor`, `system`, and `mips`
+values round-trip unchanged.
+Explicit port-conflict resolution updates the controller endpoint, mixed-port
+fields and stored system-proxy port in one state write; ordinary read-only
+conflict checks and unauthorized starts never alter these values.
 
 ## User Preferences
 
@@ -150,6 +163,9 @@ not affect Mihomo runtime):
   (user agent or root daemon) after the GUI quits. Decoded with
   `decodeIfPresent` so older `preferences.json` files without it default to
   `false` (today's stop-on-quit behavior).
+- `reclaimSystemProxy` — System Proxy → Automatically Reclaim. When true, the
+  GUI monitor reapplies a taken-over proxy while the core runs; an external
+  clear still turns intent off. Missing values default to `false`.
 - `updateChannel` (`stable` / `beta`) and `updateManifestURL` — feed
   `AppUpdateManager.checkForUpdate(...)`. A blank `updateManifestURL` uses
   Kumo's default GitHub Releases feed; a value overrides it for local testing
@@ -214,6 +230,15 @@ work/config.yaml
 ```
 
 Mihomo is launched with the work directory so it reads the generated config.
+
+Explicit `config apply` stores pre-apply rollback points in
+`configuration-rollbacks/`. Hidden pending files become `<uuid>.json` only after
+validation/install and any hot reload succeed. Committed points retain profile
+and override bodies/metadata, current profile id, related `CoreStatus`, and the
+last runtime YAML; the directory is `0700`, files are `0600`, and only the newest
+10 are retained. Snapshot bodies and secrets are never written to logs. A
+successful rollback consumes its point; a failed rollback leaves it in place.
+Read-only diff/validate never create this directory or any runtime log.
 
 ## Logs
 
@@ -298,9 +323,10 @@ overrides/
 
 `overrides.json` holds item metadata (name, kind, format, global/profile
 scope, remote URL, fingerprint) and `files/` holds each override body. YAML
-overrides are applied before Kumo-controlled runtime settings. JavaScript
-overrides can be stored and edited, but they are not applied until a reviewed
-sandbox exists.
+merges and JavaScript `main(config)` transforms run in repository order before
+Kumo-controlled runtime settings. JavaScript uses a fresh macOS JavaScriptCore
+shell process with no file, network, or process APIs and a 5-second timeout;
+failures identify the override and do not write a partial runtime config.
 
 ## Future Work
 

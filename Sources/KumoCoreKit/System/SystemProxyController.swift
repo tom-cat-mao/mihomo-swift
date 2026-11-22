@@ -103,15 +103,23 @@ public struct SystemProxyConfiguration: Codable, Equatable, Sendable {
     }
 }
 
+public typealias SystemProxyTargetPortProbe = @Sendable (String, Int) async -> Bool
+
 public struct SystemProxyController: Sendable {
     private let stateStore: CoreStateStore
     private let pacServer: PACServer
     private let commandRunner: SystemProxyCommandRunner
+    private let targetPortProbe: SystemProxyTargetPortProbe?
 
-    public init(paths: KumoPaths = KumoPaths(), commandRunner: SystemProxyCommandRunner = .live) {
+    public init(
+        paths: KumoPaths = KumoPaths(),
+        commandRunner: SystemProxyCommandRunner = .live,
+        targetPortProbe: SystemProxyTargetPortProbe? = nil
+    ) {
         self.stateStore = CoreStateStore(paths: paths)
         self.pacServer = PACServer()
         self.commandRunner = commandRunner
+        self.targetPortProbe = targetPortProbe
     }
 
     public func availableNetworkServices() throws -> [String] {
@@ -182,6 +190,9 @@ public struct SystemProxyController: Sendable {
             ),
             bypassDomains: commandRunner.captureOutput(
                 ShellCommand(executable: "/usr/sbin/networksetup", arguments: ["-getproxybypassdomains", networkService])
+            ),
+            autoProxy: commandRunner.captureOutput(
+                ShellCommand(executable: "/usr/sbin/networksetup", arguments: ["-getautoproxyurl", networkService])
             )
         )
     }
@@ -248,93 +259,159 @@ public struct SystemProxyController: Sendable {
     }
 
     /// Apply system proxy settings, branching on `configuration.mode`.
-    /// PAC mode starts a local `PACServer` and points macOS at it via
-    /// `-setautoproxyurl`; manual mode uses the legacy `-setwebproxy` family.
-    /// In `dryRun` no PAC server is started and no commands are executed,
-    /// but the would-be commands are returned for inspection.
+    /// Successful writes record the exact applied values. Dry-run returns the
+    /// would-be commands without starting PAC, executing commands, or writing state.
     @discardableResult
     public func setEnabled(
         _ isEnabled: Bool,
         configuration: SystemProxyConfiguration = SystemProxyConfiguration(),
         dryRun: Bool = false
     ) async throws -> [ShellCommand] {
+        guard isEnabled else {
+            if dryRun {
+                return disableCommands(networkService: configuration.networkService)
+                    + pacDisableCommands(networkService: configuration.networkService)
+            }
+            await pacServer.stop()
+            return try disableSynchronously(configuration: configuration)
+        }
+
         let commands: [ShellCommand]
         var pacURL: String?
-
-        if isEnabled {
-            switch configuration.mode {
-            case .manual:
-                if !dryRun {
-                    await pacServer.stop()
-                }
-                commands = enableCommands(configuration: configuration)
-                    + pacDisableCommands(networkService: configuration.networkService)
-            case .pac:
-                if dryRun {
-                    pacURL = "http://127.0.0.1:0/proxy.pac"
-                } else {
-                    let port = try await pacServer.start(script: Self.renderPACScript(configuration.pacScript, port: configuration.port))
-                    pacURL = "http://127.0.0.1:\(port)/proxy.pac"
-                }
-                commands = disableCommands(networkService: configuration.networkService)
-                    + pacEnableCommands(networkService: configuration.networkService, pacURL: pacURL ?? "http://127.0.0.1:0/proxy.pac")
-            }
-        } else {
-            if !dryRun {
-                await pacServer.stop()
-            }
-            commands = disableCommands(networkService: configuration.networkService)
+        switch configuration.mode {
+        case .manual:
+            commands = enableCommands(configuration: configuration)
                 + pacDisableCommands(networkService: configuration.networkService)
+        case .pac:
+            pacURL = dryRun ? "http://127.0.0.1:0/proxy.pac" : nil
+            commands = disableCommands(networkService: configuration.networkService)
+                + pacEnableCommands(
+                    networkService: configuration.networkService,
+                    pacURL: pacURL ?? "http://127.0.0.1:0/proxy.pac"
+                )
         }
+        if dryRun { return commands }
 
-        let previousSnapshot: SystemProxySnapshot?
-        if !dryRun && isEnabled {
-            previousSnapshot = try snapshot(networkService: configuration.networkService)
-        } else {
-            previousSnapshot = nil
-        }
-
-        if !dryRun {
-            if isEnabled {
-                try await verifyTargetPort(configuration: configuration)
-            }
-            try commands.forEach(commandRunner.run)
-            try verifyAppliedState(isEnabled: isEnabled, configuration: configuration, pacURL: pacURL)
-        }
-
+        // Settings may point at a new service. Release only the old applied
+        // record, and only if the old service still shows Kumo's values.
+        try releasePreviousServiceIfNeeded(configuration: configuration)
         var status = try stateStore.load()
-        status.systemProxyEnabled = isEnabled
-        var settings = SystemProxySettings(
+        let before = try snapshot(networkService: configuration.networkService)
+        let previousApplied = status.systemProxyApplied
+        if previousApplied == nil || previousApplied?.ownership(of: before) != .owned {
+            if previousApplied == nil || !before.isCleared {
+                status.previousSystemProxySnapshot = before
+            }
+        }
+
+        try await verifyTargetPort(configuration: configuration)
+        switch configuration.mode {
+        case .manual:
+            await pacServer.stop()
+        case .pac:
+            let port = try await pacServer.start(
+                script: Self.renderPACScript(configuration.pacScript, port: configuration.port)
+            )
+            pacURL = "http://127.0.0.1:\(port)/proxy.pac"
+        }
+        let appliedCommands: [ShellCommand]
+        if configuration.mode == .pac, let pacURL {
+            appliedCommands = disableCommands(networkService: configuration.networkService)
+                + pacEnableCommands(networkService: configuration.networkService, pacURL: pacURL)
+        } else {
+            appliedCommands = commands
+        }
+        try appliedCommands.forEach(commandRunner.run)
+
+        let after = try snapshot(networkService: configuration.networkService)
+        let applied = SystemProxyApplied(
+            networkService: configuration.networkService,
+            mode: configuration.mode,
+            host: configuration.host,
+            port: configuration.port,
+            pacURL: pacURL,
+            bypassList: configuration.mode == .manual ? after.bypassList : []
+        )
+        guard applied.ownership(of: after) == .owned else {
+            throw KumoError.commandFailed("macOS did not apply Kumo's \(configuration.mode.rawValue) proxy settings to \(configuration.networkService).")
+        }
+
+        status.systemProxyEnabled = true
+        status.systemProxyApplied = applied
+        status.systemProxyOwnership = .owned
+        status.systemProxySettings = SystemProxySettings(
             networkService: configuration.networkService,
             host: configuration.host,
             port: configuration.port,
-            bypassList: configuration.bypassList
+            mode: configuration.mode,
+            bypassList: configuration.bypassList,
+            pacScript: configuration.pacScript
         )
-        settings.mode = configuration.mode
-        settings.pacScript = configuration.pacScript
-        status.systemProxySettings = settings
-        if isEnabled {
-            status.previousSystemProxySnapshot = previousSnapshot
-        } else {
-            status.previousSystemProxySnapshot = nil
-        }
         try stateStore.save(status)
+        return appliedCommands
+    }
 
+    /// Re-reads only the service in the applied record. A foreign takeover is
+    /// retained for Reclaim; a foreign clear ends Kumo's enable intent so the
+    /// next poll cannot repeatedly turn it back on.
+    @discardableResult
+    public func reconcileOwnership() throws -> CoreStatus {
+        var status = try stateStore.load()
+        guard let applied = status.systemProxyApplied else { return status }
+        let ownership = applied.ownership(of: try snapshot(networkService: applied.networkService))
+        var changed = status.systemProxyOwnership != ownership
+        status.systemProxyOwnership = ownership
+        if ownership == .cleared {
+            status.systemProxyEnabled = false
+            status.systemProxyApplied = nil
+            changed = true
+        }
+        if changed { try stateStore.save(status) }
+        return status
+    }
+
+    /// Releases Kumo's applied record without touching values written by
+    /// another application. `preserveIntent` is used by stop/guardian cleanup;
+    /// explicit disable and quit pass false.
+    @discardableResult
+    public func disableSynchronously(
+        configuration: SystemProxyConfiguration = SystemProxyConfiguration(),
+        preserveIntent: Bool = false
+    ) throws -> [ShellCommand] {
+        var status = try stateStore.load()
+        guard let applied = status.systemProxyApplied else {
+            if !preserveIntent { status.systemProxyEnabled = false }
+            status.systemProxyOwnership = nil
+            try stateStore.save(status)
+            return []
+        }
+
+        let observed = try snapshot(networkService: applied.networkService)
+        let ownership = applied.ownership(of: observed)
+        var commands: [ShellCommand] = []
+        if ownership == .owned {
+            commands = disableCommands(networkService: applied.networkService)
+                + pacDisableCommands(networkService: applied.networkService)
+            try commands.forEach(commandRunner.run)
+            let after = try snapshot(networkService: applied.networkService)
+            guard after.isCleared else {
+                throw KumoError.commandFailed("macOS did not clear Kumo's proxy settings for \(applied.networkService).")
+            }
+        }
+
+        if !preserveIntent { status.systemProxyEnabled = false }
+        status.systemProxyApplied = nil
+        status.systemProxyOwnership = nil
+        // Keep the previous snapshot for the existing restoration workflow.
+        try stateStore.save(status)
         return commands
     }
 
-    @discardableResult
-    public func disableSynchronously(configuration: SystemProxyConfiguration = SystemProxyConfiguration()) throws -> [ShellCommand] {
-        let commands = disableCommands(networkService: configuration.networkService)
-            + pacDisableCommands(networkService: configuration.networkService)
-        try commands.forEach(commandRunner.run)
-
-        var status = try stateStore.load()
-        status.systemProxyEnabled = false
-        status.previousSystemProxySnapshot = nil
-        try stateStore.save(status)
-
-        return commands
+    private func releasePreviousServiceIfNeeded(configuration: SystemProxyConfiguration) throws {
+        let status = try stateStore.load()
+        guard let applied = status.systemProxyApplied,
+              applied.networkService != configuration.networkService else { return }
+        _ = try disableSynchronously(configuration: configuration, preserveIntent: true)
     }
 
     public static func renderPACScript(_ script: String, port: Int) -> String {
@@ -345,55 +422,13 @@ public struct SystemProxyController: Sendable {
         guard configuration.port > 0 else {
             throw KumoError.commandFailed("System proxy port must be greater than zero.")
         }
-        let canConnect = await canConnect(to: configuration.host, port: configuration.port)
+        let canConnect = if let targetPortProbe {
+            await targetPortProbe(configuration.host, configuration.port)
+        } else {
+            await canConnect(to: configuration.host, port: configuration.port)
+        }
         guard canConnect else {
             throw KumoError.commandFailed("System proxy target \(configuration.host):\(configuration.port) is not accepting connections.")
-        }
-    }
-
-    private func verifyAppliedState(isEnabled: Bool, configuration: SystemProxyConfiguration, pacURL: String?) throws {
-        let webProxy = try commandRunner.captureOutput(
-            ShellCommand(executable: "/usr/sbin/networksetup", arguments: ["-getwebproxy", configuration.networkService])
-        )
-        let secureWebProxy = try commandRunner.captureOutput(
-            ShellCommand(executable: "/usr/sbin/networksetup", arguments: ["-getsecurewebproxy", configuration.networkService])
-        )
-        let socksProxy = try commandRunner.captureOutput(
-            ShellCommand(executable: "/usr/sbin/networksetup", arguments: ["-getsocksfirewallproxy", configuration.networkService])
-        )
-        let autoProxy = try commandRunner.captureOutput(
-            ShellCommand(executable: "/usr/sbin/networksetup", arguments: ["-getautoproxyurl", configuration.networkService])
-        )
-
-        if !isEnabled {
-            guard [webProxy, secureWebProxy, socksProxy, autoProxy].allSatisfy({ $0.contains("Enabled: No") }) else {
-                throw KumoError.commandFailed("macOS did not disable every Kumo-managed proxy setting for \(configuration.networkService).")
-            }
-            return
-        }
-
-        switch configuration.mode {
-        case .manual:
-            let expected = [webProxy, secureWebProxy, socksProxy]
-            guard expected.allSatisfy({ output in
-                output.contains("Enabled: Yes")
-                    && output.contains("Server: \(configuration.host)")
-                    && output.contains("Port: \(configuration.port)")
-            }) else {
-                throw KumoError.commandFailed("macOS did not apply manual proxy \(configuration.host):\(configuration.port) to \(configuration.networkService).")
-            }
-            guard autoProxy.contains("Enabled: No") else {
-                throw KumoError.commandFailed("macOS auto proxy is still enabled after applying manual proxy.")
-            }
-        case .pac:
-            guard [webProxy, secureWebProxy, socksProxy].allSatisfy({ $0.contains("Enabled: No") }) else {
-                throw KumoError.commandFailed("macOS manual proxies are still enabled after applying PAC mode.")
-            }
-            guard let pacURL,
-                  autoProxy.contains("Enabled: Yes"),
-                  autoProxy.contains(pacURL) else {
-                throw KumoError.commandFailed("macOS did not apply PAC proxy URL for \(configuration.networkService).")
-            }
         }
     }
 

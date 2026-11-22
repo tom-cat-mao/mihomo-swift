@@ -27,7 +27,7 @@ updates, and backup workflows.
 | Profiles | Remote profile refresh | implemented | `ProfileRepository` | Remote subscriptions refresh manually and on due intervals. |
 | Profiles | Subscription metadata retention | partial | `ProfileRepository` | Headers persist name, home URL, update interval, user info, UA, and fingerprint. |
 | Overrides | Ordered YAML overrides | implemented | `OverrideRepository` | Global and profile-scoped YAML overrides persist, apply in documented order, and are covered by tests. |
-| Overrides | JavaScript transforms | deferred | `OverrideRepository` | Requires a reviewed sandbox strategy before enablement. |
+| Overrides | JavaScript transforms | implemented | `RuntimeConfigBuilder` / `JavaScriptOverrideExecutor` | `main(config)` transforms run in repository order through macOS JavaScriptCore with no host file/network/process APIs and a real 5-second timeout; failures name the override and do not write partial configuration. |
 | Controller | Proxy groups and selection | implemented | `MihomoControllerClient` | Groups load, filter hidden entries, and allow node selection. |
 | Controller | Outbound mode switching | implemented | `KumoAppStore` / `MihomoControllerClient` | Rule / Global / Direct changes persist locally, PATCH Mihomo `/configs`, close existing connections, and refresh proxy groups without blocking the Start / Stop toolbar action. |
 | Controller | Rules, connections, providers, geo updates | partial | `MihomoControllerClient` | Inspect and Configure pages expose controller actions without direct UI clients. |
@@ -54,15 +54,13 @@ updates, and backup workflows.
 
 1. Harden service mode: notarized helper distribution, automatic repair, and
    proxy-guard events.
-2. Design and review the JavaScript override sandbox.
-3. Add core lifecycle event streams and JSON schemas for automation consumers.
-4. Extend root-daemon route parity, service-side log streaming, and
+2. Add core lifecycle event streams and JSON schemas for automation consumers.
+3. Extend root-daemon route parity, service-side log streaming, and
    helper-hosted PAC hosting.
 
 ## Non-Goals
 
 - Do not port Sparkle's Electron renderer or giant IPC surface.
-- Do not add JavaScript overrides until sandboxing and audit behavior are
-  explicitly designed.
+- Do not expose host file, network, or process APIs to JavaScript overrides.
 - Do not move TUN, PAC guard, or privileged networking into the primary daily
   workflow; they stay behind Configure and explicit helper installation.

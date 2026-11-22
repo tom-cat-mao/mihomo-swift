@@ -106,6 +106,7 @@ final class BackendRouterTests: XCTestCase {
         try stateStore.save(CoreStatus(
             state: .running,
             pid: pid,
+            corePath: LiveCoreProcessInspector().snapshot(pid: pid)?.executablePath,
             runtimeSettings: CoreRuntimeSettings(tun: TunSettings(isEnabled: true))
         ))
         let controller = makeController(

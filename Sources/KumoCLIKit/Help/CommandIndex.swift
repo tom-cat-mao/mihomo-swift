@@ -14,6 +14,8 @@ enum CommandIndex {
         let abstract: String
         let aliases: [String]
         let children: [Entry]
+        let hasDefaultSubcommand: Bool
+        let defaultSubcommandName: String?
 
         var commandPath: String { path.joined(separator: " ") }
         var isLeaf: Bool { children.isEmpty }
@@ -24,11 +26,13 @@ enum CommandIndex {
         }
     }
 
+    private static let tree: [Entry] = entries(for: KumoCommand.configuration.subcommands, parentPath: [])
+
     /// Every node in the tree, depth-first in declaration order.
-    static let all: [Entry] = entries(for: KumoCommand.configuration.subcommands, parentPath: [])
+    static let all: [Entry] = tree + tree.flatMap(\.descendants)
 
     /// The canonical commands shown by `kumo -h`.
-    static let topLevel: [Entry] = all.filter { $0.path.count == 1 }
+    static let topLevel: [Entry] = tree
 
     /// Commands with no subcommands; these are the runnable leaves.
     static let leaves: [Entry] = all.filter(\.isLeaf)
@@ -63,7 +67,9 @@ enum CommandIndex {
                 path: path,
                 abstract: type.configuration.abstract,
                 aliases: type.configuration.aliases,
-                children: entries(for: type.configuration.subcommands, parentPath: path)
+                children: entries(for: type.configuration.subcommands, parentPath: path),
+                hasDefaultSubcommand: type.configuration.defaultSubcommand != nil,
+                defaultSubcommandName: type.configuration.defaultSubcommand?._commandName
             )
         }
     }

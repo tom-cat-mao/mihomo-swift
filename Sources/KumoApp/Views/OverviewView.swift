@@ -198,6 +198,11 @@ private struct ProxyGroupSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             header
+            if let summary = store.delayTestSummary(for: group) {
+                ProxyDelaySummaryView(summary: summary)
+                    .padding(.horizontal, 30)
+                    .padding(.vertical, 3)
+            }
             if effectiveExpansion {
                 ForEach(group.proxies) { proxy in
                     ProxyNodeRow(group: group, proxy: proxy, isReadOnly: isReadOnly)
@@ -297,7 +302,7 @@ private struct ProxyNodeRow: View {
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                DelayBadge(delay: proxy.delay)
+                DelayBadge(proxy: proxy)
 
                 Image(systemName: "checkmark")
                     .font(.caption2.weight(.bold))
@@ -355,11 +360,9 @@ private struct ProxyNodeRow: View {
     }
 
     private var accessibilityValue: String {
-        var parts: [String] = []
+        var parts = [ProxyDelayPresentation.text(for: proxy)]
         if isSelected { parts.append("Selected") }
-        if let delay = proxy.delay {
-            parts.append(delay == 0 ? "Timeout" : "\(delay) ms")
-        }
+        if let error = proxy.delayError { parts.append(error) }
         return parts.joined(separator: ", ")
     }
 }
@@ -400,26 +403,15 @@ private struct CountryFlagIcon: View {
 }
 
 private struct DelayBadge: View {
-    let delay: Int?
+    let proxy: ProxyNode
 
     var body: some View {
-        Text(text)
+        Text(ProxyDelayPresentation.text(for: proxy))
             .font(.caption2.weight(.medium))
             .monospacedDigit()
-            .foregroundStyle(color)
+            .foregroundStyle(ProxyDelayPresentation.color(for: proxy))
             .lineLimit(1)
-    }
-
-    private var text: String {
-        guard let delay else { return "—" }
-        if delay == 0 { return "timeout" }
-        return "\(delay) ms"
-    }
-
-    private var color: Color {
-        guard let delay else { return .secondary }
-        if delay == 0 { return .red }
-        return delay < 300 ? .green : .orange
+            .help(proxy.delayError ?? ProxyDelayPresentation.text(for: proxy))
     }
 }
 

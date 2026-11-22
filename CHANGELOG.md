@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-22
+
+### Added
+- Transactional configuration control: `kumo config diff|validate|apply|rollback`
+  provides side-effect-free previews, real Mihomo validation, bounded pre-apply
+  snapshots, and explicit LIFO rollback without replacing the running process
+  identity. Profile edit/update/delete and override mutations now share the
+  same preflight, hot-reload, and failure-recovery path.
+- Agent protocol 1.1: `kumo capabilities --json` describes executable commands,
+  parameters, access/risk levels, dry-run, validation, and rollback support;
+  `kumo prompt` and native SwiftUI prompt menus expose matching task guidance.
+- Native SwiftUI configuration topology plus `kumo topology [--issues] --json`,
+  including active paths, dynamic membership, unresolved references, search,
+  and a text inspector.
+- Structured mixed/controller port conflicts with holder metadata, suggested
+  free ports, explicit `kumo start --resolve-ports`, and a confirmation-based
+  SwiftUI resolution flow.
+- System proxy ownership (`owned`, `takenOver`, `cleared`), safe cleanup,
+  `kumo sysproxy status|reclaim`, and opt-in automatic reclaim.
+- Ordered JavaScript `main(config)` overrides with isolated JavaScriptCore
+  execution and a five-second timeout; TUN adds the MIPS stack while preserving
+  legacy stored stack values.
+- Hermetic Tart L2 acceptance (`Scripts/dev/tart-l2-smoke.sh`) for the real root
+  daemon, system proxy, MIPS TUN, configuration transactions and crash recovery,
+  with guest-result collection and automatic disposable-VM cleanup.
+
+### Changed
+- Core launch and required restart validate an independent candidate with
+  `mihomo -t` before replacing the last known-good configuration or stopping a
+  running core. Running profile and override changes use forced hot reload.
+- Delay tests prefer Mihomo's native group endpoint, fall back only for
+  unsupported endpoints with at most eight concurrent requests, and expose
+  success, timeout, missing, error, and stale results without hiding failures.
+- Core supervision records process identity and unexpected exits, detects PID
+  reuse and zombies, and performs bounded recovery (2/5/15 seconds, three
+  attempts, stable-run budget reset). The existing two-tier TUN ownership model
+  is unchanged.
+- Core auto-install now runs only when no usable core candidate exists, and
+  unbundled SwiftPM UI smoke runs skip bundle-only notification setup.
+
+### Fixed
+- Restart port probes now match Mihomo's `SO_REUSEADDR` behavior, so a recently
+  closed controller's `TIME_WAIT` sockets are not misreported as an unknown live
+  process during TUN and other required restarts. Active listeners still fail
+  closed with structured conflicts.
+
 ## [0.0.18] - 2026-10-09
 
 ### Changed

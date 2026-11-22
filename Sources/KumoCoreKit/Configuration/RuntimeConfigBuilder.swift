@@ -49,36 +49,75 @@ public struct RuntimeConfigBuilder: Sendable {
     }
 
     public func build(profile: Profile, overrideYAMLs: [String] = []) throws -> RuntimeConfig {
-        let yaml = try mergedRuntimeYAML(profileYAML: profile.rawYAML, overrideYAMLs: overrideYAMLs)
+        let overrides = overrideYAMLs.enumerated().map { index, yaml in
+            RuntimeOverride(name: "YAML override \(index + 1)", format: .yaml, content: yaml)
+        }
+        return try build(profile: profile, overrides: overrides)
+    }
+
+    public func build(profile: Profile, overrides: [RuntimeOverride]) throws -> RuntimeConfig {
+        let transformedProfile = try applyingOverrides(overrides, to: profile)
+        var document = try StructuredYAMLDocument(rawYAML: transformedProfile.rawYAML)
+        document.removeTopLevelKeys(controlledTopLevelKeys())
+        let yaml = [
+            try document.renderedYAML(),
+            controlledConfigYAML()
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
 
         return RuntimeConfig(yaml: yaml, endpoint: endpoint, proxyPorts: proxyPorts)
     }
 
     public func write(profile: Profile, overrideYAMLs: [String] = [], to url: URL) throws -> RuntimeConfig {
         let config = try build(profile: profile, overrideYAMLs: overrideYAMLs)
+        return try write(config, to: url)
+    }
+
+    public func write(profile: Profile, overrides: [RuntimeOverride], to url: URL) throws -> RuntimeConfig {
+        let config = try build(profile: profile, overrides: overrides)
+        return try write(config, to: url)
+    }
+
+    /// Applies user-owned transforms without adding or removing Kumo-controlled
+    /// keys. The launch path uses this before handing a complete profile to the
+    /// unchanged supervisor, whose existing builder applies final ownership.
+    public func applyingOverrides(_ overrides: [RuntimeOverride], to profile: Profile) throws -> Profile {
+        var document = try StructuredYAMLDocument(rawYAML: profile.rawYAML)
+        let executor = JavaScriptOverrideExecutor()
+
+        for override in overrides {
+            do {
+                switch override.format {
+                case .yaml:
+                    try document.merge(StructuredYAMLDocument(rawYAML: override.content))
+                case .javascript:
+                    let transformed = try executor.apply(
+                        script: override.content,
+                        configuration: document.mapping
+                    )
+                    document.replaceMapping(with: transformed)
+                }
+            } catch {
+                let format = override.format == .yaml ? "YAML" : "JavaScript"
+                throw KumoError.invalidArguments(
+                    "\(format) override \"\(override.name)\" failed: \(error.localizedDescription)"
+                )
+            }
+        }
+
+        var transformed = profile
+        transformed.rawYAML = try document.renderedYAML()
+        return transformed
+    }
+
+    private func write(_ config: RuntimeConfig, to url: URL) throws -> RuntimeConfig {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         try config.yaml.data(using: .utf8)?.write(to: url, options: .atomic)
         return config
-    }
-
-    private func mergedRuntimeYAML(profileYAML: String, overrideYAMLs: [String]) throws -> String {
-        var document = try StructuredYAMLDocument(rawYAML: profileYAML)
-
-        for overrideYAML in overrideYAMLs {
-            try document.merge(StructuredYAMLDocument(rawYAML: overrideYAML))
-        }
-
-        document.removeTopLevelKeys(controlledTopLevelKeys())
-
-        return [
-            try document.renderedYAML(),
-            controlledConfigYAML()
-        ]
-        .filter { !$0.isEmpty }
-        .joined(separator: "\n\n")
     }
 
     private func controlledConfigYAML() -> String {
@@ -354,7 +393,7 @@ public struct RuntimeConfigBuilder: Sendable {
 }
 
 private struct StructuredYAMLDocument {
-    private var mapping: [String: Any]
+    fileprivate var mapping: [String: Any]
 
     init(rawYAML: String) throws {
         let trimmed = rawYAML.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -373,6 +412,10 @@ private struct StructuredYAMLDocument {
 
     mutating func merge(_ override: StructuredYAMLDocument) {
         mapping.mergeRuntimeOverride(override.mapping)
+    }
+
+    mutating func replaceMapping(with mapping: [String: Any]) {
+        self.mapping = mapping
     }
 
     mutating func removeTopLevelKeys(_ keys: Set<String>) {

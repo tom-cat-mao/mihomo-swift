@@ -49,7 +49,7 @@ extension KumoCommand {
         struct Add: AsyncParsableCommand {
             static let configuration = CommandConfiguration(
                 abstract: "Add a local or remote override.",
-                discussion: "Local overrides read --file <path> or --stdin; remote overrides fetch --url directly, without the proxy. Overrides merge into the runtime config on the next core start; --restart restarts a running core to apply the change immediately."
+                discussion: "Local overrides read --file <path> or --stdin; remote overrides fetch --url directly, without the proxy. A running core preflights and hot-reloads the change; --restart additionally restarts it."
             )
 
             @Option(name: .long, help: "Read the override body from a local file.")
@@ -60,11 +60,11 @@ extension KumoCommand {
             var url: String?
             @Option(name: .long, help: "Override name. Required for local overrides.")
             var name: String?
-            @Option(name: .long, help: "Override format: yaml (applied to the runtime config) or js (stored only).")
+            @Option(name: .long, help: "Override format: yaml (structured merge) or js (main(config) transform).")
             var format: OverrideFormatOption = .yaml
-            @Flag(name: .long, help: "Mark the override global (stored; global overrides are not applied to the runtime config yet).")
+            @Flag(name: .long, help: "Mark the override global.")
             var global = false
-            @Flag(name: .long, help: "Restart the core when it is running so the override takes effect now.")
+            @Flag(name: .long, help: "Also restart the running core after the transactional hot reload.")
             var restart = false
             @Flag(name: .long, help: "Validate the local override without writing it.")
             var dryRun = false
@@ -128,7 +128,7 @@ extension KumoCommand {
                     throw ValidationError("Provide --name <name> for a local override.")
                 }
                 let body = try readOverrideBody(file: file, stdin: stdin)
-                let report = try OverrideCommandSupport.addLocal(
+                let report = try await OverrideCommandSupport.addLocal(
                     controller: controller,
                     name: name,
                     content: body,
@@ -148,7 +148,7 @@ extension KumoCommand {
         struct Update: AsyncParsableCommand {
             static let configuration = CommandConfiguration(
                 abstract: "Replace an override's body.",
-                discussion: "Keeps the item's name, kind, format, and flags. Applies on the next core start; --restart restarts a running core to apply the change immediately."
+                discussion: "Keeps the item's name, kind, format, and flags. A running core preflights and hot-reloads the change; --restart additionally restarts it."
             )
 
             @Argument(help: "Override id shown by `kumo override list`.")
@@ -157,7 +157,7 @@ extension KumoCommand {
             var file: String?
             @Flag(name: .long, help: "Read the new override body from stdin.")
             var stdin = false
-            @Flag(name: .long, help: "Restart the core when it is running so the override takes effect now.")
+            @Flag(name: .long, help: "Also restart the running core after the transactional hot reload.")
             var restart = false
             @OptionGroup var options: CLIOptions
 
@@ -173,7 +173,7 @@ extension KumoCommand {
             mutating func run() async throws {
                 try options.install()
                 let body = try readOverrideBody(file: file, stdin: stdin)
-                let report = try OverrideCommandSupport.update(
+                let report = try await OverrideCommandSupport.update(
                     controller: CLIRuntime.current.controller,
                     id: id,
                     content: body,
@@ -188,14 +188,14 @@ extension KumoCommand {
         struct Delete: AsyncParsableCommand {
             static let configuration = CommandConfiguration(
                 abstract: "Delete an override.",
-                discussion: "Unknown ids fail instead of silently doing nothing. Applies on the next core start; --restart restarts a running core to apply the change immediately."
+                discussion: "Unknown ids fail instead of silently doing nothing. A running core preflights and hot-reloads the change; --restart additionally restarts it."
             )
 
             @Argument(help: "Override id shown by `kumo override list`.")
             var id: String
             @Flag(name: .long, help: "Preview the deletion without writing.")
             var dryRun = false
-            @Flag(name: .long, help: "Restart the core when it is running so the override takes effect now.")
+            @Flag(name: .long, help: "Also restart the running core after the transactional hot reload.")
             var restart = false
             @OptionGroup var options: CLIOptions
 
@@ -207,7 +207,7 @@ extension KumoCommand {
 
             mutating func run() async throws {
                 try options.install()
-                let report = try OverrideCommandSupport.delete(
+                let report = try await OverrideCommandSupport.delete(
                     controller: CLIRuntime.current.controller,
                     id: id,
                     dryRun: dryRun,
@@ -224,18 +224,18 @@ extension KumoCommand {
         struct Reorder: AsyncParsableCommand {
             static let configuration = CommandConfiguration(
                 abstract: "Reorder overrides by id.",
-                discussion: "Moves the listed ids to the front in the given order; unlisted ids keep their relative order after them. Applies on the next core start; --restart restarts a running core to apply the change immediately."
+                discussion: "Moves the listed ids to the front in the given order; unlisted ids keep their relative order after them. A running core preflights and hot-reloads the change; --restart additionally restarts it."
             )
 
             @Option(name: .long, help: "Comma-separated override ids in the new order.")
             var ids: String
-            @Flag(name: .long, help: "Restart the core when it is running so the override takes effect now.")
+            @Flag(name: .long, help: "Also restart the running core after the transactional hot reload.")
             var restart = false
             @OptionGroup var options: CLIOptions
 
             mutating func run() async throws {
                 try options.install()
-                let report = try OverrideCommandSupport.reorder(
+                let report = try await OverrideCommandSupport.reorder(
                     controller: CLIRuntime.current.controller,
                     ids: ids,
                     restart: restart
@@ -300,11 +300,13 @@ enum OverrideCommandSupport {
         isGlobal: Bool,
         dryRun: Bool,
         restart: Bool
-    ) throws -> OverrideMutationReport {
+    ) async throws -> OverrideMutationReport {
         let warnings = addWarnings(format: format, isGlobal: isGlobal)
         if dryRun {
             if format == .yaml {
                 try validateYAML(content)
+            } else {
+                try validateJavaScript(content, name: name)
             }
             return OverrideMutationReport(
                 id: nil,
@@ -319,7 +321,7 @@ enum OverrideCommandSupport {
             )
         }
 
-        let item = try controller.addLocalOverride(name: name, format: format, content: content, isGlobal: isGlobal)
+        let item = try await controller.createLocalOverride(name: name, format: format, content: content, isGlobal: isGlobal)
         let restarted = try restartCoreIfRunning(controller: controller, requested: restart)
         return mutationReport(item: item, warnings: warnings, restartRequested: restart, restarted: restarted)
     }
@@ -333,19 +335,19 @@ enum OverrideCommandSupport {
         restart: Bool
     ) async throws -> OverrideMutationReport {
         let warnings = addWarnings(format: format, isGlobal: isGlobal)
-        let item = try await controller.addRemoteOverride(url: url, name: name, format: format, isGlobal: isGlobal)
+        let item = try await controller.createRemoteOverride(url: url, name: name, format: format, isGlobal: isGlobal)
         let restarted = try restartCoreIfRunning(controller: controller, requested: restart)
         return mutationReport(item: item, warnings: warnings, restartRequested: restart, restarted: restarted)
     }
 
-    static func update(controller: KumoController, id: String, content: String, restart: Bool) throws -> OverrideMutationReport {
+    static func update(controller: KumoController, id: String, content: String, restart: Bool) async throws -> OverrideMutationReport {
         let item = try existingItem(controller: controller, id: id)
-        try controller.updateOverride(item, content: content)
+        try await controller.changeOverride(item, content: content)
         let restarted = try restartCoreIfRunning(controller: controller, requested: restart)
         return mutationReport(item: item, warnings: [], restartRequested: restart, restarted: restarted)
     }
 
-    static func delete(controller: KumoController, id: String, dryRun: Bool, restart: Bool) throws -> OverrideDeleteReport {
+    static func delete(controller: KumoController, id: String, dryRun: Bool, restart: Bool) async throws -> OverrideDeleteReport {
         let item = try existingItem(controller: controller, id: id)
         if dryRun {
             return OverrideDeleteReport(
@@ -356,7 +358,7 @@ enum OverrideCommandSupport {
                 restarted: false
             )
         }
-        try controller.deleteOverride(id: id)
+        try await controller.removeOverride(id: id)
         let restarted = try restartCoreIfRunning(controller: controller, requested: restart)
         return OverrideDeleteReport(
             id: id,
@@ -367,7 +369,7 @@ enum OverrideCommandSupport {
         )
     }
 
-    static func reorder(controller: KumoController, ids rawIDs: String, restart: Bool) throws -> OverrideReorderReport {
+    static func reorder(controller: KumoController, ids rawIDs: String, restart: Bool) async throws -> OverrideReorderReport {
         let ids = parseIDList(rawIDs)
         guard !ids.isEmpty else {
             throw ValidationError("Provide at least one override id via --ids <id1,id2,...>.")
@@ -380,7 +382,7 @@ enum OverrideCommandSupport {
         for id in ids where !existing.contains(id) {
             throw ValidationError("Unknown override id: \(id)")
         }
-        try controller.reorderOverrides(ids: ids)
+        try await controller.changeOverrideOrder(ids: ids)
         let restarted = try restartCoreIfRunning(controller: controller, requested: restart)
         return OverrideReorderReport(ids: ids, restartRequested: restart, restarted: restarted)
     }
@@ -403,17 +405,8 @@ enum OverrideCommandSupport {
         return true
     }
 
-    /// Audit-driven caveats surfaced on `add`: JS bodies are stored but never
-    /// merged, and `isGlobal` has no runtime effect yet.
     static func addWarnings(format: OverrideFormat, isGlobal: Bool) -> [String] {
-        var warnings: [String] = []
-        if format == .javascript {
-            warnings.append("JavaScript overrides are stored but never merged; only YAML overrides are applied.")
-        }
-        if isGlobal {
-            warnings.append("Global overrides are stored but are not applied to the runtime config yet.")
-        }
-        return warnings
+        []
     }
 
     /// Parses the body with the same YAML loader the runtime config builder
@@ -425,6 +418,18 @@ enum OverrideCommandSupport {
             _ = try RuntimeConfigBuilder().build(profile: profile, overrideYAMLs: [content])
         } catch {
             throw ValidationError("The override YAML is invalid: \(error.localizedDescription)")
+        }
+    }
+
+    static func validateJavaScript(_ content: String, name: String) throws {
+        let profile = Profile(name: "override-validation", source: .inline, rawYAML: "")
+        do {
+            _ = try RuntimeConfigBuilder().build(
+                profile: profile,
+                overrides: [RuntimeOverride(name: name, format: .javascript, content: content)]
+            )
+        } catch {
+            throw ValidationError("The override JavaScript is invalid: \(error.localizedDescription)")
         }
     }
 
@@ -518,7 +523,7 @@ private func overrideEffectText(restartRequested: Bool, restarted: Bool) -> Stri
         return "core restarted"
     }
     if restartRequested {
-        return "takes effect on next core start (core not running)"
+        return "core not running; takes effect on next core start"
     }
-    return "takes effect on next core start"
+    return "saved; hot reload applies to a running core"
 }

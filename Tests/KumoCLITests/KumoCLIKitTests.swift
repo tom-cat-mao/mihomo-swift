@@ -15,6 +15,29 @@ final class KumoCLIKitTests: XCTestCase {
         XCTAssertEqual(object["error"] as? String, "boom")
     }
 
+    func testCLIResponsePreservesStructuredPortConflicts() throws {
+        let conflicts = [PortConflict(
+            role: .mixed,
+            host: "127.0.0.1",
+            port: 7890,
+            pid: 42,
+            processName: "mihomo",
+            suggestedPort: 7891
+        )]
+        let response = CLIResponse<String>(ok: false, error: "port occupied", portConflicts: conflicts)
+        let data = try JSONEncoder().encode(response)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(object["error"] as? String, "port occupied")
+        let encoded = try XCTUnwrap(object["portConflicts"] as? [[String: Any]])
+        XCTAssertEqual(encoded.first?["role"] as? String, "mixed")
+        XCTAssertEqual(encoded.first?["host"] as? String, "127.0.0.1")
+        XCTAssertEqual(encoded.first?["port"] as? Int, 7890)
+        XCTAssertEqual(encoded.first?["pid"] as? Int, 42)
+        XCTAssertEqual(encoded.first?["processName"] as? String, "mihomo")
+        XCTAssertEqual(encoded.first?["suggestedPort"] as? Int, 7891)
+    }
+
     func testTopLevelHelpUsesNPMStylePrompts() {
         XCTAssertTrue(HelpText.topLevel.contains("kumo <command> -h"))
         XCTAssertTrue(HelpText.topLevel.contains("kumo -l"))
@@ -103,6 +126,8 @@ final class KumoCLIKitTests: XCTestCase {
 
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["sysproxy", "on", "--dry-run", "--json"]))
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["sysproxy", "off"]))
+        XCTAssertNoThrow(try KumoCommand.parseAsRoot(["sysproxy", "status", "--json"]))
+        XCTAssertNoThrow(try KumoCommand.parseAsRoot(["sysproxy", "reclaim", "--dry-run", "--json"]))
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["sysproxy", "set", "--bypass", "a,b", "--json"]))
         XCTAssertNoThrow(try KumoCommand.parseAsRoot(["sysproxy", "set", "--file", "/tmp/proxy.json"]))
 
@@ -203,10 +228,11 @@ final class KumoCLIKitTests: XCTestCase {
     }
 
     func testProxyDelayAndAgentReportsEncodeStableKeys() throws {
-        let delay = try JSONEncoder().encode(ProxyDelayReport(proxy: "HK-01", url: nil, delay: 42))
+        let delay = try JSONEncoder().encode(ProxyDelayReport(proxy: "HK-01", url: nil, delay: 42, delayStatus: .success))
         let delayObject = try XCTUnwrap(JSONSerialization.jsonObject(with: delay) as? [String: Any])
         XCTAssertEqual(delayObject["proxy"] as? String, "HK-01")
         XCTAssertEqual(delayObject["delay"] as? Int, 42)
+        XCTAssertEqual(delayObject["delayStatus"] as? String, "success")
 
         let status = ServiceModeStatus(isInstalled: true, isRunning: false, isAvailable: false, isCurrentProcessPrivileged: false, socketPath: "/tmp/a.sock", message: nil)
         let report = try JSONEncoder().encode(
@@ -345,7 +371,7 @@ final class KumoCLIKitTests: XCTestCase {
             XCTAssertTrue(HelpText.topLevel.contains(entry.name), "missing command: \(entry.name)")
         }
         XCTAssertTrue(HelpText.topLevel.contains("select"))
-        XCTAssertEqual(KumoCommand.configuration.version, "0.0.17")
+        XCTAssertEqual(KumoCommand.configuration.version, "0.1.0")
         XCTAssertTrue(HelpText.topLevel.contains("kumo@\(KumoCommand.configuration.version)"))
     }
 
@@ -374,7 +400,7 @@ final class KumoCLIKitTests: XCTestCase {
             "cli-link", "service",
             "agent", "providers", "test", "logs", "traffic", "connections",
             "backup", "core", "config", "doctor", "runtime-events", "substore",
-            "skills", "completion"
+            "skills", "capabilities", "prompt", "completion"
         ]
         let topLevelNames = Set(CommandIndex.topLevel.map(\.name))
         for name in documented {

@@ -74,7 +74,9 @@ struct OverridesView: View {
         }
         .sheet(item: $newDraft) { draft in
             NewOverrideSheet(draft: draft) { editedDraft in
-                let template = editedDraft.format == .yaml ? "# Kumo YAML override\n" : "// Kumo JavaScript override\n"
+                let template = editedDraft.format == .yaml
+                    ? "# Kumo YAML override\n"
+                    : "// Return the complete modified configuration.\nfunction main(config) {\n    return config\n}\n"
                 Task {
                     await store.addLocalOverride(
                         name: editedDraft.name,

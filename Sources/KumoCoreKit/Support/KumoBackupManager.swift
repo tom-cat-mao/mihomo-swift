@@ -82,6 +82,8 @@ public struct KumoBackupManager: Sendable {
             restored.pid = nil
             restored.readiness = nil
             restored.systemProxyEnabled = false
+            restored.systemProxyApplied = nil
+            restored.systemProxyOwnership = nil
             try store.save(restored)
         } catch {
             // Never leave an unsanitized state file behind: an undecodable

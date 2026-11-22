@@ -16,16 +16,17 @@ The current implementation starts Mihomo with a generated work directory. The ge
 `CoreSupervisor` handles:
 
 - Preparing application support directories.
-- Writing the runtime configuration.
-- Probing the controller port so a second core is never spawned onto a busy
-  control endpoint.
+- Building a candidate runtime configuration, validating it with `mihomo -t`,
+  and atomically installing it only after validation succeeds.
+- Probing both mixed proxy and controller ports before spawning.
 - Rotating `logs/core.log` before each launch.
-- Starting Mihomo with `Process`.
-- Recording the process identifier in state and `work/core.pid`.
-- Stopping recorded processes with a graceful signal escalation path.
-- Detecting stale process identifiers without mistaking foreign-owned live
-  processes for dead ones.
-- Recording runtime lifecycle events.
+- Starting Mihomo with `Process` and observing `terminationHandler`.
+- Recording the process identifier and kernel start time in state and
+  `work/core.pid`.
+- Stopping recorded processes with identity-checked graceful signal escalation.
+- Detecting dead, zombie, foreign, and PID-reused records without signalling a
+  process whose identity does not match.
+- Recording expected and unexpected exits plus runtime lifecycle events.
 
 Stop uses both the persisted status PID and the `work/core.pid` fallback, then
 escalates through `SIGINT`, `SIGTERM`, and `SIGKILL`. For child processes
@@ -34,27 +35,33 @@ while waiting so exited children are reaped instead of being mistaken for
 still-running zombie processes. When a stop succeeds, the PID file and stored
 PID are cleared together. Status checks also consult `work/core.pid`, so Kumo
 can recover a running state when the JSON state lost its PID but the managed
-core is still alive.
+core's identity still matches.
 
-### Liveness and ownership
+### Liveness, identity, and exit records
 
-Liveness is decided by `kill(pid, 0)` plus errno:
+`kill(pid, 0)` is only an existence check. `CoreProcessInspector` additionally
+reads `proc_pidinfo` for the kernel start time and zombie state, and uses
+`proc_pidpath` for legacy executable-path adoption. `CoreStatus.processStartTime`
+stores the precise timestamp numerically so JSON persistence does not lose the
+fractional seconds needed for identity comparison. A reused PID, a missing
+identity, or a zombie is never treated as permission to send a signal. EPERM
+still means that a foreign-owned process exists, but an unverifiable identity
+cannot be stopped locally; the request must go through its owning tier.
 
-- `0` — the process exists and the caller may signal it.
-- `ESRCH` — the process is gone. This is the only outcome that proves death.
-- `EPERM` — the process exists but is owned by another user, which is the
-  normal case for a core started as root by the privileged helper while the
-  app or CLI runs unprivileged. `CoreSupervisor` treats this as **alive**.
+Every supervised launch records `CoreStatus.lastExit` with time, pid, exit code
+or signal, `expected`, and a message. Expected stops become `stopped` and clear
+ownership. Unexpected exits become `failed`, retain `ownerTier` for status and
+notification consumers, append the latest core fatal log line when available,
+and emit `core.exit_unexpected`. The same supervisor runs inside local mode,
+the user agent, and the root daemon, so all three owners share this behavior
+without changing `BackendRouter` or TUN ownership routing.
 
-Because EPERM counts as alive, stale-pid cleanup (`core.stale_pid`) only fires
-on genuine death, so an unprivileged status check can no longer clear the PID
-record of a live root-owned core and let a later `start()` double-launch. When
-a stop is attempted against a process the caller cannot signal,
-`terminateProcess` fails fast on EPERM instead of waiting through the signal
-escalation timeouts, and `stop()` reports a failed state that names the
-unreachable PID. The PID record is kept rather than cleared, so the CLI does
-not print `Mihomo core stopped.` for a core that is still running; stopping
-such a core requires the privileged helper or an administrator.
+Unexpected exits have bounded automatic recovery: at most three attempts with
+2/5/15 second backoff, reset after a launch remains stable for five minutes.
+An explicit start/stop cancels pending recovery. Expected stops, configuration
+preflight failures, and port conflicts do not schedule another attempt.
+Recovery events are `core.recovery_scheduled`, `core.recovered`,
+`core.recovery_failed`, and `core.recovery_exhausted`.
 
 ### State ownership and bookkeeping tolerance
 
@@ -88,18 +95,72 @@ after which every non-root bookkeeping write failed with `EACCES` and
   throw when they cannot be persisted. A silently unrecorded pid would mean a
   core the next `status()` or `stop()` cannot find or stop.
 
-### Single-instance guard
+### Single-instance guard and port diagnostics
 
-Before clearing the PID record and spawning, `CoreSupervisor.start()` probes
-the configured external-controller address (`endpoint.host:endpoint.port`,
-for example `127.0.0.1:9097`) with a blocking TCP connect capped at about one
-second. Any successful connection — or, equivalently, any HTTP response on
-`GET /version` — means another process already owns the controller port, and
-`start()` throws `KumoError.controllerPortInUse` without spawning anything.
-Every spawn path funnels through `CoreSupervisor.start()`, so the app, the CLI,
-and the privileged helper all share the guard. A process that is already
-running but no longer recorded is reported instead of being joined by a second
-core.
+Before clearing the PID record and spawning, `CoreSupervisor.start()` checks
+both the mixed listener and the external-controller address with real local
+TCP bind probes. The mixed probe uses `0.0.0.0` when Allow LAN is enabled and
+`127.0.0.1` otherwise. Both probes enable `SO_REUSEADDR`, matching Mihomo's Go
+listener: a recently closed controller's `TIME_WAIT` tail must remain reusable
+across restart, while an actively listening socket still fails the bind. A
+shared mixed/controller port is also a conflict even when nothing else occupies
+it. Every spawn path funnels through this guard, so the app, CLI, root daemon
+and user agent all reject the launch before spawning a second core.
+
+A failure throws `KumoError.portConflicts`, whose entries carry `role`, `host`,
+`port`, optional `pid` / `processName`, and `suggestedPort`. The small
+`LocalPortInspector` wrapper owns the bind probes, `/usr/sbin/lsof` listener
+lookup and suggestion scan. Process fields stay absent when macOS cannot
+identify the holder; Kumo never guesses one. Suggestions avoid both configured
+ports and the other role's suggestion.
+
+`KumoController.portConflicts()` is the read-only check. Only an explicit
+`resolvePortConflicts()` call, `start(resolvePortConflicts: true)`, CLI
+`kumo start --resolve-ports`, or the GUI's **Use Free Ports** confirmation may
+persist new ports. Resolution updates `runtimeSettings.mixedPort`,
+`proxyPorts.mixedPort`, the controller endpoint and stored system-proxy port
+together. After the controller becomes ready, an already-enabled system proxy
+is reapplied through the existing system-proxy controller so it targets the
+new mixed listener. A normal start never changes ports silently. Service
+start requests carry the same opt-in flag, and a 409 response preserves the
+structured conflict array rather than flattening it into an error string.
+
+### Configuration validation and hot reload
+
+Every start and required restart builds a separate candidate file and runs
+`mihomo -t -d <work> -f <candidate>` with a 15-second bound. A timed-out
+validator is terminated and waited on so the child is reaped rather than left
+as a zombie. Validation output is preserved in
+`KumoError.configurationValidationFailed`, including the core's real fatal
+message. The existing `work/config.yaml` is replaced atomically only after
+success; restart preflight runs before stopping the old core.
+
+`KumoController.reloadRuntimeConfiguration()` applies the same transaction to a
+running core with `MihomoControllerClient.reloadConfiguration(path:)`, which
+sends `PUT /configs?force=true`. `activateProfile(id:)`, current-profile YAML
+edits, current-profile deletion, subscription refresh, and the
+`create/change/remove/reorder` override APIs snapshot their repository state
+first. Metadata-only updates, non-current edits, and non-current deletion do
+not request a reload. A failed validation or reload restores profile bodies,
+metadata, `current.txt`, override bodies/metadata, and the previous runtime
+file as applicable. After an ambiguous transport failure Kumo also offers the
+previous file back to the still-running core. The two-tier owner and TUN routing
+are not changed by hot reload.
+
+The same supervisor exposes `install:false` validation for `config validate`.
+That path runs the real core against a unique temporary work directory, does
+not append runtime events, and never installs or temporarily rewrites
+`work/config.yaml`. `diffConfiguration(profileYAML:)` only builds in memory and
+returns a stable unified diff against the last installed file.
+
+`applyConfiguration(profileYAML:)` wraps the existing profile transaction with
+a pending durable pre-apply point. Promotion happens only after validation,
+installation, and any forced hot reload succeed. `rollbackConfiguration()`
+restores the newest committed point and consumes it only after its own preflight
+and hot reload succeed; failure restores the pre-rollback state and retains the
+point. State restoration is limited to configuration inputs, preserving current
+process identity/owner/readiness/exit and system-proxy observations. Committed
+history is bounded to 10 private snapshots.
 
 ### Core log rotation
 
@@ -245,6 +306,12 @@ top-level blocks and appends Kumo-controlled TUN settings:
 - `tun.mtu`
 - `tun.device` (macOS only, when prefixed with `utun`)
 
+`tun.stack` accepts `mixed`, `gvisor`, `system`, and `mips`. New settings
+default to `mips`; state written before MIPS support that has no `stack` field
+still decodes as `mixed`, and all existing explicit stack values are retained.
+The UI and CLI help note that MIPS requires Mihomo 1.19.32 or later, and the
+CLI rejects unknown stack values instead of silently normalizing them.
+
 On macOS, Kumo only writes a configured TUN device name when it already starts
 with `utun`, matching the platform's virtual interface naming rules. If no
 privileged helper or privileged process is available, TUN enable requests are
@@ -333,6 +400,7 @@ application pattern.
 - `PATCH /configs`
 - `GET /proxies`
 - `PUT /proxies/{group}`
+- `GET /group/{group}/delay`
 - `GET /proxies/{proxy}/delay`
 - `GET /rules`
 - `PATCH /rules/disable`
@@ -349,6 +417,32 @@ application pattern.
 - `GET /memory` over WebSocket
 
 It maps proxy groups into `ProxyGroup`, proxy names into `ProxyNode`, rules into `RuleEntry`, and connections into `ConnectionEntry`.
+
+### Delay testing
+
+Group tests prefer `GET /group/{group}/delay`. Only an HTTP 404, 405, or 501
+response (an unsupported batch endpoint) selects the per-node fallback; the
+fallback runs at most eight requests concurrently. Other HTTP, decoding, and
+transport failures fail the group request instead of producing apparently
+successful nodes. Dynamic URL components are encoded as one path segment using
+the RFC 3986 unreserved set, so a slash inside a group or proxy name becomes
+`%2F`, not a path separator or a double-encoded `%252F`.
+
+`ProxyNode.delay` remains compatible with existing CLI consumers. The additive
+`delayStatus` (`success`, `timeout`, `missing`, `error`, or `stale`) and
+`delayError` fields distinguish the current outcome:
+
+- A current success keeps its measured milliseconds; a current timeout keeps
+  `delay == 0`. A current error has no delay and carries the actual HTTP or
+  transport detail. Historical values never fill a failed current result.
+- A delay read from `/proxies` history is `stale`, not a new measurement.
+- A group member absent from the `/proxies` dictionary is `missing`; fallback
+  sends no request for that member.
+
+Single-proxy `proxyDelay` still throws non-2xx responses as
+`KumoError.controllerResponse(status, body)`. The fallback catches per-node
+errors only to attach them to that node; it never converts a batch-controller
+failure into a successful group result.
 
 ## Sparkle-Parity Controller Surface
 
@@ -369,10 +463,12 @@ CLI exposes the same operations (`kumo rules`, `kumo providers update`,
 
 ## Current Transport
 
-Local mode uses HTTP through `URLSession` to talk to Mihomo's external
-controller. Service mode uses Kumo's signed Unix socket transport to ask
-`KumoService` to perform privileged lifecycle operations, while the helper-owned
-Mihomo process still exposes its normal external-controller API.
+Local mode uses HTTP through a dedicated ephemeral `URLSession` whose proxy
+dictionary is explicitly empty, so controller requests never traverse the
+system HTTP, HTTPS, or SOCKS proxy. Tests can still inject a mocked session.
+Service mode uses Kumo's signed Unix socket transport to ask `KumoService` to
+perform privileged lifecycle operations, while the helper-owned Mihomo process
+still exposes its normal external-controller API.
 
 ## Error Handling
 
@@ -381,7 +477,6 @@ Controller failures are surfaced as `KumoError.controllerResponse(status, body)`
 ## Future Work
 
 - Add resilient reconnect policies for event streams.
-- Add restart policies.
 - Add provider initialization progress.
 - Add provider content preview APIs (listing and update already ship).
 - Add cache limits for live log streaming.

@@ -5,6 +5,7 @@ import KumoCoreKit
 struct SystemProxyView: View {
     @Environment(KumoAppStore.self) private var store
     @State private var systemProxyDraft = SystemProxySettings()
+    @State private var isReclaiming = false
 
     var body: some View {
         // Normalized once per pass: the Reset and Apply enablements each used to
@@ -12,6 +13,26 @@ struct SystemProxyView: View {
         let draft = normalizedSystemProxyDraft
         return KumoPage(title: "System Proxy") {
             Form {
+                Section {
+                    LabeledContent(String(localized: "State"), value: ownershipText)
+                    if store.status.systemProxyOwnership == .takenOver {
+                        Label(String(localized: "Another application changed the system proxy."), systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Button(String(localized: "Reclaim")) {
+                            isReclaiming = true
+                            Task {
+                                await store.reclaimSystemProxy()
+                                isReclaiming = false
+                            }
+                        }
+                        .disabled(isReclaiming)
+                    } else if store.status.systemProxyOwnership == .cleared {
+                        Text(String(localized: "System proxy was cleared outside Kumo."))
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle(String(localized: "Automatically Reclaim"), isOn: automaticReclaimBinding)
+                }
+
                 Section {
                     Toggle(String(localized: "Enable System Proxy"), isOn: Binding {
                         store.status.systemProxyEnabled
@@ -85,6 +106,25 @@ struct SystemProxyView: View {
             if systemProxyDraft == oldValue {
                 systemProxyDraft = newValue
             }
+        }
+    }
+
+    private var ownershipText: String {
+        switch store.status.systemProxyOwnership {
+        case .owned: String(localized: "Owned")
+        case .takenOver: String(localized: "Taken Over")
+        case .cleared: String(localized: "Cleared")
+        case nil: store.status.systemProxyEnabled ? String(localized: "Waiting") : String(localized: "Off")
+        }
+    }
+
+    private var automaticReclaimBinding: Binding<Bool> {
+        Binding {
+            store.preferences.reclaimSystemProxy
+        } set: { value in
+            var preferences = store.preferences
+            preferences.reclaimSystemProxy = value
+            Task { await store.updatePreferences(preferences) }
         }
     }
 

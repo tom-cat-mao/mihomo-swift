@@ -240,7 +240,7 @@ extension KumoController {
     func normalizedTunSettings(_ settings: TunSettings) -> TunSettings {
         var settings = settings
         settings.mtu = max(576, min(9000, settings.mtu))
-        settings.stack = ["mixed", "gvisor", "system"].contains(settings.stack) ? settings.stack : "mixed"
+        settings.stack = TunSettings.supportedStacks.contains(settings.stack) ? settings.stack : "mixed"
         settings.dnsHijack = normalizedList(settings.dnsHijack)
         settings.routeExcludeAddress = normalizedList(settings.routeExcludeAddress)
         settings.device = settings.device?.trimmingCharacters(in: .whitespacesAndNewlines)

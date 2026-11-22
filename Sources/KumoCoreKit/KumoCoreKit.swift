@@ -33,6 +33,7 @@ public struct KumoController: Sendable {
     let profileParseCache: ProfileParseCache
     let overrideRepository: OverrideRepository
     let supervisor: CoreSupervisor
+    let portInspector: any PortInspecting
     let stateStore: CoreStateStore
     let systemProxyController: SystemProxyController
     let coreInstaller: CoreInstaller
@@ -55,19 +56,23 @@ public struct KumoController: Sendable {
     let tierOperations: TierOperationsOverride?
     /// Test seam: replaces the controller HTTP readiness wait.
     let readinessWaiter: (@Sendable () async throws -> Void)?
+    /// Test seam: observes full-config hot reloads without a live controller.
+    let configurationReloader: (@Sendable (String) async throws -> Void)?
     let useServiceBackend: Bool
 
     public init(
         paths: KumoPaths = KumoPaths(),
         useServiceBackend: Bool = true,
         ownerTier: RuntimeOwnerTier = .localSupervisor,
-        systemProxyCommandRunner: SystemProxyCommandRunner = .live
+        systemProxyCommandRunner: SystemProxyCommandRunner = .live,
+        systemProxyTargetPortProbe: SystemProxyTargetPortProbe? = nil
     ) {
         self.init(
             paths: paths,
             useServiceBackend: useServiceBackend,
             ownerTier: ownerTier,
             systemProxyCommandRunner: systemProxyCommandRunner,
+            systemProxyTargetPortProbe: systemProxyTargetPortProbe,
             reachability: nil,
             serviceModeStatusProvider: nil,
             tierOperations: nil,
@@ -80,18 +85,27 @@ public struct KumoController: Sendable {
         useServiceBackend: Bool,
         ownerTier: RuntimeOwnerTier = .localSupervisor,
         systemProxyCommandRunner: SystemProxyCommandRunner,
+        systemProxyTargetPortProbe: SystemProxyTargetPortProbe? = nil,
         reachability: BackendReachability?,
         serviceModeStatusProvider: (@Sendable () -> ServiceModeStatus)?,
         tierOperations: TierOperationsOverride?,
-        readinessWaiter: (@Sendable () async throws -> Void)?
+        readinessWaiter: (@Sendable () async throws -> Void)?,
+        portInspector: (any PortInspecting)? = nil,
+        configurationReloader: (@Sendable (String) async throws -> Void)? = nil
     ) {
         self.paths = paths
         self.profileRepository = ProfileRepository(paths: paths)
         self.profileParseCache = ProfileParseCache(profiles: ProfileRepository(paths: paths))
         self.overrideRepository = OverrideRepository(paths: paths)
-        self.supervisor = CoreSupervisor(paths: paths, ownerTier: ownerTier)
+        let portInspector = portInspector ?? LocalPortInspector()
+        self.portInspector = portInspector
+        self.supervisor = CoreSupervisor(paths: paths, ownerTier: ownerTier, portInspector: portInspector)
         self.stateStore = CoreStateStore(paths: paths)
-        self.systemProxyController = SystemProxyController(paths: paths, commandRunner: systemProxyCommandRunner)
+        self.systemProxyController = SystemProxyController(
+            paths: paths,
+            commandRunner: systemProxyCommandRunner,
+            targetPortProbe: systemProxyTargetPortProbe
+        )
         self.coreInstaller = CoreInstaller(paths: paths)
         self.subStoreManager = SubStoreManager(paths: paths)
         self.backupManager = KumoBackupManager(paths: paths)
@@ -108,14 +122,16 @@ public struct KumoController: Sendable {
         self.serviceModeStatusProvider = serviceModeStatusProvider
         self.tierOperations = tierOperations
         self.readinessWaiter = readinessWaiter
+        self.configurationReloader = configurationReloader
         self.useServiceBackend = useServiceBackend
     }
 
     public func status() throws -> CoreStatus {
+        let coreStatus: CoreStatus
         let decision = router.decideCoreBackend(tunEnabled: currentTunEnabled())
         if let client = serviceClient(for: decision) {
             do {
-                return try client.sendDecodable(client.statusRequest(), as: CoreStatus.self)
+                coreStatus = try client.sendDecodable(client.statusRequest(), as: CoreStatus.self)
             } catch {
                 // A tier that answered the reachability probe can still fail
                 // this call (restart, socket churn). The shared state file plus
@@ -124,10 +140,12 @@ public struct KumoController: Sendable {
                 routingLogger.warning(
                     "Status read through \(decision.backend?.rawValue ?? "none", privacy: .public) failed; falling back to the shared state: \(error.localizedDescription, privacy: .public)"
                 )
-                return try supervisor.status()
+                coreStatus = try supervisor.status()
             }
+        } else {
+            coreStatus = try supervisor.status()
         }
-        return try supervisor.status()
+        return try observingSystemProxyOwnership(fallback: coreStatus)
     }
 
     public func currentProfile() throws -> ProfileSummary {
@@ -172,37 +190,102 @@ public struct KumoController: Sendable {
         return result
     }
 
+    /// Reports every mixed/controller listener conflict without changing the
+    /// stored configuration. Process details remain nil when lsof cannot prove
+    /// them; no process is inferred from the port alone.
+    public func portConflicts() throws -> [PortConflict] {
+        let status = try stateStore.load()
+        let settings = runtimeSettings(for: status)
+        return portInspector.conflicts(
+            mixedHost: settings.allowLAN ? "0.0.0.0" : "127.0.0.1",
+            mixedPort: settings.mixedPort,
+            controllerHost: status.endpoint.host,
+            controllerPort: status.endpoint.port
+        )
+    }
+
+    /// Explicitly moves conflicting listeners to their suggested free ports.
+    /// Normal starts never call this operation implicitly.
     @discardableResult
-    public func start(corePath: String? = nil) throws -> CoreStatus {
-        if corePath == nil {
-            return try performTierStart(try requiredCoreBackend())
+    public func resolvePortConflicts() throws -> [PortConflict] {
+        let conflicts = try portConflicts()
+        guard !conflicts.isEmpty else { return [] }
+        guard conflicts.allSatisfy({ $0.suggestedPort != nil }) else {
+            throw KumoError.portConflicts(conflicts)
         }
-        return try startLocalCore(corePath: corePath)
+
+        var status = try stateStore.load()
+        var settings = runtimeSettings(for: status)
+        for conflict in conflicts {
+            guard let suggestedPort = conflict.suggestedPort else { continue }
+            switch conflict.role {
+            case .mixed:
+                settings.mixedPort = suggestedPort
+                status.proxyPorts.mixedPort = suggestedPort
+                status.systemProxySettings?.port = suggestedPort
+            case .controller:
+                status.endpoint.port = suggestedPort
+            }
+        }
+        status.runtimeSettings = settings
+        status.message = "Moved to free ports: \(conflicts.map(\.displayMessage).joined(separator: " "))"
+        try stateStore.save(status)
+        return conflicts
+    }
+
+    @discardableResult
+    public func start(corePath: String? = nil, resolvePortConflicts: Bool = false) throws -> CoreStatus {
+        if corePath == nil {
+            return try performTierStart(try requiredCoreBackend(), resolvePortConflicts: resolvePortConflicts)
+        }
+        return try startLocalCore(corePath: corePath, resolvePortConflicts: resolvePortConflicts)
     }
 
     /// Direct-mode launch: generate the runtime config from the current profile
     /// and run the core as a child of this process. Routed callers reach this
     /// only when `BackendRouter` selects the local supervisor.
-    func startLocalCore(corePath: String?) throws -> CoreStatus {
+    func startLocalCore(corePath: String?, resolvePortConflicts: Bool = false) throws -> CoreStatus {
+        if resolvePortConflicts {
+            try self.resolvePortConflicts()
+        }
         let currentStatus = try normalizedStatusForLaunch()
         let profile = try profileRepository.loadDefaultProfile()
-        let overrideYAMLs = try overrideRepository.activeYAMLs()
-        return try supervisor.start(
+        let overrides = try overrideRepository.activeOverrides()
+        let transformedProfile = try RuntimeConfigBuilder().applyingOverrides(overrides, to: profile)
+        var started = try supervisor.start(
             configuration: CoreLaunchConfiguration(
                 corePath: corePath ?? currentStatus.corePath,
-                profile: profile,
-                overrideYAMLs: overrideYAMLs,
+                profile: transformedProfile,
+                overrideYAMLs: [],
                 endpoint: currentStatus.endpoint,
                 proxyPorts: currentStatus.proxyPorts,
                 mode: currentStatus.mode,
                 runtimeSettings: runtimeSettings(for: currentStatus)
             )
         )
+        // Keep the newer proxy fields outside CoreSupervisor's core-lifecycle
+        // scope, preserving its existing behavior and ownership boundary.
+        started.systemProxyApplied = currentStatus.systemProxyApplied
+        started.systemProxyOwnership = currentStatus.systemProxyOwnership
+        try stateStore.save(started)
+        return started
     }
 
     @discardableResult
     public func stop() throws -> CoreStatus {
-        try performTierStop(try requiredCoreBackend())
+        var releaseError: Error?
+        if (try? stateStore.load())?.systemProxyApplied != nil {
+            do {
+                try releaseSystemProxyPreservingIntent()
+            } catch {
+                releaseError = error
+            }
+        }
+        let stopped = try performTierStop(try requiredCoreBackend())
+        if let releaseError {
+            throw KumoError.commandFailed("Mihomo stopped, but the system proxy could not be released: \(releaseError.localizedDescription)")
+        }
+        return stopped
     }
 
     /// Best-effort shutdown of whichever runtime is active (routed through the
@@ -224,7 +307,7 @@ public struct KumoController: Sendable {
             latestStatus = (try? stateStore.load()) ?? CoreStatus()
         }
 
-        if latestStatus.systemProxyEnabled {
+        if latestStatus.systemProxyEnabled || latestStatus.systemProxyApplied != nil {
             do {
                 _ = try await setSystemProxy(false)
                 latestStatus.systemProxyEnabled = false
@@ -280,10 +363,12 @@ public struct KumoController: Sendable {
                 }
                 return try client.sendDecodable(client.restartCoreRequest(), as: CoreStatus.self)
             case .localSupervisor:
+                try preflightCurrentConfiguration()
                 _ = try stop()
                 return try start(corePath: nil)
             }
         }
+        try preflightCurrentConfiguration(corePath: corePath)
         _ = try stop()
         return try start(corePath: corePath)
     }
@@ -347,7 +432,8 @@ public struct KumoController: Sendable {
         }
 
         guard controllerAnswered else {
-            throw lastError ?? KumoError.coreNotRunning
+            let fallback = lastError?.localizedDescription ?? KumoError.coreNotRunning.localizedDescription
+            throw KumoError.commandFailed(supervisor.failureMessage(fallback))
         }
 
         // The readiness bookkeeping runs only after the controller proved it is
@@ -445,6 +531,9 @@ public struct KumoController: Sendable {
         return try await MihomoControllerClient(endpoint: status.endpoint).proxyDelay(proxy: proxy, testURL: testURL)
     }
 
+    /// The returned nodes retain the legacy `delay` field and add current-run
+    /// status/error details. Controller-wide failures are never converted into
+    /// successful results or filled from historical delays.
     public func testGroupDelay(group: ProxyGroup) async throws -> [ProxyNode] {
         let status = try stateStore.load()
         return try await MihomoControllerClient(endpoint: status.endpoint).groupDelay(group: group)
@@ -465,14 +554,16 @@ public struct KumoController: Sendable {
             let summary = try await refreshProfile(id: existing.id, useProxy: useProxy ? true : nil)
             return try profileRepository.loadProfile(id: summary.id)
         }
-        let status = try supervisor.status()
-        let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
-        let summary = try await profileRepository.saveRemoteProfile(
-            from: url,
-            useProxy: useProxy,
-            proxyPort: proxyPort
-        )
-        return try profileRepository.loadProfile(id: summary.id)
+        return try await performProfileTransaction(reload: true) {
+            let status = try stateStore.load()
+            let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
+            let summary = try await profileRepository.saveRemoteProfile(
+                from: url,
+                useProxy: useProxy,
+                proxyPort: proxyPort
+            )
+            return try profileRepository.loadProfile(id: summary.id)
+        }
     }
 
     public func importProfile(from url: URL) throws -> ProfileSummary {
@@ -541,20 +632,29 @@ public struct KumoController: Sendable {
         autoUpdate: Bool,
         useProxy: Bool,
         rawYAML: String
-    ) throws -> ProfileSummary {
-        try profileRepository.updateProfile(
-            id: id,
-            name: name,
-            remoteURL: remoteURL,
-            autoUpdate: autoUpdate,
-            useProxy: useProxy,
-            rawYAML: rawYAML
-        )
+    ) async throws -> ProfileSummary {
+        let existing = try profileRepository.listProfiles().first(where: { $0.id == id })
+        let wasCurrent = existing?.isCurrent ?? false
+        let previousYAML = wasCurrent ? try profileRepository.profileContent(id: id) : nil
+        let yamlChanged = previousYAML != rawYAML
+        return try await performProfileTransaction(reload: wasCurrent && yamlChanged) {
+            try profileRepository.updateProfile(
+                id: id,
+                name: name,
+                remoteURL: remoteURL,
+                autoUpdate: autoUpdate,
+                useProxy: useProxy,
+                rawYAML: rawYAML
+            )
+        }
     }
 
     @discardableResult
-    public func deleteProfile(id: String) throws -> Bool {
-        try profileRepository.deleteProfile(id: id)
+    public func deleteProfile(id: String) async throws -> Bool {
+        let wasCurrent = try profileRepository.listProfiles().first(where: { $0.id == id })?.isCurrent ?? false
+        return try await performProfileTransaction(reload: wasCurrent) {
+            try profileRepository.deleteProfile(id: id)
+        }
     }
 
     /// Refreshes one profile in place, preserving its id, name, auto-update
@@ -568,13 +668,16 @@ public struct KumoController: Sendable {
     /// fails with `KumoError.invalidArguments`.
     @discardableResult
     public func refreshProfile(id: String, useProxy: Bool? = nil) async throws -> ProfileSummary {
-        if let profile = try profileRepository.listProfiles().first(where: { $0.id == id }),
-           profile.isSubStoreManaged {
-            return try await refreshSubStoreProfile(id: id)
+        let wasCurrent = try profileRepository.listProfiles().first(where: { $0.id == id })?.isCurrent ?? false
+        return try await performProfileTransaction(reload: wasCurrent) {
+            if let profile = try profileRepository.listProfiles().first(where: { $0.id == id }),
+               profile.isSubStoreManaged {
+                return try await refreshSubStoreProfile(id: id)
+            }
+            let status = try stateStore.load()
+            let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
+            return try await profileRepository.refreshRemoteProfile(id: id, useProxy: useProxy, proxyPort: proxyPort)
         }
-        let status = try supervisor.status()
-        let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
-        return try await profileRepository.refreshRemoteProfile(id: id, useProxy: useProxy, proxyPort: proxyPort)
     }
 
     /// Refreshes every profile whose subscription is due for its next
@@ -681,6 +784,43 @@ public struct KumoController: Sendable {
             ),
             dryRun: dryRun
         )
+    }
+
+    /// Observes ownership through the same privileged-or-local route as writes.
+    /// Auto-reclaim is opt-in and only applies to a takeover while the core runs;
+    /// an externally cleared proxy has already had its enable intent turned off.
+    public func systemProxyStatus() async throws -> SystemProxyStatus {
+        var current: CoreStatus
+        if let client = privilegedServiceClient() {
+            current = try client.sendDecodable(client.systemProxyStatusRequest(), as: CoreStatus.self)
+        } else {
+            current = try status()
+        }
+        if current.systemProxyOwnership == .takenOver,
+           current.systemProxyApplied != nil,
+           current.state == .running,
+           preferencesStore.load().reclaimSystemProxy {
+            _ = try await setSystemProxy(true)
+            if let client = privilegedServiceClient() {
+                current = try client.sendDecodable(client.systemProxyStatusRequest(), as: CoreStatus.self)
+            } else {
+                current = try status()
+            }
+        }
+        return SystemProxyStatus(status: current)
+    }
+
+    /// Explicit user action: reapply the stored configuration even after a
+    /// takeover. This is the only non-preference-gated takeover recovery path.
+    public func reclaimSystemProxy() async throws -> SystemProxyStatus {
+        _ = try await setSystemProxy(true)
+        return try await systemProxyStatus()
+    }
+
+    /// Crash/idle guardian cleanup keeps the user's enable intent for a later
+    /// start but releases only settings still owned by Kumo.
+    public func releaseSystemProxyForGuardian() throws {
+        try releaseSystemProxyPreservingIntent()
     }
 
     public func availableNetworkServices() throws -> [String] {

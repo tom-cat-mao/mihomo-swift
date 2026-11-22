@@ -170,6 +170,10 @@ private struct ProxyGroupCard: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+
+            if let summary = store.delayTestSummary(for: group) {
+                ProxyDelaySummaryView(summary: summary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -245,6 +249,7 @@ private struct ProxyCard: View {
         }
         .accessibilityLabel(String(format: String(localized: "Select %@"), proxy.name))
         .accessibilityValue(accessibilityValue)
+        .help(proxy.delayError ?? delayText)
     }
 
     private var accessibilityValue: String {
@@ -256,17 +261,14 @@ private struct ProxyCard: View {
             values.append("Protocol \(proxyTypeText)")
         }
         values.append(delayText)
+        if let error = proxy.delayError {
+            values.append(error)
+        }
         return values.joined(separator: ", ")
     }
 
     private var delayText: String {
-        guard let delay = proxy.delay else {
-            return "--"
-        }
-        if delay == 0 {
-            return "Timeout"
-        }
-        return "\(delay) ms"
+        ProxyDelayPresentation.text(for: proxy)
     }
 
     private var proxyTypeText: String {
@@ -281,19 +283,67 @@ private struct ProxyCard: View {
                     .foregroundStyle(.secondary)
             }
             Text(delayText)
-                .foregroundStyle(delayColor)
+                .foregroundStyle(ProxyDelayPresentation.color(for: proxy))
         }
         .font(.caption2.weight(.medium))
         .lineLimit(1)
     }
+}
 
-    private var delayColor: Color {
-        guard let delay = proxy.delay else {
-            return Color.secondary.opacity(0.7)
+struct ProxyDelaySummaryView: View {
+    let summary: ProxyGroupDelaySummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(summary.text)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(summary.requestFailed ? Color.red : (summary.hasFailures ? Color.orange : Color.secondary))
+
+            ForEach(Array(summary.details.prefix(3)), id: \.self) { detail in
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        if delay == 0 {
+        .accessibilityElement(children: .combine)
+    }
+}
+
+enum ProxyDelayPresentation {
+    static func text(for proxy: ProxyNode) -> String {
+        switch proxy.delayStatus {
+        case .success:
+            return proxy.delay.map { "\($0) ms" } ?? String(localized: "success")
+        case .timeout:
+            return String(localized: "timeout")
+        case .missing:
+            return String(localized: "missing")
+        case .error:
+            return String(localized: "error")
+        case .stale:
+            guard let delay = proxy.delay else { return String(localized: "stale") }
+            return delay == 0
+                ? String(localized: "stale timeout")
+                : String(format: String(localized: "%1$d ms · stale"), delay)
+        case nil:
+            guard let delay = proxy.delay else { return "—" }
+            return delay == 0 ? String(localized: "timeout") : "\(delay) ms"
+        }
+    }
+
+    static func color(for proxy: ProxyNode) -> Color {
+        switch proxy.delayStatus {
+        case .success:
+            guard let delay = proxy.delay else { return .secondary }
+            return delay < 300 ? .green : .orange
+        case .timeout, .error:
             return .red
+        case .missing:
+            return .orange
+        case .stale, nil:
+            return .secondary
         }
-        return delay < 300 ? .green : .orange
     }
 }
