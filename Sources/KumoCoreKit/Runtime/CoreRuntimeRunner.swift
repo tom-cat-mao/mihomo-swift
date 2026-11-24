@@ -104,6 +104,10 @@ public actor CoreRuntimeRunner {
         try controller.currentProfile()
     }
 
+    public func currentProfileDeclaresDNS() throws -> Bool {
+        try controller.currentProfileDeclaresDNS()
+    }
+
     public func setCurrentProfile(id: String) throws {
         try controller.setCurrentProfile(id: id)
     }
@@ -388,6 +392,11 @@ public actor CoreRuntimeRunner {
     @discardableResult
     public func setTunEnabled(_ isEnabled: Bool) async throws -> TunStatus {
         try await controller.setTunEnabled(isEnabled)
+    }
+
+    @discardableResult
+    public func setDnsSource(_ source: DnsSource) async throws -> DnsSettings {
+        try await controller.setDnsSource(source)
     }
 
     @discardableResult

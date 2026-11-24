@@ -82,6 +82,21 @@ final class AgentProtocolTests: XCTestCase {
         XCTAssertEqual(commands["completion"]?.outputStability, .humanText)
     }
 
+    func testDnsSourceCapabilityDescribesPositionalEnum() throws {
+        let report = AgentCommandCatalog.capabilities()
+        let command = try XCTUnwrap(report.commands.first { $0.path == "dns source" })
+        let source = try XCTUnwrap(command.parameters.first)
+
+        XCTAssertEqual(command.access, .write)
+        XCTAssertFalse(command.supportsDryRun)
+        XCTAssertEqual(command.parameters.count, 1)
+        XCTAssertEqual(source.name, "source")
+        XCTAssertEqual(source.kind, .argument)
+        XCTAssertTrue(source.isRequired)
+        XCTAssertEqual(source.acceptedValues, ["kumo", "profile"])
+        XCTAssertEqual(source.summary, "DNS settings source.")
+    }
+
     func testCapabilitiesUsesOrdinaryStableJSONEnvelope() throws {
         let response = CLIResponse(ok: true, data: AgentCommandCatalog.capabilities())
         let data = try JSONEncoder().encode(response)

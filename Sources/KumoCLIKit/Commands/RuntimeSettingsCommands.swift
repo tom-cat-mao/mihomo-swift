@@ -5,7 +5,7 @@ extension KumoCommand {
     struct Dns: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Show or update DNS runtime settings.",
-            subcommands: [Show.self, Enable.self, Disable.self, Set.self],
+            subcommands: [Show.self, Enable.self, Disable.self, Source.self, Set.self],
             defaultSubcommand: Show.self
         )
 
@@ -35,6 +35,28 @@ extension KumoCommand {
                 try options.install()
                 let settings = try await CLIRuntime.current.controller.setDnsEnabled(false)
                 CLIRuntime.current.write(settings) { _ in "dns disabled" }
+            }
+        }
+
+        struct Source: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Select the DNS settings source.",
+                discussion: "Use kumo for Kumo-managed DNS settings or profile for the current profile's DNS."
+            )
+
+            @Argument(help: "DNS settings source: kumo or profile.")
+            var source: String
+            @OptionGroup var options: CLIOptions
+
+            mutating func validate() throws {
+                _ = try parseDnsSource(source)
+            }
+
+            mutating func run() async throws {
+                try options.install()
+                let source = try parseDnsSource(source)
+                let applied = try await CLIRuntime.current.controller.setDnsSource(source)
+                CLIRuntime.current.write(applied) { dnsSettingsSummary($0) }
             }
         }
 
@@ -143,8 +165,17 @@ extension KumoCommand {
     }
 }
 
+private func parseDnsSource(_ rawValue: String) throws -> DnsSource {
+    guard let source = DnsSource(rawValue: rawValue) else {
+        let validSources = DnsSource.allCases.map(\.rawValue).joined(separator: ", ")
+        throw ValidationError("Invalid DNS source '\(rawValue)'. Valid sources: \(validSources).")
+    }
+    return source
+}
+
 private func dnsSettingsSummary(_ settings: DnsSettings) -> String {
     [
+        "source=\(settings.source.rawValue)",
         "enabled=\(settings.isEnabled)",
         "enhancedMode=\(settings.enhancedMode)",
         "listen=\(settings.listen.isEmpty ? "-" : settings.listen)",

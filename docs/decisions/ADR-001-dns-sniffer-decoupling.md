@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-006: DNS Configuration Ownership](ADR-006-dns-config-ownership.md)
 
 ## Context
 

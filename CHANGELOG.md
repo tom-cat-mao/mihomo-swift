@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-24
+
+### Added
+- Select Kumo-managed or current-profile DNS in the GUI and CLI. Profile DNS is
+  preserved after active overrides, with an explicit Kumo fallback when the
+  profile has no DNS declaration; Kumo-managed hosts remain independently editable.
+
+### Fixed
+- Prevent unrelated runtime-setting patches from replacing profile-owned DNS,
+  and surface missing-profile-DNS fallback instead of silently discarding it.
+
 ## [0.1.1] - 2026-11-22
 
 ### Fixed

@@ -411,7 +411,11 @@ public struct KumoController: Sendable {
 
     public func coreConfiguration() async throws -> CoreConfigurationSnapshot {
         let status = try stateStore.load()
-        return try await MihomoControllerClient(endpoint: status.endpoint).configuration()
+        var snapshot = try await MihomoControllerClient(endpoint: status.endpoint).configuration()
+        let requestedSource = runtimeSettings(for: status).dns?.source ?? .kumo
+        let usesProfileDNS = try requestedSource == .profile && currentProfileDeclaresDNS()
+        snapshot.dns?.source = usesProfileDNS ? .profile : .kumo
+        return snapshot
     }
 
     public func waitForControllerReady(maxAttempts: Int = 30, intervalNanoseconds: UInt64 = 200_000_000) async throws {
@@ -873,6 +877,11 @@ public struct KumoController: Sendable {
         )
     }
 
+    public func currentProfileDeclaresDNS() throws -> Bool {
+        let configuration = try currentLaunchConfiguration()
+        return try RuntimeConfigBuilder.profileDeclaresDNS(in: configuration.profile)
+    }
+
     public func dnsSettings() throws -> DnsSettings {
         let status = try stateStore.load()
         return status.runtimeSettings?.dns ?? DnsSettings()
@@ -887,12 +896,93 @@ public struct KumoController: Sendable {
     }
 
     @discardableResult
+    public func setDnsSource(_ source: DnsSource) async throws -> DnsSettings {
+        let previousStatus = try stateStore.load()
+        let previousDNS = runtimeSettings(for: previousStatus).dns ?? DnsSettings()
+        guard previousDNS.source != source else { return previousDNS }
+
+        let previousRuntimeConfiguration = supervisor.runtimeConfigurationData()
+        var candidateRuntimeSettings = runtimeSettings(for: previousStatus)
+        var candidateDNS = previousDNS
+        candidateDNS.source = source
+        candidateRuntimeSettings.dns = candidateDNS
+
+        let candidateConfiguration = try currentLaunchConfiguration(runtimeSettings: candidateRuntimeSettings)
+        if source == .profile,
+           try !RuntimeConfigBuilder.profileDeclaresDNS(in: candidateConfiguration.profile) {
+            throw KumoError.invalidArguments(
+                "The current profile does not declare a dns mapping after active overrides are applied."
+            )
+        }
+        _ = try supervisor.validateConfiguration(candidateConfiguration, install: false)
+
+        var candidateStatus = previousStatus
+        candidateStatus.runtimeSettings = candidateRuntimeSettings
+        try stateStore.save(candidateStatus)
+        guard previousStatus.state == .running else { return candidateDNS }
+
+        do {
+            _ = try restart()
+            try await waitForControllerReady()
+            return candidateDNS
+        } catch {
+            var recoveryDiagnostics: [String] = []
+            do {
+                try stateStore.save(previousStatus)
+            } catch {
+                recoveryDiagnostics.append("restore previous core state: \(error.localizedDescription)")
+            }
+            do {
+                try supervisor.restoreRuntimeConfiguration(previousRuntimeConfiguration)
+            } catch {
+                recoveryDiagnostics.append("restore previous runtime configuration: \(error.localizedDescription)")
+            }
+            do {
+                _ = try restart()
+                try await waitForControllerReady()
+            } catch {
+                recoveryDiagnostics.append("restart previous configuration: \(error.localizedDescription)")
+            }
+
+            guard !recoveryDiagnostics.isEmpty else { throw error }
+            let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            throw KumoError.commandFailed(
+                "DNS source change failed: \(reason) Recovery problems: \(recoveryDiagnostics.joined(separator: "; "))"
+            )
+        }
+    }
+
+    @discardableResult
     public func applyDnsSettings(_ settings: DnsSettings) async throws -> DnsSettings {
+        let status = try stateStore.load()
+        let storedSettings = runtimeSettings(for: status).dns ?? DnsSettings()
         let normalizedSettings = normalizedDnsSettings(settings)
+
+        if normalizedSettings.source != storedSettings.source {
+            var sourceOnlyRequest = settings
+            sourceOnlyRequest.source = storedSettings.source
+            guard sourceOnlyRequest == storedSettings else {
+                throw KumoError.invalidArguments("Changing DNS ownership must not change other DNS settings.")
+            }
+            return try await setDnsSource(normalizedSettings.source)
+        }
+
+        if storedSettings.source == .profile, try currentProfileDeclaresDNS() {
+            var requestedWithoutHosts = normalizedSettings
+            var storedWithoutHosts = storedSettings
+            requestedWithoutHosts.hosts = [:]
+            storedWithoutHosts.hosts = [:]
+            guard requestedWithoutHosts == storedWithoutHosts else {
+                throw KumoError.invalidArguments(
+                    "DNS fields are owned by the current profile; only hosts can be edited in Kumo."
+                )
+            }
+        }
+
         try updateDnsSettings(normalizedSettings)
 
-        let status = try stateStore.load()
-        if status.state == .running {
+        let updatedStatus = try stateStore.load()
+        if updatedStatus.state == .running {
             _ = try restart()
             try await waitForControllerReady()
         }
@@ -905,6 +995,9 @@ public struct KumoController: Sendable {
         var status = try stateStore.load()
         var runtimeSettings = self.runtimeSettings(for: status)
         var dns = runtimeSettings.dns ?? DnsSettings()
+        if dns.source == .profile, try currentProfileDeclaresDNS() {
+            throw KumoError.invalidArguments("DNS enablement is owned by the current profile.")
+        }
         dns.isEnabled = isEnabled
         runtimeSettings.dns = dns
         status.runtimeSettings = runtimeSettings

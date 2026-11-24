@@ -593,6 +593,9 @@ public struct CoreSupervisor: Sendable {
 
         if install {
             try Data(runtime.yaml.utf8).write(to: paths.runtimeConfigFile, options: .atomic)
+            for warning in runtime.warnings {
+                appendRuntimeEvent(kind: "config.dns_warning", message: warning)
+            }
         }
         return runtime
     }

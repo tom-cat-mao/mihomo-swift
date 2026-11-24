@@ -13,170 +13,232 @@ struct DNSView: View {
         let draft = normalizedDnsDraft
         return KumoPage(title: "DNS") {
             Form {
-                Section(String(localized: "Status")) {
-                    Toggle(String(localized: "Enable DNS"), isOn: Binding {
-                        currentDnsSettings.isEnabled
-                    } set: { isEnabled in
-                        Task { await store.setDnsEnabled(isEnabled) }
-                    })
-                    .disabled(store.isLoading)
+                sourceSection
+                if !effectiveProfile {
+                    kumoSettingsSections
                 }
-
-                Section(String(localized: "Mode")) {
-                    Picker(String(localized: "Enhanced Mode"), selection: $dnsDraft.enhancedMode) {
-                        Text(String(localized: "Fake IP")).tag("fake-ip")
-                        Text(String(localized: "Redir Host")).tag("redir-host")
-                        Text(String(localized: "Normal")).tag("normal")
-                    }
-                    .pickerStyle(.segmented)
-                    Toggle(String(localized: "IPv6"), isOn: $dnsDraft.ipv6)
-                    Toggle(String(localized: "Use Hosts"), isOn: $dnsDraft.useHosts)
-                    Toggle(String(localized: "Use System Hosts"), isOn: $dnsDraft.useSystemHosts)
-                    Toggle(String(localized: "Respect Rules"), isOn: $dnsDraft.respectRules)
-                }
-
-                Section(String(localized: "Advanced")) {
-                    TextField("Listen", text: $dnsDraft.listen)
-                    TextField("IPv6 Timeout", value: $dnsDraft.ipv6Timeout, format: .number)
-                    Toggle(String(localized: "Prefer HTTP/3"), isOn: $dnsDraft.preferH3)
-                    Picker(String(localized: "Fake IP Filter Mode"), selection: $dnsDraft.fakeIPFilterMode) {
-                        Text(String(localized: "None")).tag("")
-                        Text(String(localized: "Blacklist")).tag("blacklist")
-                        Text(String(localized: "Whitelist")).tag("whitelist")
-                    }
-                    .pickerStyle(.segmented)
-                    Toggle(String(localized: "Direct Nameserver Follow Policy"), isOn: $dnsDraft.directNameserverFollowPolicy)
-                    Picker(String(localized: "Cache Algorithm"), selection: $dnsDraft.cacheAlgorithm) {
-                        Text(String(localized: "None")).tag("")
-                        Text(String(localized: "LRU")).tag("lru")
-                        Text(String(localized: "ARC")).tag("arc")
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                Section(String(localized: "Fake IP Range")) {
-                    TextField("Fake IP Range", text: $dnsDraft.fakeIPRange)
-                    TextField("Fake IP Range IPv6", text: $dnsDraft.fakeIPRange6)
-                }
-
-                Section(String(localized: "Fake IP Filter")) {
-                    EditableStringList(
-                        items: $dnsDraft.fakeIPFilter,
-                        placeholder: "+.example.com",
-                        monospaced: true,
-                        accessibilityLabel: "Fake IP filter"
-                    )
-                }
-
-                Section(String(localized: "Default Nameserver")) {
-                    EditableStringList(
-                        items: $dnsDraft.defaultNameserver,
-                        placeholder: "tls://223.5.5.5",
-                        monospaced: true,
-                        accessibilityLabel: "Default nameserver"
-                    )
-                }
-
-                Section(String(localized: "Nameserver")) {
-                    EditableStringList(
-                        items: $dnsDraft.nameserver,
-                        placeholder: "https://doh.pub/dns-query",
-                        monospaced: true,
-                        accessibilityLabel: "Nameserver"
-                    )
-                }
-
-                Section(String(localized: "Proxy Server Nameserver")) {
-                    EditableStringList(
-                        items: $dnsDraft.proxyServerNameserver,
-                        placeholder: "https://1.1.1.1/dns-query",
-                        monospaced: true,
-                        accessibilityLabel: "Proxy server nameserver"
-                    )
-                }
-
-                Section(String(localized: "Direct Nameserver")) {
-                    EditableStringList(
-                        items: $dnsDraft.directNameserver,
-                        placeholder: "tls://223.5.5.5",
-                        monospaced: true,
-                        accessibilityLabel: "Direct nameserver"
-                    )
-                }
-
-                Section(String(localized: "Fallback")) {
-                    EditableStringList(
-                        items: $dnsDraft.fallback,
-                        placeholder: "https://1.1.1.1/dns-query",
-                        monospaced: true,
-                        accessibilityLabel: "Fallback nameserver"
-                    )
-                }
-
-                Section(String(localized: "Fallback Filter")) {
-                    FallbackFilterDictEditor(
-                        entries: $dnsDraft.fallbackFilter,
-                        accessibilityLabel: "Fallback filter"
-                    )
-                }
-
-                Section(String(localized: "Nameserver Policy")) {
-                    PolicyDictEditor(
-                        entries: $dnsDraft.nameserverPolicy,
-                        accessibilityLabel: "Nameserver policy"
-                    )
-                }
-
-                Section(String(localized: "Proxy Server Nameserver Policy")) {
-                    PolicyDictEditor(
-                        entries: $dnsDraft.proxyServerNameserverPolicy,
-                        accessibilityLabel: "Proxy server nameserver policy"
-                    )
-                }
-
-                Section(String(localized: "Hosts")) {
-                    PolicyDictEditor(
-                        entries: $dnsDraft.hosts,
-                        accessibilityLabel: "Hosts"
-                    )
-                }
-
-                Section {
-                    if let validationMessage = dnsDraftValidationMessage(for: draft) {
-                        Text(validationMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Spacer()
-                        Button(String(localized: "Reset")) {
-                            updateDnsDraft(currentDnsSettings)
-                        }
-                        .disabled(!hasDnsDraftChanges(in: draft) || store.isLoading)
-
-                        Button(String(localized: "Apply")) {
-                            applyDnsDraft(draft)
-                        }
-                        .disabled(!canApplyDnsDraft(for: draft))
-                    }
-                } footer: {
-                    Text(String(localized: "DNS changes are staged locally. Apply restarts the core when it is running."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                hostsSection
+                applySection(draft: draft)
             }
             .formStyle(.grouped)
         }
         .task {
             updateDnsDraft(currentDnsSettings)
         }
-        .onChange(of: currentDnsSettings) { _, newValue in
-            if !hasDnsDraftChanges(in: normalizedDnsDraft) {
+        .onChange(of: currentDnsSettings) { oldValue, newValue in
+            if oldValue.source != newValue.source || !hasDnsDraftChanges(in: normalizedDnsDraft) {
                 updateDnsDraft(newValue)
-            } else {
+            } else if !effectiveProfile {
                 dnsDraft.isEnabled = newValue.isEnabled
             }
         }
+    }
+
+    private var sourceSection: some View {
+        Section {
+            Picker(String(localized: "Source"), selection: dnsSourceBinding) {
+                Text(String(localized: "Kumo")).tag(DnsSource.kumo)
+                Text(String(localized: "Profile")).tag(DnsSource.profile)
+            }
+            .disabled(store.isLoading)
+
+            if effectiveProfile {
+                Text(String(localized: "Provided by the current profile."))
+                    .foregroundStyle(.secondary)
+            } else if currentDnsSettings.source == .profile {
+                Text(String(localized: "Profile DNS is unavailable. Kumo DNS is in effect."))
+                    .foregroundStyle(.secondary)
+            } else if store.currentProfileDeclaresDNS {
+                Text(String(localized: "The current profile also provides DNS."))
+                    .foregroundStyle(.secondary)
+                Button(String(localized: "Use DNS from profile")) {
+                    selectDnsSource(.profile)
+                }
+                .disabled(store.isLoading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var kumoSettingsSections: some View {
+        Section(String(localized: "Status")) {
+            Toggle(String(localized: "Enable DNS"), isOn: Binding {
+                currentDnsSettings.isEnabled
+            } set: { isEnabled in
+                Task { await store.setDnsEnabled(isEnabled) }
+            })
+            .disabled(store.isLoading)
+        }
+
+        Section(String(localized: "Mode")) {
+            Picker(String(localized: "Enhanced Mode"), selection: $dnsDraft.enhancedMode) {
+                Text(String(localized: "Fake IP")).tag("fake-ip")
+                Text(String(localized: "Redir Host")).tag("redir-host")
+                Text(String(localized: "Normal")).tag("normal")
+            }
+            .pickerStyle(.segmented)
+            Toggle(String(localized: "IPv6"), isOn: $dnsDraft.ipv6)
+            Toggle(String(localized: "Use Hosts"), isOn: $dnsDraft.useHosts)
+            Toggle(String(localized: "Use System Hosts"), isOn: $dnsDraft.useSystemHosts)
+            Toggle(String(localized: "Respect Rules"), isOn: $dnsDraft.respectRules)
+        }
+
+        Section(String(localized: "Advanced")) {
+            TextField("Listen", text: $dnsDraft.listen)
+            TextField("IPv6 Timeout", value: $dnsDraft.ipv6Timeout, format: .number)
+            Toggle(String(localized: "Prefer HTTP/3"), isOn: $dnsDraft.preferH3)
+            Picker(String(localized: "Fake IP Filter Mode"), selection: $dnsDraft.fakeIPFilterMode) {
+                Text(String(localized: "None")).tag("")
+                Text(String(localized: "Blacklist")).tag("blacklist")
+                Text(String(localized: "Whitelist")).tag("whitelist")
+            }
+            .pickerStyle(.segmented)
+            Toggle(String(localized: "Direct Nameserver Follow Policy"), isOn: $dnsDraft.directNameserverFollowPolicy)
+            Picker(String(localized: "Cache Algorithm"), selection: $dnsDraft.cacheAlgorithm) {
+                Text(String(localized: "None")).tag("")
+                Text(String(localized: "LRU")).tag("lru")
+                Text(String(localized: "ARC")).tag("arc")
+            }
+            .pickerStyle(.segmented)
+        }
+
+        Section(String(localized: "Fake IP Range")) {
+            TextField("Fake IP Range", text: $dnsDraft.fakeIPRange)
+            TextField("Fake IP Range IPv6", text: $dnsDraft.fakeIPRange6)
+        }
+
+        Section(String(localized: "Fake IP Filter")) {
+            EditableStringList(
+                items: $dnsDraft.fakeIPFilter,
+                placeholder: "+.example.com",
+                monospaced: true,
+                accessibilityLabel: "Fake IP filter"
+            )
+        }
+
+        Section(String(localized: "Default Nameserver")) {
+            EditableStringList(
+                items: $dnsDraft.defaultNameserver,
+                placeholder: "tls://223.5.5.5",
+                monospaced: true,
+                accessibilityLabel: "Default nameserver"
+            )
+        }
+
+        Section(String(localized: "Nameserver")) {
+            EditableStringList(
+                items: $dnsDraft.nameserver,
+                placeholder: "https://doh.pub/dns-query",
+                monospaced: true,
+                accessibilityLabel: "Nameserver"
+            )
+        }
+
+        Section(String(localized: "Proxy Server Nameserver")) {
+            EditableStringList(
+                items: $dnsDraft.proxyServerNameserver,
+                placeholder: "https://1.1.1.1/dns-query",
+                monospaced: true,
+                accessibilityLabel: "Proxy server nameserver"
+            )
+        }
+
+        Section(String(localized: "Direct Nameserver")) {
+            EditableStringList(
+                items: $dnsDraft.directNameserver,
+                placeholder: "tls://223.5.5.5",
+                monospaced: true,
+                accessibilityLabel: "Direct nameserver"
+            )
+        }
+
+        Section(String(localized: "Fallback")) {
+            EditableStringList(
+                items: $dnsDraft.fallback,
+                placeholder: "https://1.1.1.1/dns-query",
+                monospaced: true,
+                accessibilityLabel: "Fallback nameserver"
+            )
+        }
+
+        Section(String(localized: "Fallback Filter")) {
+            FallbackFilterDictEditor(
+                entries: $dnsDraft.fallbackFilter,
+                accessibilityLabel: "Fallback filter"
+            )
+        }
+
+        Section(String(localized: "Nameserver Policy")) {
+            PolicyDictEditor(
+                entries: $dnsDraft.nameserverPolicy,
+                accessibilityLabel: "Nameserver policy"
+            )
+        }
+
+        Section(String(localized: "Proxy Server Nameserver Policy")) {
+            PolicyDictEditor(
+                entries: $dnsDraft.proxyServerNameserverPolicy,
+                accessibilityLabel: "Proxy server nameserver policy"
+            )
+        }
+    }
+
+    private var hostsSection: some View {
+        Section(String(localized: "Hosts")) {
+            PolicyDictEditor(
+                entries: $dnsDraft.hosts,
+                accessibilityLabel: "Hosts"
+            )
+        }
+    }
+
+    private func applySection(draft: DnsSettings) -> some View {
+        Section {
+            if let validationMessage = dnsDraftValidationMessage(for: draft) {
+                Text(validationMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Button(String(localized: effectiveProfile ? "Reset Hosts" : "Reset")) {
+                    updateDnsDraft(currentDnsSettings)
+                }
+                .disabled(!hasDnsDraftChanges(in: draft) || store.isLoading)
+
+                Button(String(localized: effectiveProfile ? "Apply Hosts" : "Apply")) {
+                    applyDnsDraft(draft)
+                }
+                .disabled(!canApplyDnsDraft(for: draft))
+            }
+        } footer: {
+            if effectiveProfile {
+                Text(String(localized: "Hosts are managed by Kumo independently of profile DNS. Apply restarts the core when it is running."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(String(localized: "DNS changes are staged locally. Apply restarts the core when it is running."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var dnsSourceBinding: Binding<DnsSource> {
+        Binding {
+            currentDnsSettings.source
+        } set: { source in
+            selectDnsSource(source)
+        }
+    }
+
+    private var effectiveProfile: Bool {
+        currentDnsSettings.source == .profile && store.currentProfileDeclaresDNS
+    }
+
+    private func selectDnsSource(_ source: DnsSource) {
+        guard source != currentDnsSettings.source, !store.isLoading else { return }
+        Task { await store.setDnsSource(source) }
     }
 
     private var currentDnsSettings: DnsSettings {
@@ -186,7 +248,10 @@ struct DNSView: View {
     /// Takes the normalized draft for the current body pass; normalizing here
     /// again is what the body pass already paid for.
     private func hasDnsDraftChanges(in draft: DnsSettings) -> Bool {
-        draft != currentDnsSettings
+        if effectiveProfile {
+            return draft.hosts != currentDnsSettings.hosts
+        }
+        return draft != currentDnsSettings
     }
 
     private func canApplyDnsDraft(for draft: DnsSettings) -> Bool {
@@ -247,6 +312,8 @@ struct DNSView: View {
     }
 
     private func dnsDraftValidationMessage(for settings: DnsSettings) -> String? {
+        guard !effectiveProfile else { return nil }
+
         if settings.isEnabled {
             if settings.nameserver.isEmpty {
                 return "Nameserver needs at least one value when DNS is enabled."
@@ -269,7 +336,12 @@ struct DNSView: View {
 
     /// Applies the normalized value the body pass already computed, so the
     /// staged draft and the runtime keep receiving the same normalized settings.
-    private func applyDnsDraft(_ settings: DnsSettings) {
+    private func applyDnsDraft(_ draft: DnsSettings) {
+        var settings = draft
+        if effectiveProfile {
+            settings = currentDnsSettings
+            settings.hosts = draft.hosts
+        }
         updateDnsDraft(settings)
         Task { await store.applyDnsSettings(settings) }
     }

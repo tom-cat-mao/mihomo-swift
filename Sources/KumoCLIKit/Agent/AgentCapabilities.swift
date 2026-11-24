@@ -314,6 +314,7 @@ enum AgentCommandCatalog {
         "dns show": .read(),
         "dns enable": .write(),
         "dns disable": .write(),
+        "dns source": .write(parameters: [argument("source", values: ["kumo", "profile"], summary: "DNS settings source.")]),
         "dns set": .write(dryRun: true, validate: true, parameters: [option("--file", "path", "Read a DNS JSON patch."), flag("--stdin", "Read a DNS JSON patch from stdin."), dryRunFlag]),
         "sniffer": .read(),
         "sniffer show": .read(),

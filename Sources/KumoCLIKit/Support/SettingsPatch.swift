@@ -16,7 +16,7 @@ extension DnsSettings: SettingsPatchKeyProviding {
     /// Mirrors the Codable keys of `DnsSettings`; kept honest by
     /// `testPatchKeyAllowlistsMatchCodableKeys`.
     static let patchKeys: Set<String> = [
-        "isEnabled", "listen", "ipv6", "ipv6Timeout", "preferH3", "enhancedMode",
+        "source", "isEnabled", "listen", "ipv6", "ipv6Timeout", "preferH3", "enhancedMode",
         "fakeIPRange", "fakeIPRange6", "fakeIPFilter", "fakeIPFilterMode", "useHosts",
         "useSystemHosts", "respectRules", "defaultNameserver", "nameserver", "fallback",
         "fallbackFilter", "proxyServerNameserver", "directNameserver",

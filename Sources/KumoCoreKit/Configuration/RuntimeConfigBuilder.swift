@@ -5,6 +5,24 @@ public struct RuntimeConfig: Equatable, Sendable {
     public var yaml: String
     public var endpoint: ControllerEndpoint
     public var proxyPorts: ProxyPortConfiguration
+    public var warnings: [String]
+
+    public init(
+        yaml: String,
+        endpoint: ControllerEndpoint,
+        proxyPorts: ProxyPortConfiguration,
+        warnings: [String] = []
+    ) {
+        self.yaml = yaml
+        self.endpoint = endpoint
+        self.proxyPorts = proxyPorts
+        self.warnings = warnings
+    }
+}
+
+private enum DnsOwnership {
+    case kumo
+    case profile
 }
 
 public struct RuntimeConfigBuilder: Sendable {
@@ -58,15 +76,33 @@ public struct RuntimeConfigBuilder: Sendable {
     public func build(profile: Profile, overrides: [RuntimeOverride]) throws -> RuntimeConfig {
         let transformedProfile = try applyingOverrides(overrides, to: profile)
         var document = try StructuredYAMLDocument(rawYAML: transformedProfile.rawYAML)
-        document.removeTopLevelKeys(controlledTopLevelKeys())
+        let profileDNS = document.mapping["dns"] as? [String: Any]
+        let requestsProfileDNS = runtimeSettings.dns?.source == .profile
+        let dnsOwnership: DnsOwnership = requestsProfileDNS && profileDNS != nil ? .profile : .kumo
+        var warnings: [String] = []
+        if requestsProfileDNS && profileDNS == nil {
+            warnings.append("Profile DNS ownership was requested, but the transformed profile has no dns mapping; Kumo DNS settings are being used instead.")
+        }
+        if dnsOwnership == .profile,
+           (profileDNS?["enable"] as? Bool) == false,
+           runtimeSettings.tun?.isEnabled == true {
+            warnings.append("Profile DNS is disabled while Kumo TUN is enabled; TUN traffic may not resolve as expected.")
+        }
+
+        document.removeTopLevelKeys(controlledTopLevelKeys(dnsOwnership: dnsOwnership))
         let yaml = [
             try document.renderedYAML(),
-            controlledConfigYAML()
+            controlledConfigYAML(dnsOwnership: dnsOwnership)
         ]
         .filter { !$0.isEmpty }
         .joined(separator: "\n\n")
 
-        return RuntimeConfig(yaml: yaml, endpoint: endpoint, proxyPorts: proxyPorts)
+        return RuntimeConfig(yaml: yaml, endpoint: endpoint, proxyPorts: proxyPorts, warnings: warnings)
+    }
+
+    static func profileDeclaresDNS(in profile: Profile) throws -> Bool {
+        let document = try StructuredYAMLDocument(rawYAML: profile.rawYAML)
+        return document.mapping["dns"] is [String: Any]
     }
 
     public func write(profile: Profile, overrideYAMLs: [String] = [], to url: URL) throws -> RuntimeConfig {
@@ -120,7 +156,7 @@ public struct RuntimeConfigBuilder: Sendable {
         return config
     }
 
-    private func controlledConfigYAML() -> String {
+    private func controlledConfigYAML(dnsOwnership: DnsOwnership) -> String {
         let base = """
         # Kumo controlled runtime settings
         external-controller: \(endpoint.host):\(endpoint.port)
@@ -147,7 +183,7 @@ public struct RuntimeConfigBuilder: Sendable {
             blocks.append(controlledTunYAML(tun))
         }
 
-        if let dns = runtimeSettings.dns, dns.isEnabled {
+        if dnsOwnership == .kumo, let dns = runtimeSettings.dns, dns.isEnabled {
             blocks.append(controlledDnsYAML(dns))
         }
 
@@ -167,12 +203,12 @@ public struct RuntimeConfigBuilder: Sendable {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    private func controlledTopLevelKeys() -> Set<String> {
+    private func controlledTopLevelKeys(dnsOwnership: DnsOwnership) -> Set<String> {
         var keys = Self.controlledTopLevelKeys
         if runtimeSettings.tun?.isEnabled == true {
             keys.insert("tun")
         }
-        if runtimeSettings.dns?.isEnabled == true {
+        if dnsOwnership == .kumo, runtimeSettings.dns?.isEnabled == true {
             keys.insert("dns")
         }
         if runtimeSettings.sniffer?.isEnabled == true {

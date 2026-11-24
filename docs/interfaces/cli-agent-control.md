@@ -73,6 +73,7 @@ kumo profile import ./local.yaml
 kumo override list --json
 kumo override add --name dns-fix --file dns.yaml --dry-run --json
 kumo dns --json
+kumo dns source profile --json
 kumo dns set --file dns.json --dry-run --json
 kumo sysproxy status --json
 kumo sysproxy on --dry-run --json
@@ -123,6 +124,7 @@ kumo profile refresh --id <id> [--use-proxy] [--json]
 kumo profile update <id> [--name <name>] [--url <url>] [--auto-update|--no-auto-update] [--use-proxy|--no-use-proxy] [--dry-run] [--json]
 kumo profile edit <id> --file <path>|--stdin [--dry-run] [--json]
 kumo dns [--json] | kumo dns enable|disable [--json]
+kumo dns source <kumo|profile> [--json]
 kumo sniffer [--json] | kumo sniffer enable|disable [--json]
 kumo tun status|enable|disable [--json]
 kumo tun settings [--json]
@@ -232,6 +234,16 @@ and the command help notes that MIPS requires Mihomo 1.19.32 or later.
 `--dry-run` prints the merged settings without writing state and without
 restarting the core. Applying DNS or sniffer settings while the core is
 running restarts the core, exactly like the SwiftUI settings panes.
+
+`kumo dns source <kumo|profile>` selects who owns the top-level `dns` block.
+Switching to `profile` requires the current profile, after active overrides, to
+contain a DNS mapping; otherwise the command fails without writing state. The
+command validates the candidate before saving and restarts a running core. Its
+JSON output is the same `DnsSettings` shape as `kumo dns --json`, including
+`source`; human output begins with `source=kumo` or `source=profile`. Repeating
+the current source is an idempotent no-op. The command has no `--dry-run` flag.
+A `{"source":"profile"}` patch through `dns set` uses the same transactional
+path and supports the existing patch dry-run.
 
 `kumo sysproxy set` also supports explicit options (`--bypass <comma-list>`,
 `--network-service`, `--host`, `--port`, `--mode manual|pac`,
