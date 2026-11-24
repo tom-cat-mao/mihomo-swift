@@ -327,9 +327,15 @@ helper installation/repair, not a NetworkExtension VPN configuration prompt.
 
 ## DNS Runtime Settings
 
-`CoreRuntimeSettings` carries `DnsSettings` independently of TUN. When DNS is
-enabled, `RuntimeConfigBuilder` removes profile-provided `dns` and `hosts`
-top-level blocks and appends Kumo-controlled DNS settings:
+`CoreRuntimeSettings` carries `DnsSettings` independently of TUN. Its `source`
+selects ownership of the top-level `dns` block: `kumo` (the default) or
+`profile`. State written before the selector existed decodes without `source`
+as `kumo`, so upgrades retain their existing generated DNS configuration.
+
+With `kumo` ownership and Kumo DNS enabled, `RuntimeConfigBuilder` removes the
+profile-provided `dns` block and emits the complete normalized Kumo mapping.
+When Kumo DNS is disabled, it preserves the profile's `dns` block as before and
+emits no Kumo DNS block. The enabled Kumo mapping includes:
 
 - `dns.enable`
 - `dns.listen`
@@ -355,20 +361,36 @@ top-level blocks and appends Kumo-controlled DNS settings:
 - `dns.proxy-server-nameserver-policy`
 - `dns.cache-algorithm`
 
-DNS settings are also surfaced through the Mihomo controller (`GET /configs`)
-and can be patched at runtime (`PATCH /configs`). However, because DNS
-configuration is structurally significant, applying DNS changes through the UI
-restarts the core rather than patching piecemeal, matching Mihomo's expectation
-that DNS structure changes are loaded from the generated runtime YAML.
+With effective `profile` ownership, the builder preserves the current
+profile's `dns` mapping verbatim after active overrides have been applied. It
+does not parse, normalize, or reconstruct that mapping through `DnsSettings`.
+`KumoController.currentProfileDeclaresDNS()` checks this merged profile, so an
+active override can supply or remove the declaration.
+
+A requested `profile` source without a merged `dns` declaration is a runtime
+fallback, not a source-switch failure: the stored source remains `profile`, but
+ownership resolves to Kumo for the generated runtime. The GUI reports this state
+and keeps the Kumo fields editable. In contrast, an explicit `setDnsSource(_:)`
+or DNS apply that fails validation or restart returns its error; it is not
+silently presented as the missing-declaration fallback.
+
+Source changes use `KumoController.setDnsSource(_:)`. `applyDnsSettings(_:)`
+routes a source-only change through the same operation. A running core is
+restarted so its configuration comes from the generated YAML. DNS structure
+and source changes are not applied through piecemeal `PATCH /configs` calls.
+Scalar runtime PATCH generation retains the existing Kumo-owned DNS payload
+when Kumo DNS is enabled, but omits `dns` whenever the stored source is
+`profile`, so unrelated changes cannot replace profile-owned DNS.
 
 ### Hosts
 
 Mihomo's `hosts` key is a top-level configuration block, not nested under `dns`.
-Kumo stores `hosts` inside `DnsSettings` for UI convenience (users edit hosts
-alongside DNS settings in the Configure view), but `RuntimeConfigBuilder` emits
-`hosts` as a separate top-level block. The `hosts` key is only stripped from
-user profiles when the user has actually configured hosts in the Kumo UI;
-otherwise, profile-provided hosts are preserved.
+Kumo stores `hosts` inside `DnsSettings` for UI convenience, but
+`RuntimeConfigBuilder` emits it as a separate top-level block. Hosts ownership
+is orthogonal to the DNS source in both modes: non-empty Kumo hosts replace the
+profile's top-level `hosts`; when Kumo hosts are empty, profile hosts are
+preserved. The GUI therefore keeps the hosts editor available while profile DNS
+is effective and submits hosts-only changes without replacing profile DNS.
 
 ## Sniffer Runtime Settings
 

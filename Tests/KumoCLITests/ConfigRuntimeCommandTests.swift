@@ -77,6 +77,28 @@ final class ConfigRuntimeCommandTests: XCTestCase {
         }
     }
 
+    func testDnsSourceCommandParsesKumoAndProfile() throws {
+        let kumo = try XCTUnwrap(
+            try KumoCommand.parseAsRoot(["dns", "source", "kumo", "--json"]) as? KumoCommand.Dns.Source
+        )
+        XCTAssertEqual(kumo.source, "kumo")
+        XCTAssertTrue(kumo.options.json)
+
+        let profile = try XCTUnwrap(
+            try KumoCommand.parseAsRoot(["dns", "source", "profile"]) as? KumoCommand.Dns.Source
+        )
+        XCTAssertEqual(profile.source, "profile")
+        XCTAssertFalse(profile.options.json)
+    }
+
+    func testDnsSourceCommandRejectsInvalidSource() {
+        XCTAssertThrowsError(try KumoCommand.parseAsRoot(["dns", "source", "upstream"])) { error in
+            let message = Self.failureMessage(error)
+            XCTAssertTrue(message.contains("Invalid DNS source 'upstream'"), message)
+            XCTAssertTrue(message.contains("kumo, profile"), message)
+        }
+    }
+
     // MARK: - Unknown-key rejection
 
     func testConfigSetPatchRejectsUnknownKeysAndPointsAtDedicatedCommands() throws {
@@ -116,7 +138,18 @@ final class ConfigRuntimeCommandTests: XCTestCase {
         }
     }
 
+    func testDnsSettingsPatchMergesSource() throws {
+        let merged = try applyingSettingsPatch(
+            Data(#"{"source":"profile"}"#.utf8),
+            to: DnsSettings(),
+            name: "DnsSettings"
+        )
+
+        XCTAssertEqual(merged.source, .profile)
+    }
+
     func testPatchKeyAllowlistsMatchCodableKeys() throws {
+        XCTAssertTrue(DnsSettings.patchKeys.contains("source"))
         try assertPatchKeysMatch(DnsSettings.self, instance: DnsSettings())
         try assertPatchKeysMatch(SnifferSettings.self, instance: SnifferSettings())
         try assertPatchKeysMatch(TunSettings.self, instance: TunSettings(device: "utun9"))

@@ -295,13 +295,21 @@ extension KumoController {
         }
     }
 
-    func currentLaunchConfiguration(corePath: String? = nil) throws -> CoreLaunchConfiguration {
-        try launchConfiguration(profileYAML: nil, corePath: corePath)
+    func currentLaunchConfiguration(
+        corePath: String? = nil,
+        runtimeSettings candidateRuntimeSettings: CoreRuntimeSettings? = nil
+    ) throws -> CoreLaunchConfiguration {
+        try launchConfiguration(
+            profileYAML: nil,
+            corePath: corePath,
+            runtimeSettings: candidateRuntimeSettings
+        )
     }
 
     private func launchConfiguration(
         profileYAML: String?,
-        corePath: String? = nil
+        corePath: String? = nil,
+        runtimeSettings candidateRuntimeSettings: CoreRuntimeSettings? = nil
     ) throws -> CoreLaunchConfiguration {
         let status = try stateStore.load()
         var profile = try profileRepository.loadDefaultProfile()
@@ -318,7 +326,7 @@ extension KumoController {
             endpoint: status.endpoint,
             proxyPorts: status.proxyPorts,
             mode: status.mode,
-            runtimeSettings: runtimeSettings(for: status)
+            runtimeSettings: candidateRuntimeSettings ?? runtimeSettings(for: status)
         )
     }
 

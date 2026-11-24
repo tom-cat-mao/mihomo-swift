@@ -283,6 +283,7 @@ final class KumoCLIKitTests: XCTestCase {
         XCTAssertTrue(HelpText.topic(["rules"]).contains("kumo rules enable <index>"))
         XCTAssertTrue(HelpText.topic(["profile"]).contains("kumo profile delete <id> [--dry-run]"))
         XCTAssertTrue(HelpText.topic(["dns"]).contains("kumo dns set --file <path>"))
+        XCTAssertTrue(HelpText.topic(["dns"]).contains("kumo dns source <kumo|profile> [--json]"))
         XCTAssertTrue(HelpText.topic(["sniffer"]).contains("SnifferSettings"))
         XCTAssertTrue(HelpText.topic(["tun", "settings"]).contains("TunSettings"))
         XCTAssertTrue(HelpText.topic(["sysproxy"]).contains("kumo sysproxy set --bypass"))
@@ -371,7 +372,7 @@ final class KumoCLIKitTests: XCTestCase {
             XCTAssertTrue(HelpText.topLevel.contains(entry.name), "missing command: \(entry.name)")
         }
         XCTAssertTrue(HelpText.topLevel.contains("select"))
-        XCTAssertEqual(KumoCommand.configuration.version, "0.1.1")
+        XCTAssertEqual(KumoCommand.configuration.version, "0.1.2")
         XCTAssertTrue(HelpText.topLevel.contains("kumo@\(KumoCommand.configuration.version)"))
     }
 

@@ -259,12 +259,14 @@ enum HelpTopics {
                 "kumo dns [--json]",
                 "kumo dns enable [--json]",
                 "kumo dns disable [--json]",
+                "kumo dns source <kumo|profile> [--json]",
                 "kumo dns set --file <path> [--dry-run] [--json]",
                 "kumo dns set --stdin [--dry-run] [--json]"
             ],
-            example: "kumo dns set --stdin --dry-run --json",
+            example: "kumo dns source profile --json",
             details: [
-                "`dns set` reads a JSON object whose keys match DnsSettings. Only the provided keys are changed; the core restarts when settings are applied while running. Use --dry-run to preview the merged settings."
+                "`dns source` selects Kumo-managed DNS (`kumo`) or the current profile's DNS (`profile`) and prints the applied DNS settings.",
+                "`dns set` reads a JSON object whose keys match DnsSettings, including `source`. Only the provided keys are changed; the core restarts when settings are applied while running. Use --dry-run to preview the merged settings."
             ]
         ),
         "sniffer": HelpTopic(

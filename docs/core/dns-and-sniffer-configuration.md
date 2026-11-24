@@ -8,8 +8,8 @@ DNS and Sniffer are independent runtime domains in Kumo, decoupled from TUN as o
 
 ```
 KumoApp (SwiftUI)
-  ├── DNSView ──────→ KumoAppStore.applyDnsSettings()
-  │                      └── KumoController.applyDnsSettings()
+  ├── DNSView ──────→ KumoAppStore.setDnsSource() / applyDnsSettings()
+  │                      └── KumoController.setDnsSource() / applyDnsSettings()
   │                           ├── stateStore.save()
   │                           └── restart() → RuntimeConfigBuilder
   │
@@ -26,9 +26,12 @@ The key design decision is that **DNS/Sniffer changes restart the core** rather 
 ### DnsSettings
 
 Stored in `CoreRuntimeSettings.dns`, persisted as part of `CoreStatus.runtimeSettings`.
+`source` selects the owner of Mihomo's top-level `dns` block; it is not emitted
+as a field inside that block. Legacy state without `source` decodes as `kumo`.
 
 | Field | Type | Default | YAML Key |
 |-------|------|---------|----------|
+| `source` | `DnsSource` | `.kumo` | Ownership selector only |
 | `isEnabled` | `Bool` | `true` | `dns.enable` |
 | `listen` | `String` | `""` | `dns.listen` |
 | `ipv6` | `Bool` | `false` | `dns.ipv6` |
@@ -105,24 +108,26 @@ This is intentionally separate from `PolicyValue` because the boolean case (`geo
 
 ## YAML Generation
 
-### Controlled Keys
+### Controlled Keys and DNS Ownership
 
-`RuntimeConfigBuilder` maintains a set of controlled top-level keys that are stripped from user profiles and replaced with Kumo-managed values:
+`RuntimeConfigBuilder` maintains a set of controlled top-level keys that are
+stripped from the merged profile and replaced with Kumo-managed values. DNS
+ownership depends on both the selected source and the existing enable flag:
 
-```swift
-private static let controlledTopLevelKeys: Set<String> = [
-    "external-controller", "secret", "mixed-port", "mode",
-    "allow-lan", "log-level", "ipv6", "find-process-mode",
-    "geodata-mode", "geo-auto-update", "geo-update-interval",
-    "geox-url", "dns", "sniffer"
-]
-```
+- `kumo` source with DNS enabled: strip `dns` and emit the complete normalized
+  Kumo mapping. With Kumo DNS disabled, retain the existing behavior of leaving
+  the merged profile's `dns` block untouched and emitting no Kumo DNS block.
+- Effective `profile` source: leave `dns` uncontrolled and preserve the merged
+  profile mapping verbatim after active overrides. Do not decode and rebuild it
+  through `DnsSettings`.
+- Requested `profile` source with no merged `dns` declaration: retain the
+  stored source selection but resolve ownership to Kumo as a runtime fallback.
+  The GUI labels this fallback and leaves the Kumo fields editable.
 
-Dynamic additions:
-- `tun` — when `runtimeSettings.tun?.isEnabled == true`
-- `dns` — when `runtimeSettings.dns?.isEnabled == true`
-- `sniffer` — when `runtimeSettings.sniffer?.isEnabled == true`
-- `hosts` — when `runtimeSettings.dns?.hosts.isEmpty == false`
+`currentProfileDeclaresDNS()` examines the profile after active overrides, so
+both the builder and GUI use the same ownership decision. Other dynamic keys
+remain independent: `tun` and `sniffer` follow their own settings, and `hosts`
+is controlled whenever Kumo hosts are non-empty in either DNS source mode.
 
 ### Hosts Top-Level Emission
 
@@ -135,7 +140,7 @@ hosts:
   example.com: "1.2.3.4"
 ```
 
-The `hosts` key is only added to `controlledTopLevelKeys` when the user has configured hosts. If the user has not configured hosts, profile-provided `hosts` entries are preserved. This avoids silently dropping user data.
+The `hosts` key is added to the controlled keys only when the user has configured Kumo hosts, regardless of the DNS source. If Kumo hosts are empty, profile-provided `hosts` entries are preserved. This avoids silently dropping user data and keeps hosts orthogonal to profile-owned DNS.
 
 ### Empty Value Omission
 
@@ -184,19 +189,36 @@ This handles the edge case where Mihomo has `hosts` configured but no `dns` bloc
 
 ## Runtime Patch (Live Core)
 
-When `updateRuntimeSettings()` is called while the core is running, a PATCH is sent to `/configs`. The patch includes:
-
-- `dns` — all enabled DNS fields (but NOT `hosts`, see below)
-- `sniffer` — all enabled Sniffer fields
-- `hosts` — as a separate top-level key, extracted from `DnsSettings.hosts`
-
-This separation is necessary because Mihomo's `/configs` PATCH expects `hosts` at the top level, not nested under `dns`.
+`updateRuntimeSettings()` can PATCH scalar runtime settings to `/configs`. Its
+existing payload includes Kumo-owned DNS when Kumo DNS is enabled, but omits
+`dns` whenever the stored source is `profile`, preventing unrelated scalar
+changes from replacing profile DNS. Applying DNS structure or source changes
+uses generated YAML and a core restart instead. Hosts remain a separate
+top-level concern, not a nested `dns` field; applying hosts-only changes while
+profile DNS is effective preserves the profile's DNS mapping.
 
 ## UI Patterns
 
+### DNS Source and Fallback
+
+`DNSView` binds its native source picker to the stored `DnsSettings.source` and
+calls `KumoAppStore.setDnsSource()` only for an actual change. The store refreshes
+status, profile declaration state, and the running core configuration after a
+successful switch; picker selection is not an independent optimistic state that
+could trigger binding loops or duplicate restarts.
+
+When Kumo DNS is selected but the current profile declares DNS, the view offers
+**Use DNS from profile**. When profile DNS is effective, Kumo DNS fields and the
+enable toggle are replaced by `Provided by the current profile.` so stored Kumo
+values are not mistaken for live profile values. Hosts remain editable and their
+Reset/Apply controls compare and submit only hosts changes. When the requested
+profile has no DNS declaration, the view reports `Profile DNS is unavailable.
+Kumo DNS is in effect.` and keeps the Kumo fields editable.
+
 ### Staged Draft with Reset/Apply
 
-Both `DNSView` and `SnifferView` follow the same pattern established by `TunView`:
+Kumo-owned `DNSView` fields and `SnifferView` follow the pattern established by
+`TunView`:
 
 1. On appear: copy current settings into local `@State` draft
 2. User edits draft (not committed to store)
@@ -204,7 +226,10 @@ Both `DNSView` and `SnifferView` follow the same pattern established by `TunView
 4. "Apply" button validates, normalizes, and commits to store
 5. Store calls `controller.applyDnsSettings()` which saves state and restarts core
 
-This prevents partial/inconsistent states from reaching the running core.
+A DNS source change replaces the draft with the newly stored settings, avoiding
+stale values from the previous ownership mode. Profile-mode hosts apply starts
+from the stored Kumo settings and changes only `hosts`. This prevents
+partial/inconsistent states from reaching the running core.
 
 ### Validation
 
@@ -219,13 +244,13 @@ Validation runs on Apply, not on every keystroke.
 
 | File | Responsibility |
 |------|---------------|
-| `Models/Models.swift` | `DnsSettings`, `SnifferSettings`, `PolicyValue`, `FallbackFilterValue` definitions |
+| `Models/Models.swift` | `DnsSource`, `DnsSettings`, `SnifferSettings`, `PolicyValue`, `FallbackFilterValue` definitions and legacy source decoding |
 | `Configuration/RuntimeConfigBuilder.swift` | YAML generation for `dns`, `sniffer`, and `hosts` blocks |
 | `Networking/MihomoControllerClient.swift` | Parsing `dns` and `hosts` from controller responses |
 | `KumoCoreKit.swift` | `dnsPatch(for:)`, `snifferPatch(for:)`, `normalizedDnsSettings()`, `normalizedSnifferSettings()` |
 | `Support/DNSValidator.swift` | Validation helpers for DNS fields |
 | `Views/ConfigureViews/` | `DNSView.swift`, `SnifferView.swift`, and shared UI components |
-| `Stores/KumoAppStore.swift` | `applyDnsSettings()`, `applySnifferSettings()`, `setDnsEnabled()`, `setSnifferEnabled()` |
+| `Stores/KumoAppStore.swift` | `setDnsSource()`, `currentProfileDeclaresDNS`, `applyDnsSettings()`, `applySnifferSettings()`, `setDnsEnabled()`, `setSnifferEnabled()` |
 
 ## Future Work
 

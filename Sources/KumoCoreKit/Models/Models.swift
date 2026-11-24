@@ -171,6 +171,11 @@ public enum FallbackFilterValue: Codable, Equatable, Sendable {
     }
 }
 
+public enum DnsSource: String, Codable, CaseIterable, Sendable {
+    case kumo
+    case profile
+}
+
 public struct DnsSettings: Codable, Equatable, Sendable {
     public var isEnabled: Bool
     public var listen: String
@@ -196,6 +201,7 @@ public struct DnsSettings: Codable, Equatable, Sendable {
     public var proxyServerNameserverPolicy: [String: PolicyValue]
     public var cacheAlgorithm: String
     public var hosts: [String: PolicyValue]
+    public var source: DnsSource
 
     public init(
         isEnabled: Bool = true,
@@ -221,7 +227,8 @@ public struct DnsSettings: Codable, Equatable, Sendable {
         nameserverPolicy: [String: PolicyValue] = [:],
         proxyServerNameserverPolicy: [String: PolicyValue] = [:],
         cacheAlgorithm: String = "",
-        hosts: [String: PolicyValue] = [:]
+        hosts: [String: PolicyValue] = [:],
+        source: DnsSource = .kumo
     ) {
         self.isEnabled = isEnabled
         self.listen = listen
@@ -247,6 +254,66 @@ public struct DnsSettings: Codable, Equatable, Sendable {
         self.proxyServerNameserverPolicy = proxyServerNameserverPolicy
         self.cacheAlgorithm = cacheAlgorithm
         self.hosts = hosts
+        self.source = source
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled
+        case listen
+        case ipv6
+        case ipv6Timeout
+        case preferH3
+        case enhancedMode
+        case fakeIPRange
+        case fakeIPRange6
+        case fakeIPFilter
+        case fakeIPFilterMode
+        case useHosts
+        case useSystemHosts
+        case respectRules
+        case defaultNameserver
+        case nameserver
+        case fallback
+        case fallbackFilter
+        case proxyServerNameserver
+        case directNameserver
+        case directNameserverFollowPolicy
+        case nameserverPolicy
+        case proxyServerNameserverPolicy
+        case cacheAlgorithm
+        case hosts
+        case source
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            isEnabled: try container.decode(Bool.self, forKey: .isEnabled),
+            listen: try container.decode(String.self, forKey: .listen),
+            ipv6: try container.decode(Bool.self, forKey: .ipv6),
+            ipv6Timeout: try container.decode(Int.self, forKey: .ipv6Timeout),
+            preferH3: try container.decode(Bool.self, forKey: .preferH3),
+            enhancedMode: try container.decode(String.self, forKey: .enhancedMode),
+            fakeIPRange: try container.decode(String.self, forKey: .fakeIPRange),
+            fakeIPRange6: try container.decode(String.self, forKey: .fakeIPRange6),
+            fakeIPFilter: try container.decode([String].self, forKey: .fakeIPFilter),
+            fakeIPFilterMode: try container.decode(String.self, forKey: .fakeIPFilterMode),
+            useHosts: try container.decode(Bool.self, forKey: .useHosts),
+            useSystemHosts: try container.decode(Bool.self, forKey: .useSystemHosts),
+            respectRules: try container.decode(Bool.self, forKey: .respectRules),
+            defaultNameserver: try container.decode([String].self, forKey: .defaultNameserver),
+            nameserver: try container.decode([String].self, forKey: .nameserver),
+            fallback: try container.decode([String].self, forKey: .fallback),
+            fallbackFilter: try container.decode([String: FallbackFilterValue].self, forKey: .fallbackFilter),
+            proxyServerNameserver: try container.decode([String].self, forKey: .proxyServerNameserver),
+            directNameserver: try container.decode([String].self, forKey: .directNameserver),
+            directNameserverFollowPolicy: try container.decode(Bool.self, forKey: .directNameserverFollowPolicy),
+            nameserverPolicy: try container.decode([String: PolicyValue].self, forKey: .nameserverPolicy),
+            proxyServerNameserverPolicy: try container.decode([String: PolicyValue].self, forKey: .proxyServerNameserverPolicy),
+            cacheAlgorithm: try container.decode(String.self, forKey: .cacheAlgorithm),
+            hosts: try container.decode([String: PolicyValue].self, forKey: .hosts),
+            source: try container.decodeIfPresent(DnsSource.self, forKey: .source) ?? .kumo
+        )
     }
 }
 

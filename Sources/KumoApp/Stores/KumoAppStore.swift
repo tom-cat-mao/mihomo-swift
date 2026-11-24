@@ -88,6 +88,7 @@ final class KumoAppStore {
     var profilePreviewGroups: [ProxyGroup] = []
     var profiles: [ProfileSummary] = []
     var currentProfile: ProfileSummary?
+    var currentProfileDeclaresDNS = false
     var coreConfiguration = CoreConfigurationSnapshot()
     var trafficSnapshot = TrafficSnapshot()
     /// Rolling 60-sample buffer of throughput data points (~60 s at
@@ -312,8 +313,10 @@ final class KumoAppStore {
         do {
             profiles = try await runner.profiles()
             currentProfile = try await runner.currentProfile()
+            currentProfileDeclaresDNS = try await runner.currentProfileDeclaresDNS()
             errorMessage = nil
         } catch {
+            currentProfileDeclaresDNS = false
             errorMessage = displayMessage(for: error)
         }
         await refreshProfilePreview()
@@ -827,8 +830,10 @@ final class KumoAppStore {
     func refreshOverrides() async {
         do {
             overrides = try await runner.overrides()
+            currentProfileDeclaresDNS = try await runner.currentProfileDeclaresDNS()
             errorMessage = nil
         } catch {
+            currentProfileDeclaresDNS = false
             errorMessage = displayMessage(for: error)
         }
     }
@@ -1235,6 +1240,22 @@ final class KumoAppStore {
     }
 
     // MARK: - DNS
+
+    func setDnsSource(_ source: DnsSource) async {
+        let currentSource = status.runtimeSettings?.dns?.source ?? .kumo
+        guard source != currentSource, !isLoading else { return }
+
+        await performLoadingTask { [self] in
+            _ = try await runner.setDnsSource(source)
+            await refreshStatus()
+            currentProfileDeclaresDNS = try await runner.currentProfileDeclaresDNS()
+            if status.state == .running {
+                try await runner.waitForControllerReady()
+                await loadCoreConfiguration()
+                startTrafficStream()
+            }
+        }
+    }
 
     func applyDnsSettings(_ settings: DnsSettings) async {
         await performLoadingTask { [self] in

@@ -21,7 +21,7 @@ extension KumoController {
         if let tun = settings.tun {
             patch["tun"] = tunPatch(for: tun)
         }
-        if let dns = settings.dns, dns.isEnabled {
+        if let dns = settings.dns, dns.source == .kumo, dns.isEnabled {
             patch["dns"] = dnsPatch(for: dns)
         }
         if let sniffer = settings.sniffer, sniffer.isEnabled {
