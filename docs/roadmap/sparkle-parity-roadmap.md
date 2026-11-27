@@ -34,8 +34,8 @@ updates, and backup workflows.
 | Controller | Traffic, memory, logs, and lifecycle events | partial | `MihomoControllerClient` | Event streams use bounded caches and survive transient disconnects. |
 | CLI | Stable agent-friendly JSON commands | partial | `KumoCLI` | Every command has `--json`, stable envelopes, and deterministic exit codes. |
 | System Proxy | Manual macOS system proxy | implemented | `SystemProxyController` | Dry-run and real commands configure web, secure web, and SOCKS proxy. |
-| System Proxy | Active service detection and restore | partial | `SystemProxyController` | Kumo detects the active network service by default route; restoring exact previous proxy settings from the captured snapshot is still open. |
-| System Proxy | PAC hosting and guard | partial | `SystemProxyController` / `KumoService` | PAC hosting ships in the app process (`PACServer` + `networksetup -setautoproxyurl`); the proxy guard and helper-hosted PAC listener remain open. |
+| System Proxy | Active service detection and restore | implemented | `SystemProxyController` | Kumo detects the active network service by default route and restores exact previous manual proxy, bypass list, and external PAC URL from `previousSystemProxySnapshot` (including `--dry-run`). |
+| System Proxy | PAC hosting and guard | partial | `SystemProxyController` / `KumoService` | Helper-hosted PAC in `kumod` (`POST /pac/start`, `POST /pac/stop`, `GET /pac/status`) is implemented with direct-mode fallback; the proxy guard remains open. |
 | Service | Privileged service backend | implemented | `KumoService` | The root LaunchDaemon handles TUN and privileged operations, the user LaunchAgent handles TUN-off core ownership, and `BackendRouter` selects the tier per command without public command changes; both serve the CLI while the GUI is closed. |
 | Service | Signed local service requests | implemented | `KumoService` | Requests use shared key material, timestamps, nonces, and body hashing on both tiers, with signing tests. |
 | Sub-Store | Persisted configuration | implemented | `SubStoreManager` | Status, local resource version, backend port, cron settings, proxy mode, LAN mode, and custom backend settings persist. |
@@ -55,8 +55,7 @@ updates, and backup workflows.
 1. Harden service mode: notarized helper distribution, automatic repair, and
    proxy-guard events.
 2. Add core lifecycle event streams and JSON schemas for automation consumers.
-3. Extend root-daemon route parity, service-side log streaming, and
-   helper-hosted PAC hosting.
+3. Extend root-daemon route parity and service-side log streaming.
 
 ## Non-Goals
 

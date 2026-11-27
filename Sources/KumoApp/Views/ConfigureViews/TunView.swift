@@ -6,6 +6,8 @@ struct TunView: View {
     @Environment(KumoAppStore.self) private var store
     @State private var isConfirmingServiceUninstall = false
     @State private var tunDraft = TunSettings()
+    @State private var lastSyncedTunSettings: TunSettings?
+    @State private var hasExternalUpdate = false
     let onNavigate: (SidebarDestination) -> Void
 
     var body: some View {
@@ -115,6 +117,11 @@ struct TunView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if hasExternalUpdate {
+                        ExternalChangeNoticeRow {
+                            updateTunDraft(currentTunSettings)
+                        }
+                    }
                     HStack {
                         Spacer()
                         Button(String(localized: "Reset")) {
@@ -153,6 +160,13 @@ struct TunView: View {
                 updateTunDraft(newValue)
             } else {
                 tunDraft.isEnabled = newValue.isEnabled
+            }
+        }
+        .onChange(of: store.externalRevision(for: .status)) { _, _ in
+            let comparableCurrent = comparableTunSettings(currentTunSettings)
+            if hasTunDraftChanges(in: normalizedTunDraft), comparableCurrent != lastSyncedTunSettings {
+                lastSyncedTunSettings = comparableCurrent
+                hasExternalUpdate = true
             }
         }
         .confirmationDialog(String(localized: "Uninstall Kumo Helper?"),
@@ -220,6 +234,8 @@ struct TunView: View {
 
     private func updateTunDraft(_ settings: TunSettings) {
         tunDraft = normalizedTunSettings(settings)
+        lastSyncedTunSettings = comparableTunSettings(settings)
+        hasExternalUpdate = false
     }
 
     private func normalizedTunSettings(_ settings: TunSettings) -> TunSettings {

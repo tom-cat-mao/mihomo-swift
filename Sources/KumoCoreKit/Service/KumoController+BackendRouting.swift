@@ -237,20 +237,24 @@ extension KumoController {
 
         // 1. Explicit ownership handoffs on tier transitions.
         if coreIsRunning, enableTransition, agentReachable, rootReachable {
-            return try await transferTunOwnership(
+            let result = try await transferTunOwnership(
                 from: .userAgent,
                 to: .rootService,
                 updatedStatus: updatedStatus,
                 previousStatus: status
             )
+            notifyControlPlaneChanged([.status])
+            return result
         }
         if coreIsRunning, disableTransition, agentReachable, rootReachable {
-            return try await transferTunOwnership(
+            let result = try await transferTunOwnership(
                 from: .rootService,
                 to: .userAgent,
                 updatedStatus: updatedStatus,
                 previousStatus: nil
             )
+            notifyControlPlaneChanged([.status])
+            return result
         }
 
         // 2. TUN-on operations (enabling or already enabled): the privileged
@@ -260,17 +264,25 @@ extension KumoController {
         if normalized.isEnabled || previousTun.isEnabled {
             if let client = privilegedServiceClient() {
                 let request = try client.applyTunSettingsRequest(normalized)
-                return try client.sendDecodable(request, as: TunStatus.self)
+                let result = try client.sendDecodable(request, as: TunStatus.self)
+                notifyControlPlaneChanged([.status])
+                return result
             }
-            return try await applyTunLocally(normalized, status: status, service: service)
+            let result = try await applyTunLocally(normalized, status: status, service: service)
+            notifyControlPlaneChanged([.status])
+            return result
         }
 
         // 3. TUN stays off: apply through the core's current owner so the
         //    operation cannot move ownership to the root daemon.
         if coreIsRunning, agentReachable {
-            return try await applyTunThroughAgent(normalized, status: status, service: service)
+            let result = try await applyTunThroughAgent(normalized, status: status, service: service)
+            notifyControlPlaneChanged([.status])
+            return result
         }
-        return try await applyTunLocally(normalized, status: status, service: service)
+        let result = try await applyTunLocally(normalized, status: status, service: service)
+        notifyControlPlaneChanged([.status])
+        return result
     }
 
     /// Persists the shared status with the requested TUN settings applied.
@@ -405,6 +417,11 @@ extension KumoController {
         } catch {
             diagnostics.append(formatDiagnostic(stage: "status", error: error))
             latestStatus = (try? stateStore.load()) ?? CoreStatus()
+        }
+        if await systemProxyController.isInProcessPACRunning() {
+            let note = "pac: In-process PAC server will stop when the app exits; install the Kumo user agent to keep PAC active."
+            shutdownLogger.warning("\(note, privacy: .public)")
+            diagnostics.append(note)
         }
         return ShutdownResult(status: latestStatus, diagnostics: diagnostics)
     }

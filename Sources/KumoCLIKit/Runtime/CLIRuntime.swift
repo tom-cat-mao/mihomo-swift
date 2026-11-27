@@ -20,12 +20,18 @@ public final class CLIRuntime: @unchecked Sendable {
     let options: RuntimeOptions
     let renderer: OutputRenderer
     let debugLogStore: DebugLogStore
+    let commandSummary: String
     private var timing: [(String, Int)] = []
     private let startedAt = Date()
 
-    init(options: RuntimeOptions, controller: KumoController = KumoController()) {
+    init(
+        options: RuntimeOptions,
+        controller: KumoController = KumoController(),
+        commandSummary: String? = nil
+    ) {
         self.options = options
         self.controller = controller
+        self.commandSummary = commandSummary ?? Self.storage?.commandSummary ?? "kumo"
         self.renderer = OutputRenderer(options: options)
         self.debugLogStore = DebugLogStore(paths: controller.paths, options: options)
         Self.current = self
@@ -80,7 +86,11 @@ public final class CLIRuntime: @unchecked Sendable {
 
     func finish(success: Bool) throws {
         let duration = Int(Date().timeIntervalSince(startedAt) * 1000)
-        debugLogStore.writeSummary(success: success, durationMilliseconds: duration)
+        debugLogStore.writeSummary(
+            success: success,
+            durationMilliseconds: duration,
+            commandSummary: commandSummary
+        )
         if options.timing {
             let path = try debugLogStore.writeTiming(timing, totalMilliseconds: duration)
             if !options.wantsJSON, !options.isSilent {

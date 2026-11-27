@@ -1,5 +1,19 @@
 import Foundation
 
+public struct ConfigurationRollbackSummary: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let createdAt: Date
+    public let source: String?
+    public let summary: String?
+
+    public init(id: String, createdAt: Date, source: String? = nil, summary: String? = nil) {
+        self.id = id
+        self.createdAt = createdAt
+        self.source = source
+        self.summary = summary
+    }
+}
+
 /// Durable, bounded pre-apply states. A point is first written as a hidden
 /// pending file and becomes visible to rollback only after the apply succeeds.
 struct ConfigurationRollbackStore: Sendable {
@@ -10,6 +24,8 @@ struct ConfigurationRollbackStore: Sendable {
         var overrides: OverrideRepository.TransactionSnapshot
         var status: CoreStatus
         var runtimeConfiguration: Data?
+        var source: String? = nil
+        var summary: String? = nil
     }
 
     struct Staged: Sendable {
@@ -30,7 +46,9 @@ struct ConfigurationRollbackStore: Sendable {
         profiles: ProfileRepository.TransactionSnapshot,
         overrides: OverrideRepository.TransactionSnapshot,
         status: CoreStatus,
-        runtimeConfiguration: Data?
+        runtimeConfiguration: Data?,
+        source: String? = nil,
+        summary: String? = nil
     ) throws -> Staged {
         try prepareDirectory()
         let point = Point(
@@ -39,7 +57,9 @@ struct ConfigurationRollbackStore: Sendable {
             profiles: profiles,
             overrides: overrides,
             status: status,
-            runtimeConfiguration: runtimeConfiguration
+            runtimeConfiguration: runtimeConfiguration,
+            source: source,
+            summary: summary
         )
         let pendingURL = directory.appendingPathComponent(".\(point.id).pending")
         let encoder = JSONEncoder()
@@ -71,6 +91,17 @@ struct ConfigurationRollbackStore: Sendable {
 
     func count() throws -> Int {
         try committedURLs().count
+    }
+
+    func summaries() throws -> [ConfigurationRollbackSummary] {
+        try committedPoints().reversed().map {
+            ConfigurationRollbackSummary(
+                id: $0.id,
+                createdAt: $0.createdAt,
+                source: $0.source,
+                summary: $0.summary
+            )
+        }
     }
 
     func consume(id: String) throws {

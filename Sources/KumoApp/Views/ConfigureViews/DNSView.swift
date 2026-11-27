@@ -6,6 +6,9 @@ struct DNSView: View {
     @Environment(KumoAppStore.self) private var store
     let onNavigate: (SidebarDestination) -> Void
     @State private var dnsDraft = DnsSettings()
+    @State private var lastSyncedDnsSettings: DnsSettings?
+    @State private var pendingLocalSourceChange: DnsSource?
+    @State private var hasExternalUpdate = false
 
     var body: some View {
         // Normalized once per pass: the validation text and both button
@@ -26,10 +29,19 @@ struct DNSView: View {
             updateDnsDraft(currentDnsSettings)
         }
         .onChange(of: currentDnsSettings) { oldValue, newValue in
-            if oldValue.source != newValue.source || !hasDnsDraftChanges(in: normalizedDnsDraft) {
+            if pendingLocalSourceChange == newValue.source {
+                pendingLocalSourceChange = nil
+                updateDnsDraft(newValue)
+            } else if !hasDnsDraftChanges(in: normalizedDnsDraft, against: oldValue) {
                 updateDnsDraft(newValue)
             } else if !effectiveProfile {
                 dnsDraft.isEnabled = newValue.isEnabled
+            }
+        }
+        .onChange(of: store.externalRevision(for: .status)) { _, _ in
+            if hasDnsDraftChanges(in: normalizedDnsDraft), currentDnsSettings != lastSyncedDnsSettings {
+                lastSyncedDnsSettings = currentDnsSettings
+                hasExternalUpdate = true
             }
         }
     }
@@ -199,6 +211,11 @@ struct DNSView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if hasExternalUpdate {
+                ExternalChangeNoticeRow {
+                    updateDnsDraft(currentDnsSettings)
+                }
+            }
             HStack {
                 Spacer()
                 Button(String(localized: effectiveProfile ? "Reset Hosts" : "Reset")) {
@@ -238,7 +255,13 @@ struct DNSView: View {
 
     private func selectDnsSource(_ source: DnsSource) {
         guard source != currentDnsSettings.source, !store.isLoading else { return }
-        Task { await store.setDnsSource(source) }
+        pendingLocalSourceChange = source
+        Task {
+            await store.setDnsSource(source)
+            if pendingLocalSourceChange == source {
+                pendingLocalSourceChange = nil
+            }
+        }
     }
 
     private var currentDnsSettings: DnsSettings {
@@ -247,11 +270,13 @@ struct DNSView: View {
 
     /// Takes the normalized draft for the current body pass; normalizing here
     /// again is what the body pass already paid for.
-    private func hasDnsDraftChanges(in draft: DnsSettings) -> Bool {
-        if effectiveProfile {
-            return draft.hosts != currentDnsSettings.hosts
+    private func hasDnsDraftChanges(in draft: DnsSettings, against baseline: DnsSettings? = nil) -> Bool {
+        let target = baseline ?? currentDnsSettings
+        let targetIsProfile = target.source == .profile && store.currentProfileDeclaresDNS
+        if targetIsProfile {
+            return draft.hosts != target.hosts
         }
-        return draft != currentDnsSettings
+        return draft != target
     }
 
     private func canApplyDnsDraft(for draft: DnsSettings) -> Bool {
@@ -348,6 +373,8 @@ struct DNSView: View {
 
     private func updateDnsDraft(_ settings: DnsSettings) {
         dnsDraft = settings
+        lastSyncedDnsSettings = settings
+        hasExternalUpdate = false
     }
 
     private static func normalizedList(_ values: [String]) -> [String] {

@@ -228,6 +228,7 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
     private let ownershipRepair: AppSupportOwnershipRepair?
     private let idleTimeout: TimeInterval
     private let logger: KumoServiceLogger?
+    private let pacServer = PACServer()
     private var seenNonces = Set<String>()
 
     init(
@@ -267,19 +268,26 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
 
         while true {
             let isCoreRunning = idlePolicy == nil ? false : ownedCoreIsRunning()
+            let isPACRunning = idlePolicy == nil ? false : await pacServer.isRunning
             let pollTimeout = idlePolicy.map { policy in
-                Int32((policy.nextCheckIntervalSeconds(at: Date(), isCoreRunning: isCoreRunning) * 1000).rounded())
+                Int32((policy.nextCheckIntervalSeconds(
+                    at: Date(),
+                    isCoreRunning: isCoreRunning,
+                    isPACRunning: isPACRunning
+                ) * 1000).rounded())
             } ?? -1
 
             var descriptorState = pollfd(fd: listener.descriptor, events: Int16(POLLIN), revents: 0)
             let pollResult = Darwin.poll(&descriptorState, 1, pollTimeout)
             if pollResult == 0 {
-                // Re-check core ownership at the decision point so a core
-                // started by another tier during the poll window still
-                // suppresses the exit.
-                guard idlePolicy != nil, ownedCoreIsRunning() == false else { continue }
-                if idlePolicy?.shouldExit(now: Date(), isCoreRunning: false) == true {
-                    logger?.log("idle-exit: no client request for \(Int(idleTimeout))s and no core running")
+                // Re-check core ownership and PAC activity at the decision
+                // point so a core or PAC server started during the poll window
+                // still suppresses the exit.
+                guard idlePolicy != nil,
+                      ownedCoreIsRunning() == false,
+                      (await pacServer.isRunning) == false else { continue }
+                if idlePolicy?.shouldExit(now: Date(), isCoreRunning: false, isPACRunning: false) == true {
+                    logger?.log("idle-exit: no client request for \(Int(idleTimeout))s, no core running, and no PAC server active")
                     do {
                         try KumoController(paths: paths, useServiceBackend: false, ownerTier: .userAgent)
                             .releaseSystemProxyForGuardian()
@@ -423,11 +431,28 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
     /// writing a failed status) keeps the caller-side bookkeeping writable
     /// (Issue #3).
     private static func routeWritesAppSupportState(_ path: String) -> Bool {
-        path != "/service/status" && path != "/tun/status"
+        switch path {
+        case "/service/status", "/tun/status", "/pac/start", "/pac/stop", "/pac/status":
+            return false
+        default:
+            return true
+        }
     }
 
     private func route(_ request: KumoServiceSignedRequest) async throws -> KumoServiceTransportResponse {
-        let controller = KumoController(paths: paths, useServiceBackend: false, ownerTier: ownerTier)
+        let paths = self.paths
+        let pacHost: PACHost = mode == .root
+            ? .delegating(
+                remoteProvider: { KumoUserAgentManager(paths: paths).client() },
+                fallback: pacServer
+            )
+            : .inProcess(pacServer)
+        let controller = KumoController(
+            paths: paths,
+            useServiceBackend: false,
+            ownerTier: ownerTier,
+            pacHost: pacHost
+        )
         switch (request.method, request.path) {
         case ("GET", "/service/status"):
             return try json(ServiceModeStatus(
@@ -478,6 +503,27 @@ private final class KumoServiceSocketServer: @unchecked Sendable {
         case ("POST", "/tun/settings"):
             let settings = try JSONDecoder().decode(TunSettings.self, from: request.body)
             return try json(try await controller.applyTunSettings(settings))
+        case ("POST", "/pac/start"):
+            let payload = try JSONDecoder().decode(PACStartRequest.self, from: request.body)
+            let port = try await pacServer.start(script: payload.script)
+            logger?.log("pac server started on port \(port)")
+            return try json(PACServerStatus(
+                isRunning: true,
+                port: port,
+                url: "http://127.0.0.1:\(port)/proxy.pac"
+            ))
+        case ("POST", "/pac/stop"):
+            await pacServer.stop()
+            logger?.log("pac server stopped")
+            return try json(PACServerStatus(isRunning: false, port: nil, url: nil))
+        case ("GET", "/pac/status"):
+            let running = await pacServer.isRunning
+            let port = await pacServer.currentPort
+            return try json(PACServerStatus(
+                isRunning: running,
+                port: port,
+                url: port.map { "http://127.0.0.1:\($0)/proxy.pac" }
+            ))
         default:
             return KumoServiceTransportResponse(status: 404, error: "Unknown Kumo service endpoint: \(request.method) \(request.path)")
         }

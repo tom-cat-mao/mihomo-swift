@@ -75,6 +75,43 @@ final class KumoCLIKitTests: XCTestCase {
         XCTAssertFalse(output.contains("ghi"))
         XCTAssertFalse(output.contains("pass@example.com"))
         XCTAssertTrue(output.contains("[redacted]"))
+
+        let setSpaced = LogRedactor.redact("kumo config secret --set my-secret")
+        XCTAssertEqual(setSpaced, "kumo config secret --set [redacted]")
+
+        let setEquals = LogRedactor.redact("kumo config secret --set=my-secret")
+        XCTAssertEqual(setEquals, "kumo config secret --set=[redacted]")
+
+        let clearCmd = LogRedactor.redact("kumo config secret --clear")
+        XCTAssertEqual(clearCmd, "kumo config secret --clear")
+    }
+
+    func testDebugLogSummaryIncludesRedactedCommandInvocation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let paths = KumoPaths(applicationSupportDirectory: root)
+        let store = DebugLogStore(paths: paths, options: RuntimeOptions(arguments: ["--logs-max", "2"]))
+
+        store.writeSummary(
+            success: true,
+            durationMilliseconds: 12,
+            commandSummary: "kumo config apply --file /tmp/x.yaml --secret abc --token def --password=ghi secret jkl"
+        )
+
+        let path = try XCTUnwrap(store.currentLogPath)
+        let contents = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertTrue(contents.contains("kumo config apply --file /tmp/x.yaml"))
+        XCTAssertTrue(contents.contains("exit=0 duration=12ms"))
+        XCTAssertFalse(contents.contains("abc"))
+        XCTAssertFalse(contents.contains("def"))
+        XCTAssertFalse(contents.contains("ghi"))
+        XCTAssertFalse(contents.contains("jkl"))
+        XCTAssertTrue(contents.contains("--secret [redacted]"))
+        XCTAssertTrue(contents.contains("--token [redacted]"))
+        XCTAssertTrue(contents.contains("--password=[redacted]"))
+        XCTAssertTrue(contents.contains("secret [redacted]"))
     }
 
     func testDebugLogStoreCleanSupportsDryRun() throws {
@@ -372,7 +409,7 @@ final class KumoCLIKitTests: XCTestCase {
             XCTAssertTrue(HelpText.topLevel.contains(entry.name), "missing command: \(entry.name)")
         }
         XCTAssertTrue(HelpText.topLevel.contains("select"))
-        XCTAssertEqual(KumoCommand.configuration.version, "0.1.2")
+        XCTAssertEqual(KumoCommand.configuration.version, "0.1.3")
         XCTAssertTrue(HelpText.topLevel.contains("kumo@\(KumoCommand.configuration.version)"))
     }
 

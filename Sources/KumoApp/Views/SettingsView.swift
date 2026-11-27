@@ -1,3 +1,4 @@
+import AppKit
 import ServiceManagement
 import SwiftUI
 import KumoCoreKit
@@ -28,6 +29,9 @@ private struct GeneralSettingsTab: View {
     @State private var launchAtLoginErrorMessage: String?
     @State private var cliStatus: CLILinkStatus?
     @State private var cliBusy = false
+    @State private var pendingImportBackupURL: URL?
+    @State private var backupStatusMessage: String?
+    @State private var backupIsError = false
     @State private var cliErrorMessage: String?
     @State private var showRestartAlert = false
     @State private var isConfirmingAgentUninstall = false
@@ -80,6 +84,15 @@ private struct GeneralSettingsTab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+
+                if store.coreMigrationPlan?.action == .handoff {
+                    LabeledContent("Agent Migration") {
+                        Button(String(localized: "Migrate to Agent")) {
+                            Task { _ = await store.migrateCoreToUserAgent() }
+                        }
+                        .disabled(store.isLoading)
+                    }
                 }
             } header: {
                 Text(String(localized: "Background"))
@@ -166,6 +179,27 @@ private struct GeneralSettingsTab: View {
                         .textSelection(.enabled)
                 }
             }
+
+            Section(String(localized: "Backup")) {
+                HStack(spacing: 10) {
+                    Button(String(localized: "Export Backup…")) {
+                        exportBackup()
+                    }
+                    .disabled(store.isLoading)
+
+                    Button(String(localized: "Import Backup…")) {
+                        chooseBackupForImport()
+                    }
+                    .disabled(store.isLoading)
+                }
+
+                if let backupStatusMessage {
+                    Text(backupStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(backupIsError ? .red : .secondary)
+                        .textSelection(.enabled)
+                }
+            }
         }
         .formStyle(.grouped)
         .scenePadding()
@@ -173,6 +207,29 @@ private struct GeneralSettingsTab: View {
             await store.loadPreferences()
             await refreshCLIStatus()
             await store.refreshAgentStatus()
+            await store.refreshCoreMigrationPlan()
+        }
+        .confirmationDialog(
+            String(localized: "Import Backup?"),
+            isPresented: Binding {
+                pendingImportBackupURL != nil
+            } set: { isPresented in
+                if !isPresented {
+                    pendingImportBackupURL = nil
+                }
+            },
+            titleVisibility: .visible,
+            presenting: pendingImportBackupURL
+        ) { url in
+            Button(String(localized: "Import"), role: .destructive) {
+                pendingImportBackupURL = nil
+                Task { await performImportBackup(from: url) }
+            }
+            Button(String(localized: "Cancel"), role: .cancel) {
+                pendingImportBackupURL = nil
+            }
+        } message: { url in
+            Text(String(format: String(localized: "This replaces existing profiles, overrides, and settings from %@."), url.lastPathComponent))
         }
         .confirmationDialog(
             String(localized: "Remove Background Agent?"),
@@ -234,6 +291,50 @@ private struct GeneralSettingsTab: View {
                     .font(.caption)
             }
         }
+    }
+
+    private func exportBackup() {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = defaultBackupFolderName()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        Task {
+            let ok = await store.exportBackup(to: url)
+            if ok {
+                backupIsError = false
+                backupStatusMessage = String(format: String(localized: "Exported backup to %@."), url.lastPathComponent)
+            } else {
+                backupIsError = true
+                backupStatusMessage = store.errorMessage
+            }
+        }
+    }
+
+    private func chooseBackupForImport() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        pendingImportBackupURL = url
+    }
+
+    private func performImportBackup(from url: URL) async {
+        let ok = await store.importBackup(from: url)
+        if ok {
+            backupIsError = false
+            backupStatusMessage = String(format: String(localized: "Imported backup from %@."), url.lastPathComponent)
+        } else {
+            backupIsError = true
+            backupStatusMessage = store.errorMessage
+        }
+    }
+
+    private func defaultBackupFolderName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "Kumo-Backup-\(formatter.string(from: Date()))"
     }
 
     private func refreshCLIStatus() async {

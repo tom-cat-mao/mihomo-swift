@@ -285,6 +285,130 @@ final class ConfigurationTransactionTests: XCTestCase {
         XCTAssertEqual(reloads.count, 0)
     }
 
+    func testRollbackSummariesAreNewestFirstAndExposeMetadata() throws {
+        let paths = makePaths()
+        let repository = ProfileRepository(paths: paths)
+        _ = try repository.saveProfile(
+            Profile(name: "Current", source: .inline, rawYAML: "proxies: []\n"),
+            preferredID: "current"
+        )
+        let profiles = try repository.transactionSnapshot()
+        let overrides = try OverrideRepository(paths: paths).transactionSnapshot()
+        let store = ConfigurationRollbackStore(paths: paths)
+
+        func stage(id: String, createdAt: Date, source: String, summary: String) throws {
+            var staged = try store.stage(
+                profiles: profiles,
+                overrides: overrides,
+                status: CoreStatus(),
+                runtimeConfiguration: nil,
+                source: source,
+                summary: summary
+            )
+            staged.point.id = id
+            staged.point.createdAt = createdAt
+            try JSONEncoder().encode(staged.point).write(to: staged.pendingURL)
+            try store.commit(staged)
+        }
+
+        try stage(
+            id: "older",
+            createdAt: Date(timeIntervalSince1970: 100),
+            source: "older-source",
+            summary: "Older"
+        )
+        try stage(
+            id: "newer-a",
+            createdAt: Date(timeIntervalSince1970: 200),
+            source: "newer-source-a",
+            summary: "Newer A"
+        )
+        try stage(
+            id: "newer-b",
+            createdAt: Date(timeIntervalSince1970: 200),
+            source: "newer-source-b",
+            summary: "Newer B"
+        )
+
+        let summaries = try store.summaries()
+        XCTAssertEqual(summaries.map(\.id), ["newer-b", "newer-a", "older"])
+        XCTAssertEqual(summaries[0].createdAt, Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(summaries[0].source, "newer-source-b")
+        XCTAssertEqual(summaries[0].summary, "Newer B")
+        XCTAssertEqual(summaries[2].source, "older-source")
+        let controller = makeController(paths: paths)
+        XCTAssertEqual(try controller.rollbackSummaries(), summaries)
+        XCTAssertEqual(try controller.rollbackPointCount(), 3)
+    }
+
+    func testLegacyRollbackPointWithoutMetadataDecodesAndSummarizes() throws {
+        let paths = makePaths()
+        let repository = ProfileRepository(paths: paths)
+        _ = try repository.saveProfile(
+            Profile(name: "Current", source: .inline, rawYAML: "proxies: []\n"),
+            preferredID: "current"
+        )
+        let store = ConfigurationRollbackStore(paths: paths)
+        var staged = try store.stage(
+            profiles: try repository.transactionSnapshot(),
+            overrides: try OverrideRepository(paths: paths).transactionSnapshot(),
+            status: CoreStatus(),
+            runtimeConfiguration: nil
+        )
+        staged.point.id = "legacy"
+        staged.point.createdAt = Date(timeIntervalSince1970: 100)
+        try JSONEncoder().encode(staged.point).write(to: staged.pendingURL)
+        try store.commit(staged)
+
+        let url = paths.configurationRollbacksDirectory.appendingPathComponent("legacy.json")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertFalse(object.keys.contains("source"))
+        XCTAssertFalse(object.keys.contains("summary"))
+        let decoded = try JSONDecoder().decode(ConfigurationRollbackStore.Point.self, from: Data(contentsOf: url))
+        XCTAssertNil(decoded.source)
+        XCTAssertNil(decoded.summary)
+        XCTAssertEqual(
+            try store.summaries(),
+            [ConfigurationRollbackSummary(
+                id: "legacy",
+                createdAt: Date(timeIntervalSince1970: 100),
+                source: nil,
+                summary: nil
+            )]
+        )
+    }
+
+    func testApplyAndRollbackExposeMetadataAndRecordRuntimeEvents() async throws {
+        let paths = makePaths()
+        let repository = ProfileRepository(paths: paths)
+        _ = try repository.saveProfile(
+            Profile(name: "Current", source: .inline, rawYAML: "old-marker: true\nproxies: []\n"),
+            preferredID: "current"
+        )
+        let core = try makeCore(paths: paths)
+        try writeRunningState(paths: paths, corePath: core)
+        try "known-good\n".write(to: paths.runtimeConfigFile, atomically: true, encoding: .utf8)
+        let reloads = ReloadCounter()
+        let controller = makeController(paths: paths) { _ in try reloads.run() }
+
+        let apply = try await controller.applyConfiguration(profileYAML: "new-marker: true\nproxies: []\n")
+        let summaries = try controller.rollbackSummaries()
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertEqual(summaries[0].id, apply.rollbackPointID)
+        XCTAssertEqual(summaries[0].source, "config-apply")
+        XCTAssertEqual(summaries[0].summary, "Current")
+        XCTAssertEqual(try controller.rollbackPointCount(), 1)
+        XCTAssertTrue(try controller.runtimeEvents().contains { $0.kind == "config.apply" })
+        XCTAssertTrue(try controller.runtimeEvents().contains { $0.kind == "config.reload" })
+
+        _ = try await controller.rollbackConfiguration()
+
+        XCTAssertEqual(try controller.rollbackPointCount(), 0)
+        XCTAssertTrue(try controller.runtimeEvents().contains { $0.kind == "config.rollback" })
+        XCTAssertEqual(try controller.runtimeEvents().filter { $0.kind == "config.reload" }.count, 2)
+        XCTAssertEqual(reloads.count, 2)
+    }
+
     // MARK: - Fixtures
 
     private func makePaths() -> KumoPaths {

@@ -281,50 +281,117 @@ enum LogLevelFilter: String, CaseIterable, Identifiable {
     }
 }
 
+private enum LogsSegment: String, CaseIterable, Identifiable {
+    case core
+    case activity
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .core: String(localized: "Core")
+        case .activity: String(localized: "Activity")
+        }
+    }
+}
+
+private enum ActivitySourceFilter: String, CaseIterable, Identifiable {
+    case all
+    case cli
+    case runtime
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .all: String(localized: "All")
+        case .cli: String(localized: "CLI")
+        case .runtime: String(localized: "Runtime")
+        }
+    }
+}
+
 struct LogsView: View {
     @Environment(KumoAppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var segment: LogsSegment = .core
     @State private var searchText = ""
     @State private var level: LogLevelFilter = .all
+    @State private var activitySource: ActivitySourceFilter = .all
     @State private var followsLiveLogs = false
 
     var body: some View {
         // Filtered once per body pass: the empty check, the `List` and the
         // "Copy All Visible" action each re-filtered the whole log buffer.
         let logs = filteredLogs
+        let activity = filteredActivityLogs
         return KumoPage(title: "Logs") {
             VStack(alignment: .leading, spacing: 10) {
                 controlsRow
 
-                if logs.isEmpty {
-                    KumoEmptyState(
-                        title: searchText.isEmpty ? "No Logs" : "No Matches",
-                        systemImage: "doc.text.magnifyingglass",
-                        message: searchText.isEmpty ? "Recent core logs will appear here." : "Try another search term."
-                    ) {
-                        Button(String(localized: "Refresh")) {
-                            Task { await store.loadInspectData() }
-                        }
-                    }
-                } else {
-                    List(logs) { log in
-                        LogRow(log: log)
-                            .contextMenu {
-                                Button(String(localized: "Copy Message")) {
-                                    writeToPasteboard(log.message)
-                                }
-                                Button(String(localized: "Copy All Visible")) {
-                                    writeToPasteboard(logs.map(\.message).joined(separator: "\n"))
-                                }
+                switch segment {
+                case .core:
+                    if logs.isEmpty {
+                        KumoEmptyState(
+                            title: searchText.isEmpty ? "No Logs" : "No Matches",
+                            systemImage: "doc.text.magnifyingglass",
+                            message: searchText.isEmpty ? "Recent core logs will appear here." : "Try another search term."
+                        ) {
+                            Button(String(localized: "Refresh")) {
+                                Task { await store.loadInspectData() }
                             }
+                        }
+                    } else {
+                        List(logs) { log in
+                            LogRow(log: log)
+                                .contextMenu {
+                                    Button(String(localized: "Copy Message")) {
+                                        writeToPasteboard(log.message)
+                                    }
+                                    Button(String(localized: "Copy All Visible")) {
+                                        writeToPasteboard(logs.map(\.message).joined(separator: "\n"))
+                                    }
+                                }
+                        }
+                        .scrollEdgeEffectStyleIfAvailable()
                     }
-                    .scrollEdgeEffectStyleIfAvailable()
+
+                case .activity:
+                    if activity.isEmpty {
+                        KumoEmptyState(
+                            title: searchText.isEmpty ? String(localized: "No Activity") : String(localized: "No Matches"),
+                            systemImage: "clock.arrow.circlepath",
+                            message: searchText.isEmpty ? String(localized: "CLI commands and runtime events will appear here.") : String(localized: "Try another search term.")
+                        ) {
+                            Button(String(localized: "Refresh")) {
+                                Task { await store.loadActivityLogs() }
+                            }
+                        }
+                    } else {
+                        List(activity) { entry in
+                            ActivityLogRow(entry: entry)
+                                .contextMenu {
+                                    Button(String(localized: "Copy Message")) {
+                                        writeToPasteboard(entry.message)
+                                    }
+                                    Button(String(localized: "Copy All Visible")) {
+                                        writeToPasteboard(activity.map(\.message).joined(separator: "\n"))
+                                    }
+                                }
+                        }
+                        .scrollEdgeEffectStyleIfAvailable()
+                    }
                 }
             }
         }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search logs")
         .task {
             await store.loadInspectData()
+        }
+        .onChange(of: segment) {
+            if segment == .activity {
+                Task { await store.loadActivityLogs() }
+            }
         }
         .onChange(of: level) {
             guard followsLiveLogs else { return }
@@ -334,40 +401,64 @@ struct LogsView: View {
 
     private var controlsRow: some View {
         HStack(spacing: 10) {
-            Picker(String(localized: "Level"), selection: $level) {
-                ForEach(LogLevelFilter.allCases) { level in
-                    Text(level.displayName).tag(level)
+            Picker(String(localized: "Log View"), selection: $segment) {
+                ForEach(LogsSegment.allCases) { item in
+                    Text(item.displayName).tag(item)
                 }
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 420)
+            .labelsHidden()
+            .fixedSize()
 
-            Button {
-                followsLiveLogs.toggle()
-                if followsLiveLogs {
-                    store.startLogStream(level: level.coreFilter)
-                } else {
-                    store.stopLogStream()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    if followsLiveLogs {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 6, height: 6)
-                            .symbolEffect(.pulse, isActive: followsLiveLogs && !reduceMotion)
+            if segment == .core {
+                Picker(String(localized: "Level"), selection: $level) {
+                    ForEach(LogLevelFilter.allCases) { level in
+                        Text(level.displayName).tag(level)
                     }
-                    Text(followsLiveLogs ? "Pause" : "Follow")
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 420)
+
+                Button {
+                    followsLiveLogs.toggle()
+                    if followsLiveLogs {
+                        store.startLogStream(level: level.coreFilter)
+                    } else {
+                        store.stopLogStream()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if followsLiveLogs {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 6, height: 6)
+                                .symbolEffect(.pulse, isActive: followsLiveLogs && !reduceMotion)
+                        }
+                        Text(followsLiveLogs ? "Pause" : "Follow")
+                    }
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(store.status.state != .running)
+                .help(followsLiveLogs ? "Pause live log streaming" : "Stream live core logs")
+
+                Button(String(localized: "Clear")) {
+                    store.clearLogs()
+                }
+                .disabled(store.logs.isEmpty)
+            } else {
+                Picker(String(localized: "Source"), selection: $activitySource) {
+                    ForEach(ActivitySourceFilter.allCases) { source in
+                        Text(source.displayName).tag(source)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+
+                Button(String(localized: "Refresh")) {
+                    Task { await store.loadActivityLogs() }
                 }
             }
-            .keyboardShortcut("p", modifiers: [.command, .shift])
-            .disabled(store.status.state != .running)
-            .help(followsLiveLogs ? "Pause live log streaming" : "Stream live core logs")
-
-            Button(String(localized: "Clear")) {
-                store.clearLogs()
-            }
-            .disabled(store.logs.isEmpty)
         }
     }
 
@@ -376,6 +467,23 @@ struct LogsView: View {
             let matchesLevel = level == .all || log.level == level.rawValue
             let matchesSearch = searchText.isEmpty || log.message.localizedCaseInsensitiveContains(searchText)
             return matchesLevel && matchesSearch
+        }
+    }
+
+    private var filteredActivityLogs: [ActivityLogEntry] {
+        store.activityLogs.filter { entry in
+            let matchesSource: Bool
+            switch activitySource {
+            case .all: matchesSource = true
+            case .cli: matchesSource = entry.source == .cli
+            case .runtime: matchesSource = entry.source == .runtime
+            }
+            let matchesSearch = searchText.isEmpty
+                || entry.message.localizedCaseInsensitiveContains(searchText)
+                || entry.category.localizedCaseInsensitiveContains(searchText)
+                || entry.source.rawValue.localizedCaseInsensitiveContains(searchText)
+                || entry.level.localizedCaseInsensitiveContains(searchText)
+            return matchesSource && matchesSearch
         }
     }
 
@@ -412,6 +520,50 @@ private struct LogRow: View {
         case "error": .red
         case "warning": .orange
         default: .secondary
+        }
+    }
+}
+
+private struct ActivityLogRow: View {
+    let entry: ActivityLogEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(sourceLabel)
+                .font(.caption.monospaced().weight(.medium))
+                .foregroundStyle(sourceColor)
+                .frame(width: 58, alignment: .leading)
+
+            Text(entry.category)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .leading)
+                .lineLimit(1)
+
+            Text(entry.message)
+                .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
+
+            Spacer()
+
+            Text(entry.timestamp.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var sourceLabel: String {
+        switch entry.source {
+        case .cli: String(localized: "CLI")
+        case .runtime: String(localized: "Runtime")
+        }
+    }
+
+    private var sourceColor: Color {
+        switch entry.level.lowercased() {
+        case "error": .red
+        case "warn", "warning": .orange
+        default: entry.source == .cli ? .accentColor : .secondary
         }
     }
 }

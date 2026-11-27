@@ -31,6 +31,11 @@ final class KumoAppContext {
         self.store = store
     }
 
+    func detach(store: KumoAppStore) {
+        guard self.store === store else { return }
+        self.store = nil
+    }
+
     func attachWindowActions(
         openMainWindow: @escaping () -> Void,
         openSettings: @escaping () -> Void,

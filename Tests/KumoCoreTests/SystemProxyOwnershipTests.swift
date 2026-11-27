@@ -251,6 +251,313 @@ final class SystemProxyOwnershipTests: XCTestCase {
         XCTAssertTrue(snapshot.isCleared)
     }
 
+    func testDisableRestoresPreviousManualProxiesAndBypassList() throws {
+        let paths = temporaryPaths()
+        let stateStore = CoreStateStore(paths: paths)
+        var previous = manualSnapshot(
+            host: "proxy.example.com",
+            port: 8080,
+            bypass: ["example.com", "*.internal"]
+        )
+        previous.secureWebProxy = proxyOutput(enabled: true, host: "secure.example.com", port: 8443)
+        previous.socksProxy = proxyOutput(enabled: true, host: "socks.example.com", port: 1080)
+        try stateStore.save(CoreStatus(
+            systemProxyEnabled: true,
+            previousSystemProxySnapshot: previous,
+            systemProxyApplied: manualApplied(),
+            systemProxyOwnership: .owned
+        ))
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": manualSnapshot()])
+        let controller = SystemProxyController(paths: paths, commandRunner: fake.makeRunner())
+
+        let commands = try controller.disableSynchronously()
+
+        XCTAssertEqual(commands, controller.restoreCommands(from: previous))
+        let restored = fake.snapshot("Wi-Fi")
+        XCTAssertTrue(restored.matchesRestoredState(of: previous))
+        XCTAssertEqual(restored.web.host, "proxy.example.com")
+        XCTAssertEqual(restored.web.port, 8080)
+        XCTAssertEqual(restored.secureWeb.host, "secure.example.com")
+        XCTAssertEqual(restored.secureWeb.port, 8443)
+        XCTAssertEqual(restored.socks.host, "socks.example.com")
+        XCTAssertEqual(restored.socks.port, 1080)
+        XCTAssertEqual(Set(restored.bypassList), Set(previous.bypassList))
+        XCTAssertNil(try stateStore.load().previousSystemProxySnapshot)
+    }
+
+    func testDisableRestoresPreviousExternalPACConfiguration() throws {
+        let paths = temporaryPaths()
+        let stateStore = CoreStateStore(paths: paths)
+        var previous = clearedSnapshot()
+        previous.autoProxy = autoProxyOutput(enabled: true, url: "https://example.com/legacy.pac")
+        try stateStore.save(CoreStatus(
+            systemProxyEnabled: true,
+            previousSystemProxySnapshot: previous,
+            systemProxyApplied: manualApplied(),
+            systemProxyOwnership: .owned
+        ))
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": manualSnapshot()])
+        let controller = SystemProxyController(paths: paths, commandRunner: fake.makeRunner())
+
+        _ = try controller.disableSynchronously()
+
+        let restored = fake.snapshot("Wi-Fi")
+        XCTAssertTrue(restored.matchesRestoredState(of: previous))
+        XCTAssertFalse(restored.web.isEnabled)
+        XCTAssertFalse(restored.secureWeb.isEnabled)
+        XCTAssertFalse(restored.socks.isEnabled)
+        XCTAssertTrue(restored.autoProxyEnabled)
+        XCTAssertEqual(restored.pacURL, "https://example.com/legacy.pac")
+        XCTAssertNil(try stateStore.load().previousSystemProxySnapshot)
+    }
+
+    func testDisableRestoresMixedPreviousConfiguration() throws {
+        let paths = temporaryPaths()
+        let stateStore = CoreStateStore(paths: paths)
+        var previous = manualSnapshot(
+            host: "http-only.example.com",
+            port: 8081,
+            bypass: ["localhost", "intranet.example.com"]
+        )
+        previous.secureWebProxy = proxyOutput(enabled: false, host: "", port: 0)
+        previous.socksProxy = proxyOutput(enabled: false, host: "", port: 0)
+        try stateStore.save(CoreStatus(
+            systemProxyEnabled: true,
+            previousSystemProxySnapshot: previous,
+            systemProxyApplied: manualApplied(),
+            systemProxyOwnership: .owned
+        ))
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": manualSnapshot()])
+        let controller = SystemProxyController(paths: paths, commandRunner: fake.makeRunner())
+
+        _ = try controller.disableSynchronously()
+
+        let restored = fake.snapshot("Wi-Fi")
+        XCTAssertTrue(restored.matchesRestoredState(of: previous))
+        XCTAssertTrue(restored.web.isEnabled)
+        XCTAssertEqual(restored.web.host, "http-only.example.com")
+        XCTAssertEqual(restored.web.port, 8081)
+        XCTAssertFalse(restored.secureWeb.isEnabled)
+        XCTAssertFalse(restored.socks.isEnabled)
+        XCTAssertFalse(restored.autoProxyEnabled)
+        XCTAssertEqual(Set(restored.bypassList), Set(previous.bypassList))
+        XCTAssertNil(try stateStore.load().previousSystemProxySnapshot)
+    }
+
+    func testDisableWithoutRestorableSnapshotUsesFullOffCommands() throws {
+        for previous in [nil, SystemProxySnapshot(networkService: "Wi-Fi")] {
+            let paths = temporaryPaths()
+            let stateStore = CoreStateStore(paths: paths)
+            try stateStore.save(CoreStatus(
+                systemProxyEnabled: true,
+                previousSystemProxySnapshot: previous,
+                systemProxyApplied: manualApplied(),
+                systemProxyOwnership: .owned
+            ))
+            let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": manualSnapshot()])
+            let controller = SystemProxyController(paths: paths, commandRunner: fake.makeRunner())
+
+            let commands = try controller.disableSynchronously()
+
+            XCTAssertEqual(commands.map(\.arguments), [
+                ["-setwebproxystate", "Wi-Fi", "off"],
+                ["-setsecurewebproxystate", "Wi-Fi", "off"],
+                ["-setsocksfirewallproxystate", "Wi-Fi", "off"],
+                ["-setautoproxystate", "Wi-Fi", "off"]
+            ])
+            XCTAssertTrue(fake.snapshot("Wi-Fi").isCleared)
+            XCTAssertNil(try stateStore.load().previousSystemProxySnapshot)
+        }
+    }
+
+    func testDisableDoesNotRestoreSnapshotForAnotherService() throws {
+        let paths = temporaryPaths()
+        let stateStore = CoreStateStore(paths: paths)
+        let previous = manualSnapshot(
+            networkService: "Ethernet",
+            host: "ethernet.example.com",
+            port: 8080
+        )
+        try stateStore.save(CoreStatus(
+            systemProxyEnabled: true,
+            previousSystemProxySnapshot: previous,
+            systemProxyApplied: manualApplied(),
+            systemProxyOwnership: .owned
+        ))
+        let fake = FakeSystemProxyCommandRunner(snapshots: [
+            "Wi-Fi": manualSnapshot(),
+            "Ethernet": previous
+        ])
+        let controller = SystemProxyController(paths: paths, commandRunner: fake.makeRunner())
+
+        let commands = try controller.disableSynchronously()
+
+        XCTAssertEqual(commands.map(\.arguments), [
+            ["-setwebproxystate", "Wi-Fi", "off"],
+            ["-setsecurewebproxystate", "Wi-Fi", "off"],
+            ["-setsocksfirewallproxystate", "Wi-Fi", "off"],
+            ["-setautoproxystate", "Wi-Fi", "off"]
+        ])
+        XCTAssertTrue(fake.snapshot("Wi-Fi").isCleared)
+        XCTAssertEqual(fake.snapshot("Ethernet"), previous)
+        XCTAssertEqual(try stateStore.load().previousSystemProxySnapshot?.networkService, "Ethernet")
+    }
+
+    func testDisableDryRunReturnsExactRestoreCommandsWithoutMutatingState() async throws {
+        let paths = temporaryPaths()
+        let stateStore = CoreStateStore(paths: paths)
+        var previous = manualSnapshot(
+            host: "proxy.example.com",
+            port: 8080,
+            bypass: ["example.com", "localhost"]
+        )
+        previous.capturedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try stateStore.save(CoreStatus(
+            systemProxyEnabled: true,
+            previousSystemProxySnapshot: previous,
+            systemProxyApplied: manualApplied(),
+            systemProxyOwnership: .owned
+        ))
+        let current = manualSnapshot()
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": current])
+        let controller = SystemProxyController(paths: paths, commandRunner: fake.makeRunner())
+
+        let commands = try await controller.setEnabled(
+            false,
+            configuration: SystemProxyConfiguration(networkService: "Wi-Fi"),
+            dryRun: true
+        )
+
+        XCTAssertEqual(commands.map(\.arguments), [
+            ["-setwebproxy", "Wi-Fi", "proxy.example.com", "8080"],
+            ["-setwebproxystate", "Wi-Fi", "on"],
+            ["-setsecurewebproxy", "Wi-Fi", "proxy.example.com", "8080"],
+            ["-setsecurewebproxystate", "Wi-Fi", "on"],
+            ["-setsocksfirewallproxy", "Wi-Fi", "proxy.example.com", "8080"],
+            ["-setsocksfirewallproxystate", "Wi-Fi", "on"],
+            ["-setproxybypassdomains", "Wi-Fi", "example.com", "localhost"],
+            ["-setautoproxystate", "Wi-Fi", "off"]
+        ])
+        XCTAssertTrue(fake.runArguments().isEmpty)
+        XCTAssertTrue(fake.capturedServices().isEmpty)
+        XCTAssertEqual(fake.snapshot("Wi-Fi"), current)
+        XCTAssertEqual(try stateStore.load().previousSystemProxySnapshot, previous)
+        XCTAssertNotNil(try stateStore.load().systemProxyApplied)
+    }
+
+    func testDryRunDisableRespectsTakenOverAndAppliedService() async throws {
+        let paths = temporaryPaths()
+        let stateStore = CoreStateStore(paths: paths)
+        var ethernetPrevious = manualSnapshot(
+            networkService: "Ethernet",
+            host: "corp-proxy.internal",
+            port: 3128,
+            bypass: ["localhost"]
+        )
+        ethernetPrevious.capturedAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // 1. Taken-over proxy: dry-run disable returns [] just like live disable.
+        try stateStore.save(CoreStatus(
+            systemProxyEnabled: true,
+            previousSystemProxySnapshot: ethernetPrevious,
+            systemProxyApplied: manualApplied(networkService: "Ethernet"),
+            systemProxyOwnership: .takenOver
+        ))
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Ethernet": manualSnapshot(networkService: "Ethernet")])
+        let controller = SystemProxyController(paths: paths, commandRunner: fake.makeRunner())
+
+        let takenOverCommands = try await controller.setEnabled(
+            false,
+            configuration: SystemProxyConfiguration(networkService: "Wi-Fi"),
+            dryRun: true
+        )
+        XCTAssertTrue(takenOverCommands.isEmpty)
+
+        // 2. Owned proxy on Ethernet while config says Wi-Fi: dry-run disable targets Ethernet.
+        try stateStore.save(CoreStatus(
+            systemProxyEnabled: true,
+            previousSystemProxySnapshot: ethernetPrevious,
+            systemProxyApplied: manualApplied(networkService: "Ethernet"),
+            systemProxyOwnership: .owned
+        ))
+        let ethernetCommands = try await controller.setEnabled(
+            false,
+            configuration: SystemProxyConfiguration(networkService: "Wi-Fi"),
+            dryRun: true
+        )
+        XCTAssertEqual(ethernetCommands.map(\.arguments), [
+            ["-setwebproxy", "Ethernet", "corp-proxy.internal", "3128"],
+            ["-setwebproxystate", "Ethernet", "on"],
+            ["-setsecurewebproxy", "Ethernet", "corp-proxy.internal", "3128"],
+            ["-setsecurewebproxystate", "Ethernet", "on"],
+            ["-setsocksfirewallproxy", "Ethernet", "corp-proxy.internal", "3128"],
+            ["-setsocksfirewallproxystate", "Ethernet", "on"],
+            ["-setproxybypassdomains", "Ethernet", "localhost"],
+            ["-setautoproxystate", "Ethernet", "off"]
+        ])
+    }
+
+    func testManualToPACSwitchPreservesOriginalSnapshotForDisable() async throws {
+        let paths = temporaryPaths()
+        let stateStore = CoreStateStore(paths: paths)
+        var previous = manualSnapshot(
+            host: "original.example.com",
+            port: 8080,
+            bypass: ["original.internal"]
+        )
+        previous.capturedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try stateStore.save(CoreStatus(
+            systemProxyEnabled: true,
+            previousSystemProxySnapshot: previous,
+            systemProxyApplied: manualApplied(),
+            systemProxyOwnership: .owned
+        ))
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": manualSnapshot()])
+        let controller = SystemProxyController(
+            paths: paths,
+            commandRunner: fake.makeRunner(),
+            targetPortProbe: { _, _ in true }
+        )
+        let pacConfiguration = SystemProxyConfiguration(
+            networkService: "Wi-Fi",
+            host: "127.0.0.1",
+            port: 7890,
+            mode: .pac,
+            pacScript: "function FindProxyForURL() { return 'DIRECT'; }"
+        )
+
+        _ = try await controller.setEnabled(true, configuration: pacConfiguration)
+
+        XCTAssertEqual(try stateStore.load().previousSystemProxySnapshot, previous)
+        XCTAssertTrue(fake.snapshot("Wi-Fi").autoProxyEnabled)
+
+        _ = try await controller.setEnabled(false, configuration: pacConfiguration)
+
+        XCTAssertTrue(fake.snapshot("Wi-Fi").matchesRestoredState(of: previous))
+        XCTAssertNil(try stateStore.load().previousSystemProxySnapshot)
+    }
+
+    func testEnableCapturesBypassOnlySnapshot() async throws {
+        let paths = temporaryPaths()
+        var before = clearedSnapshot()
+        before.bypassDomains = "existing.internal\nlocalhost"
+        let fake = FakeSystemProxyCommandRunner(snapshots: ["Wi-Fi": before])
+        let controller = SystemProxyController(
+            paths: paths,
+            commandRunner: fake.makeRunner(),
+            targetPortProbe: { _, _ in true }
+        )
+
+        _ = try await controller.setEnabled(
+            true,
+            configuration: SystemProxyConfiguration(networkService: "Wi-Fi")
+        )
+
+        let previous = try CoreStateStore(paths: paths).load().previousSystemProxySnapshot
+        XCTAssertEqual(previous?.bypassList, before.bypassList)
+        XCTAssertTrue(previous?.hasRestorableSettings == true)
+    }
+
     // MARK: - Fixtures
 
     private func temporaryPaths() -> KumoPaths {
@@ -399,7 +706,8 @@ final class FakeSystemProxyCommandRunner: @unchecked Sendable {
         case "-setsocksfirewallproxystate":
             snapshot.socksProxy = proxyOutput(enabled: arguments[2] == "on", host: snapshot.socks.host, port: snapshot.socks.port)
         case "-setproxybypassdomains":
-            snapshot.bypassDomains = arguments.dropFirst(2).joined(separator: "\n")
+            let domains = arguments.dropFirst(2)
+            snapshot.bypassDomains = domains == ["Empty"] ? "" : domains.joined(separator: "\n")
         case "-setautoproxyurl":
             snapshot.autoProxy = autoProxyOutput(enabled: snapshot.autoProxyEnabled, url: arguments[2])
         case "-setautoproxystate":

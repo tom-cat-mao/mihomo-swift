@@ -26,27 +26,21 @@ enum KumoModeChoice: String, AppEnum {
     }
 }
 
-/// Helper that resolves the live `KumoAppStore` shared by all intents. We
-/// prefer touching the store rather than constructing a fresh
-/// `KumoController` so that intent results stay in sync with the SwiftUI UI.
-private enum IntentResolver {
+/// Resolves the live store while the GUI is running, or a tier-routed
+/// controller for headless intent execution. The controller factory is an
+/// internal test seam so intents can use hermetic application-support paths.
+enum IntentResolver {
     @MainActor
-    static func store() throws -> KumoAppStore {
-        guard let store = KumoAppContext.shared.store else {
-            throw KumoIntentError.appNotReady
-        }
-        return store
+    static var controllerFactory: @Sendable () -> KumoController = { KumoController() }
+
+    @MainActor
+    static func store() -> KumoAppStore? {
+        KumoAppContext.shared.store
     }
-}
 
-enum KumoIntentError: LocalizedError {
-    case appNotReady
-
-    var errorDescription: String? {
-        switch self {
-        case .appNotReady:
-            return "Kumo is launching; try again in a moment."
-        }
+    @MainActor
+    static func controller() -> KumoController {
+        controllerFactory()
     }
 }
 
@@ -55,8 +49,12 @@ struct StartKumoIntent: AppIntent {
     static let description = IntentDescription("Start the Mihomo core managed by Kumo.")
 
     func perform() async throws -> some IntentResult {
-        let store = try await MainActor.run { try IntentResolver.store() }
-        await store.startCore()
+        if let store = await MainActor.run(body: IntentResolver.store) {
+            await store.startCore()
+        } else {
+            let controller = await MainActor.run(body: IntentResolver.controller)
+            _ = try controller.start()
+        }
         return .result()
     }
 }
@@ -66,8 +64,12 @@ struct StopKumoIntent: AppIntent {
     static let description = IntentDescription("Stop the running Mihomo core.")
 
     func perform() async throws -> some IntentResult {
-        let store = try await MainActor.run { try IntentResolver.store() }
-        await store.stopCore()
+        if let store = await MainActor.run(body: IntentResolver.store) {
+            await store.stopCore()
+        } else {
+            let controller = await MainActor.run(body: IntentResolver.controller)
+            _ = try controller.stop()
+        }
         return .result()
     }
 }
@@ -80,9 +82,13 @@ struct SetKumoModeIntent: AppIntent {
     var mode: KumoModeChoice
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let store = try await MainActor.run { try IntentResolver.store() }
         let coreMode = mode.coreMode
-        await store.setMode(coreMode)
+        if let store = await MainActor.run(body: IntentResolver.store) {
+            await store.setMode(coreMode)
+        } else {
+            let controller = await MainActor.run(body: IntentResolver.controller)
+            try await controller.setMode(coreMode)
+        }
         let displayName = coreMode.displayName
         return .result(dialog: IntentDialog("Switched Kumo mode to \(displayName)."))
     }
@@ -96,8 +102,12 @@ struct ToggleSystemProxyIntent: AppIntent {
     var enable: Bool
 
     func perform() async throws -> some IntentResult {
-        let store = try await MainActor.run { try IntentResolver.store() }
-        await MainActor.run { store.setSystemProxyEnabled(enable) }
+        if let store = await MainActor.run(body: IntentResolver.store) {
+            await MainActor.run { store.setSystemProxyEnabled(enable) }
+        } else {
+            let controller = await MainActor.run(body: IntentResolver.controller)
+            _ = try await controller.setSystemProxy(enable)
+        }
         return .result()
     }
 }
@@ -107,8 +117,12 @@ struct RefreshKumoIntent: AppIntent {
     static let description = IntentDescription("Reload Kumo status, profiles, proxies, and inspect data.")
 
     func perform() async throws -> some IntentResult {
-        let store = try await MainActor.run { try IntentResolver.store() }
-        await store.refreshAll()
+        if let store = await MainActor.run(body: IntentResolver.store) {
+            await store.refreshAll()
+        } else {
+            let controller = await MainActor.run(body: IntentResolver.controller)
+            _ = try controller.status()
+        }
         return .result()
     }
 }

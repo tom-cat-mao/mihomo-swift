@@ -35,11 +35,18 @@ the `SystemProxyMode` carried by `SystemProxyConfiguration`:
 
 - `manual` mode configures web, secure web, SOCKS firewall proxies, plus the
   bypass list, and explicitly turns auto-proxy state off.
-- `pac` mode boots a local `PACServer` (loopback `NWListener` HTTP that
+- `pac` mode starts a `PACServer` (loopback `NWListener` HTTP that
   responds with the user's PAC script as
   `application/x-ns-proxy-autoconfig`), then runs `-setautoproxyurl
   http://127.0.0.1:<port>/proxy.pac` and `-setautoproxystate on`, while
-  turning manual web/secure/socks off.
+  turning manual web/secure/socks off. When `kumod` is reachable,
+  `SystemProxyController` (`PACHost.delegating`) hosts `PACServer` inside
+  `kumod` via signed Unix-socket endpoints (`POST /pac/start`, `POST /pac/stop`,
+  `GET /pac/status`) and `kumod`'s `ServiceIdlePolicy` stays alive while PAC
+  is active, so `kumo sysproxy on` and GUI quits with
+  `keepCoreRunningOnQuit` keep PAC reachable. In direct mode (without `kumod`),
+  PAC falls back to an in-process `PACServer` that stops when the app exits
+  (surfaced as a warning in `prepareForAppTermination(policy: .keepCoreAlive)`).
 - A successful apply records `SystemProxyApplied`: the actual network service,
   mode, host, port, PAC URL, bypass list, and timestamp. `status()` compares the
   current OS snapshot with that record, producing `owned`, `takenOver`, or
@@ -50,11 +57,15 @@ the `SystemProxyMode` carried by `SystemProxyConfiguration`:
   `false`) allows the GUI's five-second monitor to reclaim automatically while
   the core runs. An external clear instead turns Kumo's enable intent off and
   is never automatically reclaimed.
-- `setEnabled(false)`, stop/quit, and guardian cleanup stop the PAC server as
-  applicable and turn manual/PAC states off only when the current snapshot is
-  still `owned`. Stop and guardian cleanup preserve the user's enable intent;
-  explicit disable and stop-on-quit clear it. Previous snapshots remain stored
-  for the existing restoration workflow.
+- `setEnabled(false)`, stop/quit, and guardian cleanup stop the PAC server
+  (both `kumod`-hosted and any in-process fallback) and restore or clear OS
+  settings only when the current snapshot is still `owned`. When
+  `previousSystemProxySnapshot` holds restorable pre-Kumo settings for the same
+  network service, disable replays the exact `networksetup` commands to restore
+  manual proxies, bypass domains, and external PAC URL (also inspectable via
+  `--dry-run`) and clears the snapshot; otherwise it disables manual and auto
+  proxies. Stop and guardian cleanup preserve the user's enable intent;
+  explicit disable and stop-on-quit clear it.
 
 `setSystemProxy(_:dryRun:)` is `async` — dry-run mode skips the listener,
 commands, and state writes, and returns the would-be commands for inspection.
@@ -190,9 +201,9 @@ This avoids writing proxy settings to `Wi-Fi` when the active service is
 Ethernet, USB tethering, or another macOS network service.
 
 When enabling system proxy outside dry-run, Kumo captures the previous
-proxy state for the selected service. The disable path turns Kumo-managed
-manual and auto-proxy states off; a later service-backed pass should
-restore exact previous values from the snapshot.
+proxy state for the selected service. The disable path restores exact previous
+values from the snapshot when restorable settings were captured, or turns
+Kumo-managed manual and auto-proxy states off otherwise.
 
 Foreground app quit uses the same disable path before allowing termination by
 default. The SwiftUI app delegate returns `.terminateLater`, asks
@@ -262,7 +273,6 @@ The following remain hardening work after the first service-backed path:
 
 ## Future Work
 
-- Restore exact previous proxy settings from the captured snapshot.
 - Harden the signed privileged helper installer for TUN and protected system
   changes, including notarized app distribution.
 - Adopt App Sandbox + helper-bundle separation so `networksetup` invocations

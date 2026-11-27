@@ -286,12 +286,16 @@ private struct OverrideDraft: Identifiable {
 }
 
 private struct OverrideEditorSheet: View {
+    @Environment(KumoAppStore.self) private var store
     @State private var draft: OverrideDraft
+    @State private var baselineDraft: OverrideDraft
+    @State private var hasExternalUpdate = false
     let onSave: (OverrideDraft) -> Void
     let onCancel: () -> Void
 
     init(draft: OverrideDraft, onSave: @escaping (OverrideDraft) -> Void, onCancel: @escaping () -> Void) {
         self._draft = State(initialValue: draft)
+        self._baselineDraft = State(initialValue: draft)
         self.onSave = onSave
         self.onCancel = onCancel
     }
@@ -316,6 +320,14 @@ private struct OverrideEditorSheet: View {
             }
             .formStyle(.grouped)
 
+            if hasExternalUpdate {
+                ExternalChangeNoticeRow {
+                    draft = baselineDraft
+                    hasExternalUpdate = false
+                }
+                .padding(.horizontal)
+            }
+
             HStack {
                 Spacer()
                 Button(String(localized: "Cancel"), role: .cancel) {
@@ -330,6 +342,24 @@ private struct OverrideEditorSheet: View {
             .padding([.horizontal, .bottom])
         }
         .frame(minWidth: 640, minHeight: 560)
+        .onChange(of: store.externalRevision(for: .overrides)) { _, _ in
+            Task {
+                guard let latestItem = store.overrides.first(where: { $0.id == draft.item.id }),
+                      let latestContent = await store.overrideContent(id: latestItem.id) else {
+                    return
+                }
+                let latest = OverrideDraft(item: latestItem, content: latestContent)
+                let isDirty = draft.item != baselineDraft.item || draft.content != baselineDraft.content
+                if !isDirty {
+                    draft = latest
+                    baselineDraft = latest
+                    hasExternalUpdate = false
+                } else if latest.item != baselineDraft.item || latest.content != baselineDraft.content {
+                    baselineDraft = latest
+                    hasExternalUpdate = true
+                }
+            }
+        }
     }
 }
 

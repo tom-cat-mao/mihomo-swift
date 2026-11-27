@@ -6,6 +6,8 @@ struct SnifferView: View {
     @Environment(KumoAppStore.self) private var store
     let onNavigate: (SidebarDestination) -> Void
     @State private var snifferDraft = SnifferSettings()
+    @State private var lastSyncedSnifferSettings: SnifferSettings?
+    @State private var hasExternalUpdate = false
 
     var body: some View {
         // Normalized once per pass: the validation text and both button
@@ -95,6 +97,11 @@ struct SnifferView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if hasExternalUpdate {
+                        ExternalChangeNoticeRow {
+                            updateSnifferDraft(currentSnifferSettings)
+                        }
+                    }
                     HStack {
                         Spacer()
                         Button(String(localized: "Reset")) {
@@ -123,6 +130,12 @@ struct SnifferView: View {
                 updateSnifferDraft(newValue)
             } else {
                 snifferDraft.isEnabled = newValue.isEnabled
+            }
+        }
+        .onChange(of: store.externalRevision(for: .status)) { _, _ in
+            if hasSnifferDraftChanges(in: normalizedSnifferDraft), currentSnifferSettings != lastSyncedSnifferSettings {
+                lastSyncedSnifferSettings = currentSnifferSettings
+                hasExternalUpdate = true
             }
         }
     }
@@ -185,6 +198,8 @@ struct SnifferView: View {
 
     private func updateSnifferDraft(_ settings: SnifferSettings) {
         snifferDraft = settings
+        lastSyncedSnifferSettings = settings
+        hasExternalUpdate = false
     }
 
     private static func normalizedList(_ values: [String]) -> [String] {

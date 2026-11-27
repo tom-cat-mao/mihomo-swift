@@ -640,6 +640,13 @@ public struct SystemProxyEndpointSnapshot: Codable, Equatable, Sendable {
         isEnabled && port == expectedPort && Self.sameHost(host, expectedHost)
     }
 
+    public func matchesRestoredState(of expected: SystemProxyEndpointSnapshot) -> Bool {
+        if expected.isEnabled {
+            return isEnabled && host == expected.host && port == expected.port
+        }
+        return !isEnabled
+    }
+
     private static func sameHost(_ lhs: String, _ rhs: String) -> Bool {
         let left = lhs.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let right = rhs.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -690,6 +697,19 @@ public struct SystemProxySnapshot: Codable, Equatable, Sendable {
     }
     public var isCleared: Bool {
         !web.isEnabled && !secureWeb.isEnabled && !socks.isEnabled && !autoProxyEnabled
+    }
+    public var hasRestorableSettings: Bool {
+        !isCleared || !bypassList.isEmpty
+    }
+
+    public func matchesRestoredState(of expected: SystemProxySnapshot) -> Bool {
+        networkService == expected.networkService
+            && web.matchesRestoredState(of: expected.web)
+            && secureWeb.matchesRestoredState(of: expected.secureWeb)
+            && socks.matchesRestoredState(of: expected.socks)
+            && autoProxyEnabled == expected.autoProxyEnabled
+            && (!expected.autoProxyEnabled || pacURL == expected.pacURL)
+            && Set(bypassList) == Set(expected.bypassList)
     }
 
     private func proxyValue(_ key: String, in output: String) -> String? {

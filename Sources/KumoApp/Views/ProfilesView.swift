@@ -9,6 +9,7 @@ struct ProfilesView: View {
     @State private var isImportingFile = false
     @State private var editingProfile: ProfileEditDraft?
     @State private var deletingProfile: ProfileSummary?
+    @State private var isConfirmingRollback = false
     @FocusState private var urlFieldFocused: Bool
 
     var body: some View {
@@ -102,6 +103,31 @@ struct ProfilesView: View {
         }
         .onAppear {
             urlFieldFocused = true
+        }
+        .toolbar {
+            if !store.rollbackSummaries.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        isConfirmingRollback = true
+                    } label: {
+                        Label(String(localized: "Rollback"), systemImage: "arrow.uturn.backward")
+                    }
+                    .disabled(store.isLoading)
+                }
+            }
+        }
+        .confirmationDialog(
+            String(localized: "Rollback Configuration?"),
+            isPresented: $isConfirmingRollback,
+            titleVisibility: .visible,
+            presenting: store.latestRollbackSummary
+        ) { _ in
+            Button(String(localized: "Rollback"), role: .destructive) {
+                Task { await store.rollbackConfiguration() }
+            }
+            Button(String(localized: "Cancel"), role: .cancel) {}
+        } message: { summary in
+            Text(rollbackConfirmationMessage(for: summary))
         }
     }
 
@@ -219,6 +245,14 @@ struct ProfilesView: View {
                 remoteURL = ""
             }
         }
+    }
+
+    private func rollbackConfirmationMessage(for summary: ConfigurationRollbackSummary) -> String {
+        let timestamp = summary.createdAt.formatted(date: .abbreviated, time: .shortened)
+        if let detail = summary.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
+            return "\(timestamp) — \(detail)"
+        }
+        return timestamp
     }
 
     private func openEditor(for profile: ProfileSummary) {

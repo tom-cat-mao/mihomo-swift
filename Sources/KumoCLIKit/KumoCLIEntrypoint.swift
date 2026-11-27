@@ -5,7 +5,10 @@ public enum KumoCLIEntrypoint {
     public static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
         let options = RuntimeOptions(arguments: arguments)
-        let runtime = CLIRuntime(options: options)
+        let runtime = CLIRuntime(
+            options: options,
+            commandSummary: (["kumo"] + arguments).joined(separator: " ")
+        )
 
         do {
             if try await handleBuiltIn(arguments: arguments, runtime: runtime) {

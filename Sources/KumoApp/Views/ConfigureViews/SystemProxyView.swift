@@ -5,6 +5,8 @@ import KumoCoreKit
 struct SystemProxyView: View {
     @Environment(KumoAppStore.self) private var store
     @State private var systemProxyDraft = SystemProxySettings()
+    @State private var lastSyncedSystemProxySettings: SystemProxySettings?
+    @State private var hasExternalUpdate = false
     @State private var isReclaiming = false
 
     var body: some View {
@@ -50,6 +52,12 @@ struct SystemProxyView: View {
                     Text(String(localized: "System Proxy updates macOS proxy settings through networksetup. It does not add a VPN configuration; helper installation uses the administrator authorization prompt."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if hasExternalUpdate {
+                        ExternalChangeNoticeRow {
+                            resetSystemProxyDraft()
+                        }
+                    }
 
                     HStack {
                         Spacer()
@@ -105,6 +113,14 @@ struct SystemProxyView: View {
         .onChange(of: systemProxySettings) { oldValue, newValue in
             if systemProxyDraft == oldValue {
                 systemProxyDraft = newValue
+                lastSyncedSystemProxySettings = newValue
+                hasExternalUpdate = false
+            }
+        }
+        .onChange(of: store.externalRevision(for: .status)) { _, _ in
+            if hasSystemProxyDraftChanges(in: normalizedSystemProxyDraft), systemProxySettings != lastSyncedSystemProxySettings {
+                lastSyncedSystemProxySettings = systemProxySettings
+                hasExternalUpdate = true
             }
         }
     }
@@ -185,6 +201,8 @@ struct SystemProxyView: View {
 
     private func resetSystemProxyDraft() {
         systemProxyDraft = systemProxySettings
+        lastSyncedSystemProxySettings = systemProxySettings
+        hasExternalUpdate = false
     }
 
     private func mergeBypassDefaults() {
@@ -195,6 +213,8 @@ struct SystemProxyView: View {
     /// Applies the normalized value the body pass already computed.
     private func applySystemProxyDraft(_ settings: SystemProxySettings) {
         systemProxyDraft = settings
+        lastSyncedSystemProxySettings = settings
+        hasExternalUpdate = false
         Task { await store.updateSystemProxySettings(settings) }
     }
 }

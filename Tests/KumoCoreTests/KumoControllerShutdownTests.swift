@@ -134,9 +134,7 @@ final class KumoControllerShutdownTests: XCTestCase {
         let stored = try stateStore.load()
         XCTAssertFalse(stored.systemProxyEnabled)
         XCTAssertNil(stored.systemProxyApplied)
-        var storedPrevious = stored.previousSystemProxySnapshot
-        storedPrevious?.capturedAt = previous.capturedAt
-        XCTAssertEqual(storedPrevious, previous)
+        XCTAssertNil(stored.previousSystemProxySnapshot)
         XCTAssertTrue(fake.snapshot("Wi-Fi").isCleared)
     }
 

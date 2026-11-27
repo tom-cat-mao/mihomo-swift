@@ -174,9 +174,10 @@ public struct ServiceIdlePolicy: Sendable {
     }
 
     /// The agent may exit only when it has served no request for `timeout`
-    /// seconds, no request is in flight, and no Mihomo core is running.
-    public func shouldExit(now: Date, isCoreRunning: Bool) -> Bool {
-        guard timeout > 0, !isCoreRunning, inFlightRequests == 0 else {
+    /// seconds, no request is in flight, no Mihomo core is running, and no
+    /// PAC server is active.
+    public func shouldExit(now: Date, isCoreRunning: Bool, isPACRunning: Bool = false) -> Bool {
+        guard timeout > 0, !isCoreRunning, !isPACRunning, inFlightRequests == 0 else {
             return false
         }
         return now.timeIntervalSince(lastActivity) >= timeout
@@ -184,14 +185,15 @@ public struct ServiceIdlePolicy: Sendable {
 
     /// How long the socket loop may block in `poll` before re-evaluating the
     /// policy. Ticks are capped at `maximum` seconds — and stay pinned there
-    /// while a core is running, because an exit is impossible until that core
-    /// stops.
+    /// while a core or PAC server is active, because an exit is impossible
+    /// until both stop.
     public func nextCheckIntervalSeconds(
         at now: Date,
         isCoreRunning: Bool,
+        isPACRunning: Bool = false,
         maximum: TimeInterval = 5
     ) -> TimeInterval {
-        guard !isCoreRunning else { return maximum }
+        guard !isCoreRunning, !isPACRunning else { return maximum }
         let remaining = lastActivity.addingTimeInterval(timeout).timeIntervalSince(now)
         return max(0.1, min(remaining, maximum))
     }

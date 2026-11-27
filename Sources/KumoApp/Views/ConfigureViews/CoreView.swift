@@ -6,6 +6,8 @@ struct CoreView: View {
     @Environment(KumoAppStore.self) private var store
     @State private var isChoosingCore = false
     @State private var runtimeDraft = CoreRuntimeSettings()
+    @State private var lastSyncedRuntimeSettings: CoreRuntimeSettings?
+    @State private var hasExternalRuntimeUpdate = false
 
     var body: some View {
         KumoPage(title: "Core") {
@@ -32,8 +34,14 @@ struct CoreView: View {
                     Toggle(String(localized: "IPv6"), isOn: ipv6Binding)
                     ControllerSecretField(
                         currentSecret: store.status.endpoint.secret,
+                        externalRevision: store.externalRevision(for: .status),
                         commit: { secret in Task { await store.setControllerSecret(secret) } }
                     )
+                    if hasExternalRuntimeUpdate {
+                        ExternalChangeNoticeRow {
+                            resetRuntimeDraft()
+                        }
+                    }
                     HStack {
                         Spacer()
                         Button(String(localized: "Reset")) {
@@ -112,6 +120,16 @@ struct CoreView: View {
         .onChange(of: runtimeSettings) { oldValue, newValue in
             if runtimeDraft == oldValue {
                 runtimeDraft = newValue
+                lastSyncedRuntimeSettings = newValue
+                hasExternalRuntimeUpdate = false
+            }
+        }
+        .onChange(of: store.externalRevision(for: .status)) { _, _ in
+            if hasRuntimeDraftChanges, runtimeSettings != lastSyncedRuntimeSettings {
+                lastSyncedRuntimeSettings = runtimeSettings
+                hasExternalRuntimeUpdate = true
+            } else if !hasRuntimeDraftChanges {
+                resetRuntimeDraft()
             }
         }
     }
@@ -176,11 +194,15 @@ struct CoreView: View {
 
     private func resetRuntimeDraft() {
         runtimeDraft = runtimeSettings
+        lastSyncedRuntimeSettings = runtimeSettings
+        hasExternalRuntimeUpdate = false
     }
 
     private func applyRuntimeDraft() {
         let settings = normalizedRuntimeDraft
         runtimeDraft = settings
+        lastSyncedRuntimeSettings = settings
+        hasExternalRuntimeUpdate = false
         Task { await store.updateRuntimeSettings(settings) }
     }
 

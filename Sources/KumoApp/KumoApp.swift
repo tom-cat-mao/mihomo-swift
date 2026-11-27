@@ -184,6 +184,7 @@ private struct KumoRootView: View {
                 store.startUpdatePolling()
                 store.startProfileUpdatePolling()
                 store.startSystemProxyPolling()
+                store.startControlPlaneObservation()
             }
     }
 }

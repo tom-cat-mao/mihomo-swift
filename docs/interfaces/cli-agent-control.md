@@ -703,9 +703,12 @@ without spawning a CLI process:
 - `Set Kumo Mode` (parameter: `KumoModeChoice` ↔ `OutboundMode`)
 - `Toggle Kumo System Proxy` (parameter: `enable: Bool`)
 
-App Intents call back into the live `KumoAppStore`, so their effects are
-identical to triggering the same flow from the GUI. They require the
-`Kumo.app` bundle (not `swift run`).
+When the GUI is running, App Intents call the live `KumoAppStore`, so their
+effects update SwiftUI immediately. When no store is attached because the GUI
+is closed, they fall back to `KumoController`; its `BackendRouter` selects the
+same user-agent, root-daemon, or local backend as the CLI. Headless Refresh
+reads controller status. App Intents require the `Kumo.app` bundle (not
+`swift run`).
 
 ## Shared Control Layer
 
@@ -739,9 +742,12 @@ command names and JSON schemas compatible whether the GUI is open or closed:
   read the Sub-Store data plane through `SubStoreClient`; `kumo substore import`
   stores one Sub-Store-managed profile through `KumoController.importSubStoreProfile`.
 
-App Intents still call `KumoAppStore` directly. Routing them through service
-endpoints so they keep working when the GUI is closed remains follow-up work
-(part of the root-daemon route-parity gap tracked in the two-tier backlog).
+Successful controller mutations broadcast `ControlPlaneNotifier` distributed
+notifications named `io.kumo.controlPlaneDidChange`, with the sender pid and
+changed domains. An open GUI ignores its own events, coalesces external bursts,
+and refreshes the affected state, keeping it synchronized with CLI and agent
+writes. Headless App Intents use the same `KumoController` + `BackendRouter`
+path, so their mutations participate in the same broadcast and tier routing.
 
 ## Future Work
 
