@@ -37,8 +37,11 @@ struct DebugLogStore {
         }
     }
 
-    func writeSummary(success: Bool, durationMilliseconds: Int) {
-        append(level: success ? .notice : .error, message: "kumo exit=\(success ? 0 : 1) duration=\(durationMilliseconds)ms")
+    func writeSummary(success: Bool, durationMilliseconds: Int, commandSummary: String = "kumo") {
+        append(
+            level: success ? .notice : .error,
+            message: "\(commandSummary) exit=\(success ? 0 : 1) duration=\(durationMilliseconds)ms"
+        )
         try? rotate()
     }
 
@@ -121,8 +124,12 @@ enum LogRedactor {
         var output = value
         let patterns = [
             "(?i)(authorization:\\s*bearer\\s+)[^\\s]+",
+            "(?i)((?:^|\\s)secret\\s+--set=)[^\\s]+",
+            "(?i)((?:^|\\s)secret\\s+--set\\s+)[^\\s-][^\\s]*",
             "(?i)(secret=)[^\\s&]+",
             "(?i)(token=)[^\\s&]+",
+            "(?i)(password=)[^\\s&]+",
+            "(?i)((?:^|\\s)(?:--)?(?:secret|token|password)\\s+)[^\\s-][^\\s]*",
             "(https?://[^:/\\s]+:)[^@\\s]+@"
         ]
         for pattern in patterns {

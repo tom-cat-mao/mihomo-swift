@@ -810,6 +810,10 @@ public struct KumoController: Sendable {
         try supervisor.recentRuntimeEvents(limit: limit)
     }
 
+    public func recentActivity(limit: Int = 200) throws -> [ActivityLogEntry] {
+        try ActivityLogReader(paths: paths).recentEntries(limit: limit)
+    }
+
     @discardableResult
     public func setSystemProxy(_ isEnabled: Bool, dryRun: Bool = false) async throws -> [ShellCommand] {
         if !dryRun, let client = privilegedServiceClient() {

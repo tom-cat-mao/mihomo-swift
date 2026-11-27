@@ -45,6 +45,14 @@ public struct ConfigurationRollbackReport: Codable, Equatable, Sendable {
 }
 
 extension KumoController {
+    public func rollbackSummaries() throws -> [ConfigurationRollbackSummary] {
+        try ConfigurationRollbackStore(paths: paths).summaries()
+    }
+
+    public func rollbackPointCount() throws -> Int {
+        try ConfigurationRollbackStore(paths: paths).count()
+    }
+
     /// Builds and preflights the current candidate. A running core uses a full
     /// `PUT /configs?force=true` reload; a stopped core does no work here and is
     /// validated by `start()` before its last known-good file can be replaced.
@@ -56,6 +64,7 @@ extension KumoController {
 
         do {
             try await performConfigurationReload()
+            supervisor.appendRuntimeEvent(kind: "config.reload", message: "Runtime configuration reloaded.")
             notifyControlPlaneChanged([.status])
         } catch {
             var diagnostics: [String] = []
@@ -126,7 +135,9 @@ extension KumoController {
             profiles: try profileRepository.transactionSnapshot(),
             overrides: try overrideRepository.transactionSnapshot(),
             status: status,
-            runtimeConfiguration: supervisor.runtimeConfigurationData()
+            runtimeConfiguration: supervisor.runtimeConfigurationData(),
+            source: "config-apply",
+            summary: current.name.isEmpty ? "Profile configuration apply" : current.name
         )
 
         do {
@@ -150,6 +161,10 @@ extension KumoController {
 
         do {
             let count = try store.commit(staged)
+            supervisor.appendRuntimeEvent(
+                kind: "config.apply",
+                message: "Configuration applied; rollback point \(staged.point.id)."
+            )
             notifyControlPlaneChanged([.profiles, .rollbacks, .status])
             return ConfigurationApplyReport(
                 rollbackPointID: staged.point.id,
@@ -196,6 +211,10 @@ extension KumoController {
             }
             let remainingSnapshots = try store.count() - 1
             try store.consume(id: point.id)
+            supervisor.appendRuntimeEvent(
+                kind: "config.rollback",
+                message: "Configuration rolled back to point \(point.id)."
+            )
             notifyControlPlaneChanged([.all])
             return ConfigurationRollbackReport(
                 rollbackPointID: point.id,

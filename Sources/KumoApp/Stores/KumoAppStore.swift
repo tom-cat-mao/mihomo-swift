@@ -100,6 +100,9 @@ final class KumoAppStore {
     var topology: TopologyGraph?
     var connections: [ConnectionEntry] = []
     var logs: [LogEntry] = []
+    var activityLogs: [ActivityLogEntry] = []
+    var rollbackSummaries: [ConfigurationRollbackSummary] = []
+    var coreMigrationPlan: CoreMigrationPlan?
     var proxyProviders: [ProxyProviderEntry] = []
     var ruleProviders: [RuleProviderEntry] = []
     var overrides: [OverrideItem] = []
@@ -211,6 +214,7 @@ final class KumoAppStore {
         await refreshStatus()
         syncTrafficStreamWithStatus()
         await refreshProfiles()
+        await refreshRollbacks()
         await refreshDueProfiles()
         await refreshCoreCandidates()
         await refreshProfiles()
@@ -242,6 +246,7 @@ final class KumoAppStore {
         } catch {
             errorMessage = displayMessage(for: error)
         }
+        await refreshCoreMigrationPlan()
     }
 
     var systemProxyStatus: SystemProxyStatus {
@@ -333,6 +338,7 @@ final class KumoAppStore {
             errorMessage = displayMessage(for: error)
         }
         await refreshProfilePreview()
+        await refreshRollbacks()
     }
 
     func startCore(resolvePortConflicts: Bool = false) async {
@@ -652,6 +658,7 @@ final class KumoAppStore {
         } catch {
             logs = []
         }
+        await loadActivityLogs()
 
         guard status.state == .running else {
             rules = []
@@ -1123,6 +1130,32 @@ final class KumoAppStore {
 
     func refreshAgentStatus() async {
         agentStatus = await runner.userAgentStatus()
+        await refreshCoreMigrationPlan()
+    }
+
+    func refreshCoreMigrationPlan() async {
+        do {
+            coreMigrationPlan = try await runner.coreMigrationPlan()
+        } catch {
+            coreMigrationPlan = nil
+        }
+    }
+
+    func migrateCoreToUserAgent() async -> CoreMigrationResult? {
+        beginLoading()
+        defer { endLoading() }
+        do {
+            let result = try await runner.migrateCoreToUserAgent()
+            await refreshStatus()
+            await refreshAgentStatus()
+            await refreshServiceModeStatus()
+            await refreshCoreMigrationPlan()
+            errorMessage = nil
+            return result
+        } catch {
+            errorMessage = displayMessage(for: error)
+            return nil
+        }
     }
 
     /// Detection-only hint for the privileged helper: the binary under
@@ -1196,12 +1229,14 @@ final class KumoAppStore {
     func installBackgroundAgent() async {
         await performLoadingTask { [self] in
             agentStatus = try await runner.installUserAgent()
+            await refreshCoreMigrationPlan()
         }
     }
 
     func uninstallBackgroundAgent() async {
         await performLoadingTask { [self] in
             agentStatus = try await runner.uninstallUserAgent()
+            await refreshCoreMigrationPlan()
         }
     }
 
@@ -1556,7 +1591,71 @@ final class KumoAppStore {
         pendingControlPlaneDomains.removeAll()
     }
 
-    func refreshRollbacks() async {}
+    var latestRollbackSummary: ConfigurationRollbackSummary? {
+        rollbackSummaries.first
+    }
+
+    func refreshRollbacks() async {
+        do {
+            rollbackSummaries = try await runner.rollbackSummaries()
+        } catch {
+            rollbackSummaries = []
+        }
+    }
+
+    func rollbackConfiguration() async {
+        await performLoadingTask { [self] in
+            let report = try await runner.rollbackConfiguration()
+            await refreshProfiles()
+            await refreshOverrides()
+            await refreshStatus()
+            await loadCoreConfiguration()
+            await loadProxyGroups()
+            if topology != nil {
+                await loadTopology()
+            }
+            await refreshRollbacks()
+            await loadActivityLogs()
+            status.message = report.reloaded
+                ? String(localized: "Rolled back configuration and reloaded core.")
+                : String(localized: "Rolled back configuration.")
+        }
+    }
+
+    func loadActivityLogs(limit: Int = 200) async {
+        do {
+            activityLogs = try await runner.recentActivity(limit: limit)
+        } catch {
+            activityLogs = []
+        }
+    }
+
+    func exportBackup(to destination: URL) async -> Bool {
+        beginLoading()
+        defer { endLoading() }
+        do {
+            _ = try await runner.exportBackup(to: destination)
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = displayMessage(for: error)
+            return false
+        }
+    }
+
+    func importBackup(from source: URL) async -> Bool {
+        beginLoading()
+        defer { endLoading() }
+        do {
+            _ = try await runner.importBackup(from: source)
+            await refreshAll()
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = displayMessage(for: error)
+            return false
+        }
+    }
 
     private func handleControlPlaneChangeNotification(_ notification: ControlPlaneChangeNotification) {
         guard notification.senderPID != ProcessInfo.processInfo.processIdentifier else {
@@ -1641,6 +1740,11 @@ final class KumoAppStore {
 
         if domains.contains(.rollbacks) {
             await refreshRollbacks()
+        }
+
+        if !domains.contains(.status),
+           !domains.isDisjoint(with: [.profiles, .overrides, .rollbacks]) {
+            await loadActivityLogs()
         }
 
         recordExternalChange(for: domains)

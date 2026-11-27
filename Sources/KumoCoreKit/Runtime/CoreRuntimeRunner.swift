@@ -136,6 +136,14 @@ public actor CoreRuntimeRunner {
         try await controller.rollbackConfiguration()
     }
 
+    public func rollbackSummaries() throws -> [ConfigurationRollbackSummary] {
+        try controller.rollbackSummaries()
+    }
+
+    public func rollbackPointCount() throws -> Int {
+        try controller.rollbackPointCount()
+    }
+
     public func profileContent(id: String) throws -> String {
         try controller.profileContent(id: id)
     }
@@ -272,6 +280,10 @@ public actor CoreRuntimeRunner {
         try controller.recentLogs(limit: limit)
     }
 
+    public func recentActivity(limit: Int = 200) throws -> [ActivityLogEntry] {
+        try controller.recentActivity(limit: limit)
+    }
+
     public func logStream(level: String = "info") throws -> AsyncThrowingStream<LogEntry, Error> {
         try controller.logStream(level: level)
     }
@@ -338,6 +350,15 @@ public actor CoreRuntimeRunner {
 
     public func reclaimSystemProxy() async throws -> SystemProxyStatus {
         try await controller.reclaimSystemProxy()
+    }
+
+    public func coreMigrationPlan() throws -> CoreMigrationPlan {
+        try controller.coreMigrationPlan()
+    }
+
+    @discardableResult
+    public func migrateCoreToUserAgent() throws -> CoreMigrationResult {
+        try controller.migrateCoreToUserAgent()
     }
 
     public func updateSystemProxySettings(_ settings: SystemProxySettings) throws {
@@ -467,6 +488,18 @@ public actor CoreRuntimeRunner {
     @discardableResult
     public func downloadSubStoreBundle(kind: SubStoreBundleKind, from url: URL) async throws -> SubStoreStatus {
         try await controller.downloadSubStoreBundle(kind: kind, from: url)
+    }
+
+    // MARK: - Backups
+
+    @discardableResult
+    public func exportBackup(to destination: URL) throws -> KumoBackupResult {
+        try controller.exportBackup(to: destination)
+    }
+
+    @discardableResult
+    public func importBackup(from source: URL) throws -> KumoBackupManifest {
+        try controller.importBackup(from: source)
     }
 
     // MARK: - App updates

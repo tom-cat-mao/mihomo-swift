@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control-plane change notifications.
 - Run App Intents headlessly through `KumoController` and `BackendRouter` when
   the GUI is closed.
+- Surface configuration rollback in Profiles, unified CLI/Runtime activity logs
+  in Inspect → Logs, backup export/import in Settings → General, and one-click
+  root-to-agent migration in Settings → General → Background.
 
 ### Fixed
 - Clear host- and process-local runtime state during backup import while

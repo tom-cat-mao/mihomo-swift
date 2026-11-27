@@ -947,7 +947,7 @@ public struct CoreSupervisor: Sendable {
         return handle
     }
 
-    private func appendRuntimeEvent(kind: String, message: String) {
+    func appendRuntimeEvent(kind: String, message: String) {
         do {
             try FileManager.default.createDirectory(at: paths.logsDirectory, withIntermediateDirectories: true)
             let encoder = JSONEncoder()

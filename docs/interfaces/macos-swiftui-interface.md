@@ -208,6 +208,22 @@ system notification once; repeated records and expected stops do not notify.
 Overview only exposes the immediate enable toggles so the daily workflow stays
 one click away from start, stop, mode switch, system proxy, and TUN.
 
+### Profiles Rollback & Inspect Activity
+
+- **Profiles Rollback** — `ProfilesView` presents a native `Rollback` toolbar
+  action only when `KumoAppStore.rollbackSummaries` is non-empty (no disabled
+  placeholder is shown otherwise). Activating it opens a confirmation dialog
+  with the target rollback point's timestamp and summary before invoking
+  `KumoAppStore.rollbackConfiguration()` to restore the previous profile,
+  override, and runtime state.
+- **Inspect → Logs (`Core` | `Activity`)** — `LogsView` includes a segmented
+  `Core` / `Activity` picker. `Core` retains live level filtering, follow/pause
+  streaming, clear, and copy. `Activity` merges `CLI` and `Runtime` audit
+  events from `CoreRuntimeRunner.recentActivity(limit:)`, supports source and
+  toolbar text filtering, refreshes automatically on external control-plane
+  change notifications, and provides `Copy Message` / `Copy All Visible`
+  context-menu actions.
+
 The Configure views may begin as small setting surfaces, but user-visible controls must correspond to shared `KumoCoreKit` behavior. Do not add a SwiftUI-only setting that bypasses the runtime builder, state store, or controller facade.
 System-facing configuration forms such as Core runtime settings and System
 Proxy settings should stage edits in local SwiftUI state and commit them through
@@ -309,7 +325,7 @@ materials so high-density list/detail content remains legible.
 About available as a separate window. Runtime status belongs in the main window
 and status item menu instead of Settings:
 
-- **General** — `Open at Login` (driven by `SMAppService.mainApp`), `Quit when last window closes` (read by `applicationShouldTerminateAfterLastWindowClosed`), a **Background** section with `Keep Mihomo running after quit` (`UserPreferences.keepCoreRunningOnQuit`) plus a `Background Agent` row, an **Appearance** section with a `Language` dropdown, and a Setup section with `Run Setup Again` plus a `Command Line Tool` row (install/remove `/usr/local/bin/kumo`).
+- **General** — `Open at Login` (driven by `SMAppService.mainApp`), `Quit when last window closes` (read by `applicationShouldTerminateAfterLastWindowClosed`), a **Background** section with `Keep Mihomo running after quit` (`UserPreferences.keepCoreRunningOnQuit`), a `Background Agent` row, and a conditional `Migrate to Agent` action when a root-owned core can hand off to the user agent, an **Appearance** section with a `Language` dropdown, a **Setup** section with `Run Setup Again` plus a `Command Line Tool` row (install/remove `/usr/local/bin/kumo`), and a **Backup** section for exporting and importing configuration backup directories.
 - **Updates** — channel picker, optional manifest URL override, and GitHub Releases update checks backed by `AppUpdateManager`.
 - **About Kumo window** — app icon, version/build, author GitHub link, project links, and the same update-check state used by Settings.
 
@@ -330,6 +346,16 @@ The **Background** section drives the two-tier runtime from the GUI:
   core unless Kumo Helper owns it. Status refreshes on appear, after every
   action, and in `KumoAppStore.refreshAll()`; failures surface through
   `KumoAppStore.errorMessage`.
+- `Migrate to Agent` appears in **Background** only when
+  `KumoAppStore.coreMigrationPlan?.action == .handoff` (a root-owned core is
+  running with TUN off and the user LaunchAgent is installed), calling
+  `KumoAppStore.migrateCoreToUserAgent()`.
+- **Backup** in **General** provides `Export Backup…` (`NSSavePanel` targeting
+  a backup directory) and `Import Backup…` (`NSOpenPanel` selecting a backup
+  directory, followed by a confirmation dialog) wired to
+  `KumoAppStore.exportBackup(to:)` and `KumoAppStore.importBackup(from:)`.
+  Successful imports run `refreshAll()` so profiles, overrides, and settings
+  update immediately.
 
 ### Localization
 
