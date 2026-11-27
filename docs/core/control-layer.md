@@ -84,6 +84,12 @@ signatures stay stable; routing is not part of the public API.
 - System proxy and TUN-status reads keep their historical root-or-local
   executor semantics; the router's reachability probe is the single source of
   truth for both.
+- When `useServiceBackend` is enabled, `SystemProxyController` delegates PAC
+  hosting (`PACHost.delegating`) to `kumod` (`POST /pac/start`, `POST /pac/stop`,
+  `GET /pac/status`) and falls back to an in-process `PACServer` only when
+  `kumod` is unreachable (direct mode). Disabling system proxy restores any
+  captured `previousSystemProxySnapshot` (manual proxies, bypass domains, and
+  external PAC URL) before clearing Kumo-owned settings and stopping PAC.
 - Reachability probes are injectable (`BackendReachability`) so routing and
   handoff tests run without sockets, launchd, or spawned processes.
 
@@ -137,8 +143,11 @@ observable one.
   through whichever tier owns it.
 - `.keepCoreAlive` disables nothing and stops nothing; it only reads the
   current status. It relies on the user agent (or root daemon) owning the core
-  so the core keeps serving after the GUI quits. The GUI selects this policy
-  when `UserPreferences.keepCoreRunningOnQuit` is on.
+  and `kumod` hosting any active PAC server so both keep serving after the GUI
+  quits. If PAC is running in-process (direct mode, without `kumod`),
+  `ShutdownResult.diagnostics` records a warning that the in-process PAC
+  server will stop on exit. The GUI selects this policy when
+  `UserPreferences.keepCoreRunningOnQuit` is on.
 
 ## Controller Facade, Serial App Executor
 
@@ -207,8 +216,7 @@ scalar runtime settings still PATCH `/configs`.
 Still open:
 
 - Provider initialization progress reporting.
-- Service-side log streaming and helper-hosted PAC hosting; PAC hosting runs in
-  the app process today.
+- Service-side log streaming.
 - Root-daemon route parity: the daemon's signed-socket surface stays scoped to
   privileged routes (service/core/sysproxy/TUN), and the rest of the write
   surface plus agent management run in-process until a daemon-brokered

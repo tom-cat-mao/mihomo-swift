@@ -19,6 +19,24 @@ private final class ContinuationGuard: @unchecked Sendable {
     }
 }
 
+private final class PACServerGeneration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+
+    func current() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func advance() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        value &+= 1
+        return value
+    }
+}
+
 /// Minimal local HTTP server that serves a single PAC script payload to any
 /// inbound request. Designed for system-proxy "auto" mode: macOS dispatches
 /// PAC requests via `networksetup -setautoproxyurl http://127.0.0.1:<port>/proxy.pac`,
@@ -27,11 +45,16 @@ private final class ContinuationGuard: @unchecked Sendable {
 /// The server binds to `127.0.0.1` on an OS-assigned port. The chosen port is
 /// returned from `start` so callers can wire it into `networksetup`.
 public actor PACServer {
+    private let generation = PACServerGeneration()
     private var listener: NWListener?
     private var script: String = ""
     private var boundPort: UInt16?
 
     public init() {}
+
+    public nonisolated func currentGeneration() -> UInt64 {
+        generation.current()
+    }
 
     public var isRunning: Bool {
         listener != nil
@@ -44,6 +67,7 @@ public actor PACServer {
     /// Start (or hot-swap script of) the PAC server. Returns the bound port.
     @discardableResult
     public func start(script: String) async throws -> UInt16 {
+        _ = generation.advance()
         self.script = script
 
         if let listener, let boundPort, listener.state == .ready {
@@ -102,10 +126,18 @@ public actor PACServer {
     }
 
     public func stop() {
+        _ = generation.advance()
         listener?.cancel()
         listener = nil
         boundPort = nil
         script = ""
+    }
+
+    /// Stops the server only if no newer `start(script:)` or `stop()` call has
+    /// occurred since `expectedGeneration` was captured.
+    public func stop(ifGenerationMatches expectedGeneration: UInt64) {
+        guard generation.current() == expectedGeneration else { return }
+        stop()
     }
 
     private func handle(connection: NWConnection) async {

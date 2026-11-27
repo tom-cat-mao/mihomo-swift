@@ -65,7 +65,8 @@ public struct KumoController: Sendable {
         useServiceBackend: Bool = true,
         ownerTier: RuntimeOwnerTier = .localSupervisor,
         systemProxyCommandRunner: SystemProxyCommandRunner = .live,
-        systemProxyTargetPortProbe: SystemProxyTargetPortProbe? = nil
+        systemProxyTargetPortProbe: SystemProxyTargetPortProbe? = nil,
+        pacHost: PACHost? = nil
     ) {
         self.init(
             paths: paths,
@@ -73,6 +74,7 @@ public struct KumoController: Sendable {
             ownerTier: ownerTier,
             systemProxyCommandRunner: systemProxyCommandRunner,
             systemProxyTargetPortProbe: systemProxyTargetPortProbe,
+            pacHost: pacHost,
             reachability: nil,
             serviceModeStatusProvider: nil,
             tierOperations: nil,
@@ -86,6 +88,7 @@ public struct KumoController: Sendable {
         ownerTier: RuntimeOwnerTier = .localSupervisor,
         systemProxyCommandRunner: SystemProxyCommandRunner,
         systemProxyTargetPortProbe: SystemProxyTargetPortProbe? = nil,
+        pacHost: PACHost? = nil,
         reachability: BackendReachability?,
         serviceModeStatusProvider: (@Sendable () -> ServiceModeStatus)?,
         tierOperations: TierOperationsOverride?,
@@ -101,10 +104,17 @@ public struct KumoController: Sendable {
         self.portInspector = portInspector
         self.supervisor = CoreSupervisor(paths: paths, ownerTier: ownerTier, portInspector: portInspector)
         self.stateStore = CoreStateStore(paths: paths)
+        let userAgentManager = KumoUserAgentManager(paths: paths)
+        let resolvedPACHost = pacHost ?? (
+            useServiceBackend
+                ? .delegating(remoteProvider: { userAgentManager.client() }, fallback: PACServer())
+                : .inProcess(PACServer())
+        )
         self.systemProxyController = SystemProxyController(
             paths: paths,
             commandRunner: systemProxyCommandRunner,
-            targetPortProbe: systemProxyTargetPortProbe
+            targetPortProbe: systemProxyTargetPortProbe,
+            pacHost: resolvedPACHost
         )
         self.coreInstaller = CoreInstaller(paths: paths)
         self.subStoreManager = SubStoreManager(paths: paths)
@@ -114,7 +124,7 @@ public struct KumoController: Sendable {
         self.preferencesStore = UserPreferencesStore(paths: paths)
         self.subStoreSupervisor = SubStoreSupervisor(paths: paths)
         self.serviceManager = KumoServiceManager(paths: paths)
-        self.userAgentManager = KumoUserAgentManager(paths: paths)
+        self.userAgentManager = userAgentManager
         self.router = BackendRouter(
             reachability: reachability ?? .live(paths: paths, useServiceBackend: useServiceBackend),
             allowsServiceBackend: useServiceBackend

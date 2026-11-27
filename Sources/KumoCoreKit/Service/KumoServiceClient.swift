@@ -70,6 +70,26 @@ public struct CoreStartOptions: Codable, Equatable, Sendable {
     }
 }
 
+public struct PACStartRequest: Codable, Equatable, Sendable {
+    public var script: String
+
+    public init(script: String) {
+        self.script = script
+    }
+}
+
+public struct PACServerStatus: Codable, Equatable, Sendable {
+    public var isRunning: Bool
+    public var port: UInt16?
+    public var url: String?
+
+    public init(isRunning: Bool, port: UInt16? = nil, url: String? = nil) {
+        self.isRunning = isRunning
+        self.port = port
+        self.url = url
+    }
+}
+
 public struct KumoServiceTransportResponse: Codable, Equatable, Sendable {
     public var status: Int
     public var bodyBase64: String
@@ -295,6 +315,31 @@ public struct KumoServiceClient: Sendable {
         signedRequest(method: "POST", path: "/sysproxy/release")
     }
 
+    public func startPACRequest(script: String) throws -> KumoServiceSignedRequest {
+        let body = try JSONEncoder().encode(PACStartRequest(script: script))
+        return signedRequest(method: "POST", path: "/pac/start", body: body)
+    }
+
+    public func stopPACRequest() -> KumoServiceSignedRequest {
+        signedRequest(method: "POST", path: "/pac/stop")
+    }
+
+    public func pacStatusRequest() -> KumoServiceSignedRequest {
+        signedRequest(method: "GET", path: "/pac/status")
+    }
+
+    public func startPAC(script: String) throws -> PACServerStatus {
+        try sendDecodable(try startPACRequest(script: script), as: PACServerStatus.self)
+    }
+
+    public func stopPAC() throws -> PACServerStatus {
+        try sendDecodable(stopPACRequest(), as: PACServerStatus.self)
+    }
+
+    public func pacStatus() throws -> PACServerStatus {
+        try sendDecodable(pacStatusRequest(), as: PACServerStatus.self)
+    }
+
     public func send(_ request: KumoServiceSignedRequest) throws -> KumoServiceTransportResponse {
         let transportRequest = KumoServiceTransportRequest(request: request)
         let payload = try JSONEncoder().encode(transportRequest)
@@ -321,7 +366,7 @@ public struct KumoServiceClient: Sendable {
     private static func receiveTimeoutSeconds(for request: KumoServiceSignedRequest) -> Int32? {
         guard request.method.uppercased() == "GET" else { return nil }
         switch request.path {
-        case "/service/status", "/status", "/sysproxy/status":
+        case "/service/status", "/status", "/sysproxy/status", "/pac/status":
             return KumoServiceTimeout.receiveSeconds
         default:
             return nil

@@ -277,8 +277,7 @@ staged plans live in [docs/roadmap/](docs/roadmap/README.md). Remaining work:
 - A reviewed JavaScript transform sandbox for overrides.
 - Core lifecycle event streams (`GET /core/events`); recent logs and live
   log/traffic streams already ship.
-- Provider initialization progress, service-side log streaming, and
-  helper-hosted PAC hosting.
+- Provider initialization progress and service-side log streaming.
 - JSON schemas for automation consumers and root-daemon route parity for
   GUI-closed agent control.
 

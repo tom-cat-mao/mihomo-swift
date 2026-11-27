@@ -418,6 +418,11 @@ extension KumoController {
             diagnostics.append(formatDiagnostic(stage: "status", error: error))
             latestStatus = (try? stateStore.load()) ?? CoreStatus()
         }
+        if await systemProxyController.isInProcessPACRunning() {
+            let note = "pac: In-process PAC server will stop when the app exits; install the Kumo user agent to keep PAC active."
+            shutdownLogger.warning("\(note, privacy: .public)")
+            diagnostics.append(note)
+        }
         return ShutdownResult(status: latestStatus, diagnostics: diagnostics)
     }
 }

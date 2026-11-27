@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Surface configuration rollback in Profiles, unified CLI/Runtime activity logs
   in Inspect → Logs, backup export/import in Settings → General, and one-click
   root-to-agent migration in Settings → General → Background.
+- Host `PACServer` in `kumod` (`POST /pac/start`, `POST /pac/stop`,
+  `GET /pac/status`) with idle-policy retention and direct-mode in-process
+  fallback so CLI PAC enablement and GUI `keepCoreRunningOnQuit` keep PAC
+  serving after exit.
+- Restore exact previous manual proxy, bypass domains, and external PAC URL
+  from `previousSystemProxySnapshot` when disabling system proxy (including
+  `--dry-run`).
 
 ### Fixed
 - Clear host- and process-local runtime state during backup import while

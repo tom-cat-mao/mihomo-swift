@@ -33,6 +33,9 @@ not use NetworkExtension or install a VPN configuration profile.
 - `GET /sysproxy/status`
 - `POST /sysproxy/enable`
 - `POST /sysproxy/disable`
+- `POST /pac/start`
+- `POST /pac/stop`
+- `GET /pac/status`
 - `GET /service/status`
 - `POST /service/install`
 - `POST /service/uninstall`
@@ -68,7 +71,6 @@ Unix socket transport:
 - Harden LaunchDaemon installation for notarized release artifacts.
 - Improve automatic service repair and diagnostics.
 - Expand proxy guard events and UI notifications.
-- Move PAC hosting fully into the helper process for long-lived service mode.
 
 The current implementation adds the service-mode model, signed endpoint
 surface, CLI/UI status, administrator-authorized `KumoService` installation,
@@ -112,8 +114,9 @@ The agent is on demand, not permanently resident:
   binding the socket itself for manual/dev runs). launchd holds the endpoint
   and starts the agent on the first client connection.
 - The agent exits by itself once `--idle-timeout <seconds>` (default 300)
-  passes without a served client request and with no Mihomo core running.
-  While a core is running it never idle-exits; root mode has no idle exit.
+  passes without a served client request, with no Mihomo core running, and
+  with no PAC server active. While a core or PAC server is active it never
+  idle-exits; root mode has no idle exit.
 - `service install --mode user` accepts `--idle-timeout` and passes it into
   the generated plist's `ProgramArguments`.
 - Lifecycle events (start, socket adopt/bind, observed core start/stop,
@@ -135,10 +138,12 @@ Phase B brings several locally hosted subsystems into the app process,
 without introducing the privileged service. Each is documented here so the
 service-mode migration can absorb them later without scope surprises.
 
-- **PAC mode is implemented** via `PACServer` (NWListener HTTP loopback) +
-  `networksetup -setautoproxyurl`. When a privileged service exists, this
-  listener should move into the service process and the front-end should
-  request "PAC enabled" rather than hosting the listener directly.
+- **PAC mode is implemented** with `kumod` hosting (`POST /pac/start`,
+  `POST /pac/stop`, `GET /pac/status`) via `PACHost.delegating` and
+  `networksetup -setautoproxyurl`. When `kumod` is reachable, `SystemProxyController`
+  delegates PAC hosting to `kumod` so CLI invocations and GUI quits with
+  `keepCoreRunningOnQuit` keep `http://127.0.0.1:<port>/proxy.pac` reachable;
+  direct mode falls back to an in-process `PACServer` listener.
 - **Sub-Store local lifecycle is implemented in the app process** via
   `SubStoreSupervisor` (Node `Process` lifecycle + `logs/substore.log`).
   A future service tier should own this process so the GUI can be quit

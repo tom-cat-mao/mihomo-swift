@@ -842,6 +842,27 @@ final class KumoUserAgentTests: XCTestCase {
         XCTAssertTrue(policy.shouldExit(now: start.addingTimeInterval(10_000), isCoreRunning: false))
     }
 
+    func testIdlePolicyNeverExitsWhilePACIsRunningAndExitsOnceBothStop() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let policy = ServiceIdlePolicy(timeout: 5, now: start)
+
+        XCTAssertFalse(
+            policy.shouldExit(now: start.addingTimeInterval(10_000), isCoreRunning: false, isPACRunning: true)
+        )
+        XCTAssertEqual(
+            policy.nextCheckIntervalSeconds(
+                at: start.addingTimeInterval(10_000),
+                isCoreRunning: false,
+                isPACRunning: true
+            ),
+            5,
+            accuracy: 0.001
+        )
+        XCTAssertTrue(
+            policy.shouldExit(now: start.addingTimeInterval(10_000), isCoreRunning: false, isPACRunning: false)
+        )
+    }
+
     func testIdlePolicyNeverExitsWithRequestInFlight() {
         let start = Date(timeIntervalSince1970: 1_000_000)
         var policy = ServiceIdlePolicy(timeout: 5, now: start)
