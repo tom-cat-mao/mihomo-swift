@@ -10,14 +10,36 @@ final class KumoBackupManagerTests: XCTestCase {
             Profile(name: "Backup", source: .inline, rawYAML: "proxies: []"),
             preferredID: "backup"
         )
+        let runtimeSettings = CoreRuntimeSettings(
+            mixedPort: 7891,
+            allowLAN: true,
+            logLevel: "debug",
+            ipv6: true
+        )
+        let systemProxySettings = SystemProxySettings(
+            networkService: "Ethernet",
+            host: "127.0.0.2",
+            port: 7892,
+            mode: .pac,
+            bypassList: ["example.com"],
+            pacScript: "function FindProxyForURL(url, host) { return DIRECT; }"
+        )
         try stateStore.save(CoreStatus(
             state: .running,
             pid: 42,
+            ownerTier: .userAgent,
             mode: .global,
             proxyPorts: ProxyPortConfiguration(mixedPort: 7891),
             systemProxyEnabled: true,
+            runtimeSettings: runtimeSettings,
+            systemProxySettings: systemProxySettings,
+            previousSystemProxySnapshot: SystemProxySnapshot(networkService: "Ethernet"),
+            serviceModeStatus: ServiceModeStatus(isInstalled: true, isRunning: true),
+            tunStatus: TunStatus(isEnabled: true, isRunning: true, requiresService: false),
             readiness: .providersReady,
-            message: "running"
+            message: "running",
+            processStartTime: 1_234,
+            lastExit: CoreExit(pid: 41, exitCode: 1, expected: false, message: "previous exit")
         ))
 
         let backupDirectory = temporaryDirectory()
@@ -36,10 +58,21 @@ final class KumoBackupManagerTests: XCTestCase {
         let restored = try CoreStateStore(paths: destinationPaths).load()
         XCTAssertEqual(restored.state, .stopped)
         XCTAssertNil(restored.pid)
+        XCTAssertNil(restored.ownerTier)
+        XCTAssertNil(restored.processStartTime)
+        XCTAssertNil(restored.lastExit)
         XCTAssertNil(restored.readiness)
         XCTAssertFalse(restored.systemProxyEnabled)
+        XCTAssertNil(restored.previousSystemProxySnapshot)
+        XCTAssertNil(restored.systemProxyApplied)
+        XCTAssertNil(restored.systemProxyOwnership)
+        XCTAssertNil(restored.serviceModeStatus)
+        XCTAssertNil(restored.tunStatus)
+        XCTAssertNil(restored.message)
         XCTAssertEqual(restored.mode, .global)
         XCTAssertEqual(restored.proxyPorts.mixedPort, 7891)
+        XCTAssertEqual(restored.runtimeSettings, runtimeSettings)
+        XCTAssertEqual(restored.systemProxySettings, systemProxySettings)
     }
 
     private func temporaryDirectory() -> URL {

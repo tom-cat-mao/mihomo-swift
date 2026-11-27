@@ -213,6 +213,7 @@ extension KumoController {
 
         let started = try transferCoreOwnership(from: .rootService, to: .userAgent)
         routingLogger.info("Core ownership migrated from the root daemon to the user agent.")
+        notifyControlPlaneChanged([.status])
         let postStatus = (try? status()) ?? started
         return CoreMigrationResult(
             migrated: true,

@@ -27,7 +27,18 @@ final class KumoAppContextTests: XCTestCase {
     func testSetModeIntentResolvesStoreWithoutAnyView() async throws {
         let paths = hermeticPaths()
         let store = makeStore(paths: paths)
-        KumoAppContext.shared.attach(store: store)
+        let context = KumoAppContext.shared
+        let previousStore = context.store
+        if let previousStore {
+            context.detach(store: previousStore)
+        }
+        context.attach(store: store)
+        defer {
+            context.detach(store: store)
+            if let previousStore {
+                context.attach(store: previousStore)
+            }
+        }
 
         let intent = SetKumoModeIntent()
         intent.mode = .global
@@ -39,10 +50,63 @@ final class KumoAppContextTests: XCTestCase {
         XCTAssertEqual(try CoreStateStore(paths: paths).load().mode, .global)
     }
 
+    func testSetModeIntentFallsBackToHeadlessController() async throws {
+        let paths = hermeticPaths()
+        try await withHeadlessController(paths: paths) {
+            let intent = SetKumoModeIntent()
+            intent.mode = .direct
+            _ = try await intent.perform()
+        }
+
+        XCTAssertEqual(try CoreStateStore(paths: paths).load().mode, .direct)
+    }
+
+    func testRefreshIntentFallsBackToHeadlessController() async throws {
+        let paths = hermeticPaths()
+        try await withHeadlessController(paths: paths) {
+            _ = try await RefreshKumoIntent().perform()
+        }
+
+        XCTAssertEqual(try CoreStateStore(paths: paths).load().state, .stopped)
+    }
+
+    func testStopIntentFallsBackToHeadlessController() async throws {
+        let paths = hermeticPaths()
+        try await withHeadlessController(paths: paths) {
+            _ = try await StopKumoIntent().perform()
+        }
+
+        XCTAssertEqual(try CoreStateStore(paths: paths).load().state, .stopped)
+    }
+
     // MARK: - Helpers
 
     private func makeStore(paths: KumoPaths? = nil) -> KumoAppStore {
         KumoAppStore(controller: KumoController(paths: paths ?? hermeticPaths(), useServiceBackend: false))
+    }
+
+    private func withHeadlessController(
+        paths: KumoPaths,
+        operation: () async throws -> Void
+    ) async rethrows {
+        let context = KumoAppContext.shared
+        let previousStore = context.store
+        let previousFactory = IntentResolver.controllerFactory
+        if let previousStore {
+            context.detach(store: previousStore)
+        }
+        IntentResolver.controllerFactory = {
+            KumoController(paths: paths, useServiceBackend: false)
+        }
+        defer {
+            IntentResolver.controllerFactory = previousFactory
+            if let previousStore {
+                context.attach(store: previousStore)
+            }
+        }
+
+        XCTAssertNil(context.store)
+        try await operation()
     }
 
     private func hermeticPaths() -> KumoPaths {

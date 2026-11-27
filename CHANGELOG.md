@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Keep an open GUI synchronized with CLI and agent mutations through distributed
+  control-plane change notifications.
+- Run App Intents headlessly through `KumoController` and `BackendRouter` when
+  the GUI is closed.
+
+### Fixed
+- Clear host- and process-local runtime state during backup import while
+  preserving user settings.
+- Sync the bundled `kumo-cli` skill and agent, release, and ADR documentation
+  with current DNS and arm64-only release behavior.
+
 ## [0.1.2] - 2026-11-24
 
 ### Added

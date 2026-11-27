@@ -158,6 +158,7 @@ public struct KumoController: Sendable {
 
     public func setCurrentProfile(id: String) throws {
         try profileRepository.setCurrentProfile(id: id)
+        notifyControlPlaneChanged([.profiles])
     }
 
     public func coreCandidates() throws -> [CoreCandidate] {
@@ -173,6 +174,7 @@ public struct KumoController: Sendable {
         var status = try stateStore.load()
         status.corePath = path
         try stateStore.save(status)
+        notifyControlPlaneChanged([.status])
     }
 
     /// Clear any explicit core path so the supervisor falls back to auto-discovery
@@ -181,6 +183,7 @@ public struct KumoController: Sendable {
         var status = try stateStore.load()
         status.corePath = nil
         try stateStore.save(status)
+        notifyControlPlaneChanged([.status])
     }
 
     @discardableResult
@@ -230,15 +233,20 @@ public struct KumoController: Sendable {
         status.runtimeSettings = settings
         status.message = "Moved to free ports: \(conflicts.map(\.displayMessage).joined(separator: " "))"
         try stateStore.save(status)
+        notifyControlPlaneChanged([.status])
         return conflicts
     }
 
     @discardableResult
     public func start(corePath: String? = nil, resolvePortConflicts: Bool = false) throws -> CoreStatus {
+        let started: CoreStatus
         if corePath == nil {
-            return try performTierStart(try requiredCoreBackend(), resolvePortConflicts: resolvePortConflicts)
+            started = try performTierStart(try requiredCoreBackend(), resolvePortConflicts: resolvePortConflicts)
+        } else {
+            started = try startLocalCore(corePath: corePath, resolvePortConflicts: resolvePortConflicts)
         }
-        return try startLocalCore(corePath: corePath, resolvePortConflicts: resolvePortConflicts)
+        notifyControlPlaneChanged([.status])
+        return started
     }
 
     /// Direct-mode launch: generate the runtime config from the current profile
@@ -282,6 +290,7 @@ public struct KumoController: Sendable {
             }
         }
         let stopped = try performTierStop(try requiredCoreBackend())
+        notifyControlPlaneChanged([.status])
         if let releaseError {
             throw KumoError.commandFailed("Mihomo stopped, but the system proxy could not be released: \(releaseError.localizedDescription)")
         }
@@ -346,31 +355,36 @@ public struct KumoController: Sendable {
             latestStatus.ownerTier = nil
             recordCoreOwnership(nil)
         }
+        notifyControlPlaneChanged([.status])
         return ShutdownResult(status: latestStatus, diagnostics: diagnostics)
     }
 
     public func restart(corePath: String? = nil) throws -> CoreStatus {
+        let restarted: CoreStatus
         if corePath == nil {
             switch try requiredCoreBackend() {
             case .rootService:
                 guard let client = rootServiceClient() else {
                     throw KumoError.serviceUnavailable("Kumo Helper is not reachable.")
                 }
-                return try client.sendDecodable(client.restartCoreRequest(), as: CoreStatus.self)
+                restarted = try client.sendDecodable(client.restartCoreRequest(), as: CoreStatus.self)
             case .userAgent:
                 guard let client = userAgentClient() else {
                     throw KumoError.serviceUnavailable("The Kumo agent is not reachable.")
                 }
-                return try client.sendDecodable(client.restartCoreRequest(), as: CoreStatus.self)
+                restarted = try client.sendDecodable(client.restartCoreRequest(), as: CoreStatus.self)
             case .localSupervisor:
                 try preflightCurrentConfiguration()
                 _ = try stop()
-                return try start(corePath: nil)
+                restarted = try start(corePath: nil)
             }
+        } else {
+            try preflightCurrentConfiguration(corePath: corePath)
+            _ = try stop()
+            restarted = try start(corePath: corePath)
         }
-        try preflightCurrentConfiguration(corePath: corePath)
-        _ = try stop()
-        return try start(corePath: corePath)
+        notifyControlPlaneChanged([.status])
+        return restarted
     }
 
     public func setMode(_ mode: OutboundMode) async throws {
@@ -381,6 +395,7 @@ public struct KumoController: Sendable {
         if status.state == .running {
             try await MihomoControllerClient(endpoint: status.endpoint).setMode(mode)
         }
+        notifyControlPlaneChanged([.status])
     }
 
     public func updateRuntimeSettings(_ settings: CoreRuntimeSettings) async throws {
@@ -396,12 +411,14 @@ public struct KumoController: Sendable {
         if status.systemProxyEnabled {
             _ = try await setSystemProxy(true)
         }
+        notifyControlPlaneChanged([.status])
     }
 
     public func setControllerSecret(_ secret: String) throws {
         var status = try stateStore.load()
         status.endpoint.secret = secret
         try stateStore.save(status)
+        notifyControlPlaneChanged([.status])
     }
 
     public func proxyGroups() async throws -> [ProxyGroup] {
@@ -483,6 +500,7 @@ public struct KumoController: Sendable {
     public func setRuleEnabled(index: Int, isEnabled: Bool) async throws {
         let status = try stateStore.load()
         try await MihomoControllerClient(endpoint: status.endpoint).setRulesDisabled([index: !isEnabled])
+        notifyControlPlaneChanged([.status])
     }
 
     public func connections() async throws -> [ConnectionEntry] {
@@ -493,16 +511,19 @@ public struct KumoController: Sendable {
     public func closeConnection(id: String) async throws {
         let status = try stateStore.load()
         try await MihomoControllerClient(endpoint: status.endpoint).closeConnection(id: id)
+        notifyControlPlaneChanged([.status])
     }
 
     public func closeConnections(matchingProxy proxy: String? = nil) async throws {
         let status = try stateStore.load()
         try await MihomoControllerClient(endpoint: status.endpoint).closeConnections(matchingProxy: proxy)
+        notifyControlPlaneChanged([.status])
     }
 
     public func selectProxy(group: String, name: String) async throws {
         let status = try stateStore.load()
         try await MihomoControllerClient(endpoint: status.endpoint).selectProxy(group: group, name: name)
+        notifyControlPlaneChanged([.status])
     }
 
     public func proxyProviders() async throws -> [ProxyProviderEntry] {
@@ -513,6 +534,7 @@ public struct KumoController: Sendable {
     public func updateProxyProvider(name: String) async throws {
         let status = try stateStore.load()
         try await MihomoControllerClient(endpoint: status.endpoint).updateProxyProvider(name: name)
+        notifyControlPlaneChanged([.status])
     }
 
     public func ruleProviders() async throws -> [RuleProviderEntry] {
@@ -523,11 +545,13 @@ public struct KumoController: Sendable {
     public func updateRuleProvider(name: String) async throws {
         let status = try stateStore.load()
         try await MihomoControllerClient(endpoint: status.endpoint).updateRuleProvider(name: name)
+        notifyControlPlaneChanged([.status])
     }
 
     public func upgradeGeoData() async throws {
         let status = try stateStore.load()
         try await MihomoControllerClient(endpoint: status.endpoint).upgradeGeoData()
+        notifyControlPlaneChanged([.status])
     }
 
     public func testProxyDelay(proxy: String, testURL: String? = nil) async throws -> Int? {
@@ -558,7 +582,7 @@ public struct KumoController: Sendable {
             let summary = try await refreshProfile(id: existing.id, useProxy: useProxy ? true : nil)
             return try profileRepository.loadProfile(id: summary.id)
         }
-        return try await performProfileTransaction(reload: true) {
+        let profile = try await performProfileTransaction(reload: true) {
             let status = try stateStore.load()
             let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
             let summary = try await profileRepository.saveRemoteProfile(
@@ -568,11 +592,15 @@ public struct KumoController: Sendable {
             )
             return try profileRepository.loadProfile(id: summary.id)
         }
+        notifyControlPlaneChanged([.profiles, .status])
+        return profile
     }
 
     public func importProfile(from url: URL) throws -> ProfileSummary {
         let profile = try profileRepository.importLocalProfile(from: url)
-        return try profileRepository.saveProfile(profile)
+        let summary = try profileRepository.saveProfile(profile)
+        notifyControlPlaneChanged([.profiles])
+        return summary
     }
 
     public func profileContent(id: String) throws -> String {
@@ -608,24 +636,31 @@ public struct KumoController: Sendable {
 
     @discardableResult
     public func addLocalOverride(name: String, format: OverrideFormat, content: String, isGlobal: Bool = false) throws -> OverrideItem {
-        try overrideRepository.addLocalOverride(name: name, format: format, content: content, isGlobal: isGlobal)
+        let item = try overrideRepository.addLocalOverride(name: name, format: format, content: content, isGlobal: isGlobal)
+        notifyControlPlaneChanged([.overrides])
+        return item
     }
 
     @discardableResult
     public func addRemoteOverride(url: URL, name: String? = nil, format: OverrideFormat = .yaml, fingerprint: String? = nil, isGlobal: Bool = false) async throws -> OverrideItem {
-        try await overrideRepository.addRemoteOverride(url: url, name: name, format: format, fingerprint: fingerprint, isGlobal: isGlobal)
+        let item = try await overrideRepository.addRemoteOverride(url: url, name: name, format: format, fingerprint: fingerprint, isGlobal: isGlobal)
+        notifyControlPlaneChanged([.overrides])
+        return item
     }
 
     public func updateOverride(_ item: OverrideItem, content: String? = nil) throws {
         try overrideRepository.updateOverride(item, content: content)
+        notifyControlPlaneChanged([.overrides])
     }
 
     public func deleteOverride(id: String) throws {
         try overrideRepository.deleteOverride(id: id)
+        notifyControlPlaneChanged([.overrides])
     }
 
     public func reorderOverrides(ids: [String]) throws {
         try overrideRepository.reorderOverrides(ids: ids)
+        notifyControlPlaneChanged([.overrides])
     }
 
     @discardableResult
@@ -641,7 +676,8 @@ public struct KumoController: Sendable {
         let wasCurrent = existing?.isCurrent ?? false
         let previousYAML = wasCurrent ? try profileRepository.profileContent(id: id) : nil
         let yamlChanged = previousYAML != rawYAML
-        return try await performProfileTransaction(reload: wasCurrent && yamlChanged) {
+        let reloaded = wasCurrent && yamlChanged
+        let summary = try await performProfileTransaction(reload: reloaded) {
             try profileRepository.updateProfile(
                 id: id,
                 name: name,
@@ -651,14 +687,18 @@ public struct KumoController: Sendable {
                 rawYAML: rawYAML
             )
         }
+        notifyControlPlaneChanged(reloaded ? [.profiles, .status] : [.profiles])
+        return summary
     }
 
     @discardableResult
     public func deleteProfile(id: String) async throws -> Bool {
         let wasCurrent = try profileRepository.listProfiles().first(where: { $0.id == id })?.isCurrent ?? false
-        return try await performProfileTransaction(reload: wasCurrent) {
+        let deleted = try await performProfileTransaction(reload: wasCurrent) {
             try profileRepository.deleteProfile(id: id)
         }
+        notifyControlPlaneChanged(wasCurrent ? [.profiles, .status] : [.profiles])
+        return deleted
     }
 
     /// Refreshes one profile in place, preserving its id, name, auto-update
@@ -673,7 +713,7 @@ public struct KumoController: Sendable {
     @discardableResult
     public func refreshProfile(id: String, useProxy: Bool? = nil) async throws -> ProfileSummary {
         let wasCurrent = try profileRepository.listProfiles().first(where: { $0.id == id })?.isCurrent ?? false
-        return try await performProfileTransaction(reload: wasCurrent) {
+        let summary = try await performProfileTransaction(reload: wasCurrent) {
             if let profile = try profileRepository.listProfiles().first(where: { $0.id == id }),
                profile.isSubStoreManaged {
                 return try await refreshSubStoreProfile(id: id)
@@ -682,6 +722,8 @@ public struct KumoController: Sendable {
             let proxyPort = status.state == .running ? status.proxyPorts.mixedPort : nil
             return try await profileRepository.refreshRemoteProfile(id: id, useProxy: useProxy, proxyPort: proxyPort)
         }
+        notifyControlPlaneChanged(wasCurrent ? [.profiles, .status] : [.profiles])
+        return summary
     }
 
     /// Refreshes every profile whose subscription is due for its next
@@ -772,11 +814,12 @@ public struct KumoController: Sendable {
     public func setSystemProxy(_ isEnabled: Bool, dryRun: Bool = false) async throws -> [ShellCommand] {
         if !dryRun, let client = privilegedServiceClient() {
             _ = try client.send(client.setSystemProxyEnabledRequest(isEnabled))
+            notifyControlPlaneChanged([.status])
             return []
         }
         let status = try stateStore.load()
         let settings = try effectiveSystemProxySettings(for: status)
-        return try await systemProxyController.setEnabled(
+        let commands = try await systemProxyController.setEnabled(
             isEnabled,
             configuration: SystemProxyConfiguration(
                 networkService: settings.networkService,
@@ -788,6 +831,10 @@ public struct KumoController: Sendable {
             ),
             dryRun: dryRun
         )
+        if !dryRun {
+            notifyControlPlaneChanged([.status])
+        }
+        return commands
     }
 
     /// Observes ownership through the same privileged-or-local route as writes.
@@ -825,6 +872,7 @@ public struct KumoController: Sendable {
     /// start but releases only settings still owned by Kumo.
     public func releaseSystemProxyForGuardian() throws {
         try releaseSystemProxyPreservingIntent()
+        notifyControlPlaneChanged([.status])
     }
 
     public func availableNetworkServices() throws -> [String] {
@@ -839,6 +887,7 @@ public struct KumoController: Sendable {
         var status = try stateStore.load()
         status.systemProxySettings = settings
         try stateStore.save(status)
+        notifyControlPlaneChanged([.status])
     }
 
     public func serviceModeStatus() -> ServiceModeStatus {
@@ -851,6 +900,7 @@ public struct KumoController: Sendable {
     public func installServiceMode() throws -> ServiceModeStatus {
         let status = try serviceManager.installService()
         persistServiceStatus(status)
+        notifyControlPlaneChanged([.status])
         return status
     }
 
@@ -858,6 +908,7 @@ public struct KumoController: Sendable {
     public func uninstallServiceMode() throws -> ServiceModeStatus {
         let status = try serviceManager.uninstallService()
         persistServiceStatus(status)
+        notifyControlPlaneChanged([.status])
         return status
     }
 
@@ -893,6 +944,7 @@ public struct KumoController: Sendable {
         runtimeSettings.dns = settings
         status.runtimeSettings = runtimeSettings
         try stateStore.save(status)
+        notifyControlPlaneChanged([.status])
     }
 
     @discardableResult
@@ -919,11 +971,15 @@ public struct KumoController: Sendable {
         var candidateStatus = previousStatus
         candidateStatus.runtimeSettings = candidateRuntimeSettings
         try stateStore.save(candidateStatus)
-        guard previousStatus.state == .running else { return candidateDNS }
+        guard previousStatus.state == .running else {
+            notifyControlPlaneChanged([.status])
+            return candidateDNS
+        }
 
         do {
             _ = try restart()
             try await waitForControllerReady()
+            notifyControlPlaneChanged([.status])
             return candidateDNS
         } catch {
             var recoveryDiagnostics: [String] = []
@@ -985,6 +1041,7 @@ public struct KumoController: Sendable {
         if updatedStatus.state == .running {
             _ = try restart()
             try await waitForControllerReady()
+            notifyControlPlaneChanged([.status])
         }
 
         return normalizedSettings
@@ -1007,6 +1064,7 @@ public struct KumoController: Sendable {
             _ = try restart()
             try await waitForControllerReady()
         }
+        notifyControlPlaneChanged([.status])
 
         return dns
     }
@@ -1022,6 +1080,7 @@ public struct KumoController: Sendable {
         runtimeSettings.sniffer = settings
         status.runtimeSettings = runtimeSettings
         try stateStore.save(status)
+        notifyControlPlaneChanged([.status])
     }
 
     @discardableResult
@@ -1033,6 +1092,7 @@ public struct KumoController: Sendable {
         if status.state == .running {
             _ = try restart()
             try await waitForControllerReady()
+            notifyControlPlaneChanged([.status])
         }
 
         return normalizedSettings
@@ -1052,6 +1112,7 @@ public struct KumoController: Sendable {
             _ = try restart()
             try await waitForControllerReady()
         }
+        notifyControlPlaneChanged([.status])
 
         return sniffer
     }
@@ -1068,6 +1129,7 @@ public struct KumoController: Sendable {
             lastError: status.tunStatus?.lastError
         )
         try stateStore.save(status)
+        notifyControlPlaneChanged([.status])
     }
 
     /// Applies full TUN settings through `updateTunSettingsFlow`, which also
@@ -1093,11 +1155,14 @@ public struct KumoController: Sendable {
 
     public func updateSubStoreStatus(_ status: SubStoreStatus) throws {
         try subStoreManager.updateStatus(status)
+        notifyControlPlaneChanged([.status])
     }
 
     @discardableResult
     public func prepareSubStoreResources() throws -> SubStoreStatus {
-        try subStoreManager.prepareResources()
+        let status = try subStoreManager.prepareResources()
+        notifyControlPlaneChanged([.status])
+        return status
     }
 
     public func subStoreRuntimeStatus() async throws -> SubStoreRuntimeStatus {
@@ -1121,16 +1186,19 @@ public struct KumoController: Sendable {
         } else {
             await subStoreSupervisor.stop()
         }
+        notifyControlPlaneChanged([.status])
         return status
     }
 
     public func restartSubStoreService() async throws {
         let status = try subStoreManager.status()
         _ = try await startSubStoreServices(status: status, restartBackend: true)
+        notifyControlPlaneChanged([.status])
     }
 
     public func stopSubStoreService() async {
         await subStoreSupervisor.stop()
+        notifyControlPlaneChanged([.status])
     }
 
     public func subStoreServiceIsRunning() async -> Bool {
@@ -1181,12 +1249,14 @@ public struct KumoController: Sendable {
     @discardableResult
     public func importSubStoreProfile(path subStorePath: String, name: String? = nil, useProxy: Bool = false) async throws -> ProfileSummary {
         let url = try subStoreProfileDownloadURL(path: subStorePath, useProxy: useProxy)
-        return try await profileRepository.saveSubStoreProfile(
+        let summary = try await profileRepository.saveSubStoreProfile(
             name: name ?? subStoreDisplayName(for: subStorePath),
             subStorePath: subStorePath,
             downloadURL: url,
             useProxy: useProxy
         )
+        notifyControlPlaneChanged([.profiles])
+        return summary
     }
 
     @discardableResult
@@ -1196,7 +1266,7 @@ public struct KumoController: Sendable {
             throw KumoError.invalidArguments("This profile is not managed by Sub-Store.")
         }
         let url = try subStoreProfileDownloadURL(path: subStorePath, useProxy: profile.useProxy)
-        return try await profileRepository.saveSubStoreProfile(
+        let summary = try await profileRepository.saveSubStoreProfile(
             name: profile.name,
             subStorePath: subStorePath,
             downloadURL: url,
@@ -1205,6 +1275,8 @@ public struct KumoController: Sendable {
             preferredID: id,
             makeCurrent: false
         )
+        notifyControlPlaneChanged([.profiles])
+        return summary
     }
 
     @discardableResult
@@ -1214,7 +1286,9 @@ public struct KumoController: Sendable {
 
     @discardableResult
     public func importBackup(from source: URL) throws -> KumoBackupManifest {
-        try backupManager.importBackup(from: source)
+        let manifest = try backupManager.importBackup(from: source)
+        notifyControlPlaneChanged([.all])
+        return manifest
     }
 
     public func checkAppUpdate(
@@ -1258,6 +1332,14 @@ public struct KumoController: Sendable {
 
     public func updateUserPreferences(_ preferences: UserPreferences) throws {
         try preferencesStore.save(preferences)
+        notifyControlPlaneChanged([.preferences])
+    }
+
+    func notifyControlPlaneChanged(_ domains: Set<ControlPlaneChangeDomain>) {
+        ControlPlaneNotifier.shared.post(
+            domains: domains,
+            appSupportPath: paths.applicationSupportDirectory.standardizedFileURL.path
+        )
     }
 
     /// Reports the on-disk state of the `kumo` CLI symlink. Always cheap; the

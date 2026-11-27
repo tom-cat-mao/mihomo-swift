@@ -56,6 +56,7 @@ extension KumoController {
 
         do {
             try await performConfigurationReload()
+            notifyControlPlaneChanged([.status])
         } catch {
             var diagnostics: [String] = []
             do {
@@ -149,6 +150,7 @@ extension KumoController {
 
         do {
             let count = try store.commit(staged)
+            notifyControlPlaneChanged([.profiles, .rollbacks, .status])
             return ConfigurationApplyReport(
                 rollbackPointID: staged.point.id,
                 snapshotCount: count,
@@ -194,6 +196,7 @@ extension KumoController {
             }
             let remainingSnapshots = try store.count() - 1
             try store.consume(id: point.id)
+            notifyControlPlaneChanged([.all])
             return ConfigurationRollbackReport(
                 rollbackPointID: point.id,
                 remainingSnapshots: remainingSnapshots,
@@ -244,6 +247,7 @@ extension KumoController {
         try await performProfileTransaction(reload: true) {
             try profileRepository.setCurrentProfile(id: id)
         }
+        notifyControlPlaneChanged([.profiles, .status])
     }
 
     @discardableResult
@@ -379,6 +383,7 @@ extension KumoController {
             if wasRunning {
                 try await reloadRuntimeConfiguration()
             }
+            notifyControlPlaneChanged(wasRunning ? [.overrides, .status] : [.overrides])
             return result
         } catch {
             var diagnostics: [String] = []

@@ -117,6 +117,16 @@ transparent, testable, and easy for agents to inspect. A future UI can wrap the
 same manifest in a compressed archive or sync it to WebDAV without changing the
 CoreKit import/export contract.
 
+`KumoBackupManager` sanitizes imported `state.json` before use. It forces the
+core state to stopped and clears `pid`, `ownerTier`, `processStartTime`,
+`lastExit`, `readiness`, `message`, `serviceModeStatus`, `tunStatus`, and all
+system-proxy runtime observations (`systemProxyEnabled`,
+`previousSystemProxySnapshot`, `systemProxyApplied`, and
+`systemProxyOwnership`). These values describe the exporting host or process
+and must not control a local process or network service after import. User
+configuration—including `mode`, `endpoint`, `proxyPorts`, `runtimeSettings`,
+and `systemProxySettings`—is preserved.
+
 ## State File
 
 `state.json` stores `CoreStatus`:

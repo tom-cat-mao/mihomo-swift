@@ -20055,6 +20055,26 @@
           }
         }
       }
+    },
+    "Reload": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reload"
+          }
+        }
+      }
+    },
+    "Updated externally.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updated externally."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

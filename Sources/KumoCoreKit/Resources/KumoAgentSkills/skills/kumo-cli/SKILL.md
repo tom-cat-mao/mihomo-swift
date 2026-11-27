@@ -59,7 +59,7 @@ description: Drive Kumo, a macOS SwiftUI Mihomo client, from coding agents, scri
 
 - Preferences: `kumo prefs [get] [<key>] [--json]` and `kumo prefs set <key> <value> [--dry-run] [--json]` over `launchAtLogin`, `hideMenuBarIcon`, `quitOnLastWindowClose`, `keepCoreRunningOnQuit`, `reclaimSystemProxy`, `updateChannel`, `appLanguage`, `hasCompletedOnboarding`. Values are typed (`true|false`, `stable|beta`, a BCP-47 tag such as `zh-Hans`, or `system`); a set preserves every key it does not expose, and notes flag deferred effects (next GUI launch or quit, GUI-only keys).
 - Core runtime scalars (mixed port, allow LAN, log level, IPv6, process mode) are separate: see `kumo config get|set` under Backup and config.
-- DNS: `kumo dns [--json]`, `kumo dns enable|disable`.
+- DNS: `kumo dns [--json]`, `kumo dns enable|disable`, `kumo dns source kumo|profile [--json]`.
 - Sniffer: `kumo sniffer [--json]`, `kumo sniffer enable|disable`.
 - TUN: `kumo tun status [--json]`, `kumo tun settings [--json]`, `kumo tun enable|disable`. Stack values are `mixed`, `gvisor`, `system`, and `mips`; MIPS requires Mihomo 1.19.32 or later.
 - System proxy: `kumo sysproxy status [--json]`; `kumo sysproxy on|off|reclaim [--dry-run]`; `kumo sysproxy set [--bypass <comma-list>] [--add-defaults] [--network-service <name>] [--host <host>] [--port <port>] [--mode manual|pac] [--dry-run]` — status reports `owned|takenOver|cleared`, reclaim reapplies Kumo's recorded settings, and `--add-defaults` unions the current bypass list with the GUI default bypass list.

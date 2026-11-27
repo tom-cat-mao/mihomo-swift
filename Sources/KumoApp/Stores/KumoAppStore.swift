@@ -143,6 +143,8 @@ final class KumoAppStore {
     var updateDownloadProgress: Double?
     var updateStatusMessage: String?
     var lastUpdateCheckResult: AppUpdateCheckResult?
+    private(set) var externalChangeRevision = 0
+    private(set) var externalDomainRevisions: [ControlPlaneChangeDomain: Int] = [:]
 
     /// Synchronous escape hatch for bootstrap callers that cannot await:
     /// `KumoApp.init` reads the persisted preferences before the first frame,
@@ -169,6 +171,11 @@ final class KumoAppStore {
     private var updatePollingTask: Task<Void, Never>?
     private var profileUpdatePollingTask: Task<Void, Never>?
     private var systemProxyPollingTask: Task<Void, Never>?
+    private var controlPlaneDebounceTask: Task<Void, Never>?
+    private var pendingControlPlaneDomains: Set<ControlPlaneChangeDomain> = []
+    private var controlPlaneDebounceNanoseconds: UInt64 = 200_000_000
+    @ObservationIgnored
+    nonisolated(unsafe) private var controlPlaneObserverToken: NSObjectProtocol?
     private var isPollingForUpdates = false
     private var lastProfileRefreshFailureNotifications: [String: Date] = [:]
     private var coreExitObservation = CoreExitObservation()
@@ -192,6 +199,12 @@ final class KumoAppStore {
         let runner = CoreRuntimeRunner(controller: controller)
         self.runner = runner
         self.proxyGeoLookup = ProxyGeoLookup(cacheURL: runner.paths.proxyGeoCacheFile)
+    }
+
+    deinit {
+        if let controlPlaneObserverToken {
+            ControlPlaneNotifier.shared.removeObserver(controlPlaneObserverToken)
+        }
     }
 
     func refreshAll() async {
@@ -1517,6 +1530,127 @@ final class KumoAppStore {
     func stopSystemProxyPolling() {
         systemProxyPollingTask?.cancel()
         systemProxyPollingTask = nil
+    }
+
+    func externalRevision(for domain: ControlPlaneChangeDomain) -> Int {
+        externalDomainRevisions[domain, default: 0]
+    }
+
+    func startControlPlaneObservation(debounceInterval: TimeInterval = 0.2) {
+        controlPlaneDebounceNanoseconds = UInt64(max(0, debounceInterval) * 1_000_000_000)
+        guard controlPlaneObserverToken == nil else { return }
+        controlPlaneObserverToken = ControlPlaneNotifier.shared.observe { [weak self] notification in
+            Task { @MainActor [weak self] in
+                self?.handleControlPlaneChangeNotification(notification)
+            }
+        }
+    }
+
+    func stopControlPlaneObservation() {
+        if let token = controlPlaneObserverToken {
+            ControlPlaneNotifier.shared.removeObserver(token)
+            controlPlaneObserverToken = nil
+        }
+        controlPlaneDebounceTask?.cancel()
+        controlPlaneDebounceTask = nil
+        pendingControlPlaneDomains.removeAll()
+    }
+
+    func refreshRollbacks() async {}
+
+    private func handleControlPlaneChangeNotification(_ notification: ControlPlaneChangeNotification) {
+        guard notification.senderPID != ProcessInfo.processInfo.processIdentifier else {
+            return
+        }
+        if let incomingPath = notification.appSupportPath,
+           incomingPath != controller.paths.applicationSupportDirectory.standardizedFileURL.path {
+            return
+        }
+
+        pendingControlPlaneDomains.formUnion(notification.domains)
+        controlPlaneDebounceTask?.cancel()
+        let delay = controlPlaneDebounceNanoseconds
+        controlPlaneDebounceTask = Task { [weak self] in
+            if delay > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled, let self else { return }
+            let domains = self.pendingControlPlaneDomains
+            self.pendingControlPlaneDomains.removeAll()
+            self.controlPlaneDebounceTask = nil
+            await self.applyControlPlaneChanges(domains)
+        }
+    }
+
+    private func applyControlPlaneChanges(_ domains: Set<ControlPlaneChangeDomain>) async {
+        guard !domains.isEmpty else { return }
+
+        if domains.contains(.all) {
+            await refreshAll()
+            await refreshRollbacks()
+            recordExternalChange(for: Set(ControlPlaneChangeDomain.allCases))
+            return
+        }
+
+        if domains.contains(.status) {
+            await refreshStatus()
+            syncTrafficStreamWithStatus()
+            if status.state != .running {
+                trafficSnapshot = TrafficSnapshot()
+                trafficHistory = []
+            }
+            await refreshSystemProxyStatus()
+            await refreshTunStatus()
+            await refreshServiceModeStatus()
+            await refreshAgentStatus()
+            await refreshSubStoreRuntimeStatus()
+            await loadCoreConfiguration()
+            await loadProxyGroups()
+            await loadInspectData()
+            await loadResources()
+            if topology != nil {
+                await loadTopology()
+            }
+        }
+
+        if domains.contains(.profiles) {
+            await refreshProfiles()
+            if !domains.contains(.status) {
+                await loadCoreConfiguration()
+                await loadProxyGroups()
+            }
+        }
+
+        if domains.contains(.overrides) {
+            await refreshOverrides()
+        }
+
+        if (domains.contains(.profiles) || domains.contains(.overrides)),
+           !domains.contains(.status),
+           topology != nil {
+            await loadTopology()
+        }
+
+        if domains.contains(.preferences) {
+            await loadPreferences()
+        }
+
+        if domains.contains(.rollbacks) {
+            await refreshRollbacks()
+        }
+
+        recordExternalChange(for: domains)
+    }
+
+    private func recordExternalChange(for domains: Set<ControlPlaneChangeDomain>) {
+        externalChangeRevision += 1
+        for domain in domains {
+            externalDomainRevisions[domain, default: 0] += 1
+        }
     }
 
     func checkForUpdate() async {

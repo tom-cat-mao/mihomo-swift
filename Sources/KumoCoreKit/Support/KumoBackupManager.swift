@@ -67,8 +67,10 @@ public struct KumoBackupManager: Sendable {
     /// innocent process until it dies. A restored proxy-on flag would also let
     /// Kumo later disable this machine's active network service even though no
     /// proxy was applied here. The state is therefore forced to stopped with
-    /// no pid, no readiness and system proxy off; every other field (mode,
-    /// ports, runtime settings, ...) is preserved for the user.
+    /// no process identity, owner, readiness, exit record, service/TUN status,
+    /// status message, or host-specific system-proxy observations. User
+    /// settings such as mode, ports, runtime settings, and proxy preferences
+    /// are preserved.
     private func restoreStateFile(from source: URL) throws {
         guard FileManager.default.fileExists(atPath: source.path) else {
             return
@@ -80,10 +82,17 @@ public struct KumoBackupManager: Sendable {
             var restored = try store.load()
             restored.state = .stopped
             restored.pid = nil
+            restored.ownerTier = nil
+            restored.processStartTime = nil
+            restored.lastExit = nil
             restored.readiness = nil
             restored.systemProxyEnabled = false
+            restored.previousSystemProxySnapshot = nil
             restored.systemProxyApplied = nil
             restored.systemProxyOwnership = nil
+            restored.serviceModeStatus = nil
+            restored.tunStatus = nil
+            restored.message = nil
             try store.save(restored)
         } catch {
             // Never leave an unsanitized state file behind: an undecodable
