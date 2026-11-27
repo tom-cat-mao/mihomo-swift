@@ -409,7 +409,7 @@ final class KumoCLIKitTests: XCTestCase {
             XCTAssertTrue(HelpText.topLevel.contains(entry.name), "missing command: \(entry.name)")
         }
         XCTAssertTrue(HelpText.topLevel.contains("select"))
-        XCTAssertEqual(KumoCommand.configuration.version, "0.1.2")
+        XCTAssertEqual(KumoCommand.configuration.version, "0.1.3")
         XCTAssertTrue(HelpText.topLevel.contains("kumo@\(KumoCommand.configuration.version)"))
     }
 
